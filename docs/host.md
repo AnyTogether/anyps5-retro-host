@@ -52,7 +52,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   acceleration fails with `kCGLBadPixelFormat`. This matches Linux, where EGL
   takes Mesa's software rasterizer when there is no GPU driver, so on all
   systems `status.hardware` means the core draws with its OpenGL renderer,
-  whether a GPU or the CPU runs it. The software renderer keeps the internal
+  whether a GPU or the CPU runs it, as protocol.md "status" defines it. The software renderer keeps the internal
   resolution option and the core's OpenGL accuracy settings working; the
   host does not prefer SwanStation's own software renderer over it, as no
   system has a way to know which is faster on a given machine. When no context
@@ -225,7 +225,7 @@ A crash gives none of these, so the tests expect the exact code.
   two pictures a second or more apart are not black and differ (the
   program animates its background), and that `hardware` and `resolutionError`
   agree (a machine without an OpenGL context draws in software and must say
-  so). With `--expect-gpu`, which CI passes on Linux and macOS, the test also
+  so). With `--expect-opengl`, which CI passes on Linux and macOS, the test also
   fails when the host made no OpenGL context, so neither system can slip back
   to the core's software renderer unnoticed. The Windows runner makes no
   OpenGL 3.3 context, so there the core draws in software. The `hello`
