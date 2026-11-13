@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
 """Host behaviour the fixtures do not cover: a stuck core, the memory card, ring growth, epochs
-across games, how the host leaves when the launcher goes, and many start, volume and stop calls in
-a row."""
+across games, how the host leaves when the launcher goes, many start, volume and stop calls in a
+row, and the internal resolutions a GPU game is offered."""
 
 import argparse
 import shutil
@@ -464,6 +464,56 @@ def rumble_and_ports(program, core, log):
         session.close()
 
 
+def gpu_limits(program, core, log, require_gpu):
+    """The fake core's largest geometry is 1024 x 512 times the scale and a 640-wide screen's frames
+    640 x 480 times it, as SwanStation's are. A saved 16x would make frames 10240 pixels wide, more
+    than protocol.md's 8192, so the host offers only the scales whose largest geometry fits, starts
+    at the largest of them and says why in resolutionError."""
+    session = Session(program, core, log)
+    key = 'swanstation_GPU_ResolutionScale'
+    try:
+        (Path(session.paths['system']) / 'fake-gpu').write_bytes(b'')
+        session.start(options={key: '16'})
+        status = session.wait(lambda s: s and (s['ready'] or s['ended']), 30)
+        if status['ended']:
+            raise c.Failed(f'a saved 16x ended the game: {status["errorCode"]!r} {status["error"]!r}')
+        if not status['hardware']:
+            if require_gpu:
+                raise c.Failed('the host made no OpenGL context')
+            return 'skipped: the host made no OpenGL context here'
+        option = status['options'][key]
+        largest = max(int(value) for value in option['values'])
+        if any(1024 * int(value) > 8192 for value in option['values']) or largest < 1:
+            raise c.Failed(f'scales whose frames can pass 8192 are offered: {option["values"]}')
+        if option['activeValue'] != str(largest) or option['values'][option['selected']] != str(largest):
+            raise c.Failed(f'a saved 16x did not start at the largest scale offered: {option}')
+        if '16x' not in status['resolutionError']:
+            raise c.Failed(f'resolutionError does not say why 16x is not used: {status["resolutionError"]!r}')
+
+        def frame_width(width):
+            def test(s):
+                slot = session.ring.latest() if session.ring else None
+                return s['ended'] or (slot is not None and slot['width'] == width)
+            return test
+
+        status = session.wait(frame_width(640 * largest), 30)
+        if status['ended']:
+            raise c.Failed(f'the game ended at {largest}x: {status["errorCode"]!r} {status["error"]!r}')
+        if session.call('option', {'key': key, 'value': '16'}) is not False:
+            raise c.Failed('a scale that is not offered was taken')
+        if session.call('option', {'key': key, 'value': '2'}) is not True:
+            raise c.Failed('2x was not taken')
+        status = session.wait(frame_width(1280), 30)
+        if status['ended'] or status['resolutionError'] or status['options'][key]['activeValue'] != '2':
+            raise c.Failed(f'after choosing 2x: {status}')
+        session.call('stop')
+        status = session.wait(lambda s: s['ended'], 10)
+        if status['errorCode'] or status['resolutionError']:
+            raise c.Failed(f'the game stopped with {status}')
+    finally:
+        session.close()
+
+
 def discs(program, core, log):
     """initialDisc picks the disc a playlist boots with, changeDisc swaps discs and refuses what it
     cannot do, and a game with one disc has no discs in status."""
@@ -628,23 +678,26 @@ def main():
     parser.add_argument('--host', required=True, type=Path)
     parser.add_argument('--core', required=True, type=Path)
     parser.add_argument('--log', type=Path)
+    parser.add_argument('--require-gpu', action='store_true', help='fail, not skip, when the host makes no OpenGL context')
     parser.add_argument('names', nargs='*')
     options = parser.parse_args()
     log = open(options.log, 'ab') if options.log else c.subprocess.DEVNULL
     c.load_atomics(options.core.resolve())
     failures = 0
-    tests = [test for test in (stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size,
-                                 ring_growth, epochs, launcher_stops_reading, launcher_exits,
-                                 log_lines_with_paths, core_data_bounds, rumble_and_ports, discs, wrong_parent,
-                                 no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
-    for test in tests:
+    tests = {test.__name__: test for test in (
+        stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
+        launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, rumble_and_ports, discs,
+        wrong_parent, no_dll_from_working_directory, many_games)}
+    tests['gpu_limits'] = lambda program, core, log: gpu_limits(program, core, log, options.require_gpu)
+    chosen = [(name, test) for name, test in tests.items() if not options.names or name in options.names]
+    for name, test in chosen:
         try:
-            test(options.host.resolve(), options.core.resolve(), log)
-            print(f'ok    {test.__name__}')
+            skipped = test(options.host.resolve(), options.core.resolve(), log)
+            print(f'ok    {name}' + (f' ({skipped})' if skipped else ''))
         except c.Failed as problem:
             failures += 1
-            print(f'FAIL  {test.__name__}: {problem}')
-    print(f'{len(tests) - failures} of {len(tests)} host tests passed.')
+            print(f'FAIL  {name}: {problem}')
+    print(f'{len(chosen) - failures} of {len(chosen)} host tests passed.')
     return 1 if failures else 0
 
 
