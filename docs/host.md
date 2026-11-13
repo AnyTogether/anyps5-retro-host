@@ -73,7 +73,14 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   window); the game's thread answers them between frames (`Gpu::Pump`), so it
   never shows as hung, and the window ignores `WM_CLOSE`, which `taskkill`
   without `/f` sends and which would otherwise destroy the window under the
-  context.
+  context. On Linux the context is dropped on the game's thread, which ends
+  with `eglReleaseThread` before libEGL is unloaded: libglvnd before 1.5
+  (Ubuntu 22.04 has 1.4) keeps the thread's EGL state under a pthread key
+  whose destructor is in libEGL and leaves it set when unloaded, so the thread
+  would crash as it ended, right after SwanStation switched to software at
+  `stop`. [`tests/gpu_thread_test.cpp`](../tests/gpu_thread_test.cpp) makes
+  and drops a context on two threads that end in turn, and is skipped where
+  no OpenGL 3.3 core context can be made.
 - **Resolution limits.** SwanStation's internal resolution goes up to 16x, and
   its largest geometry is PS1 VRAM, 1024 × 512, times the scale
   (`GetSystemAVInfo` in `src/libretro/libretro_host_interface.cpp`): 16384 ×
@@ -288,8 +295,9 @@ A crash gives none of these, so the tests expect the exact code.
   OpenGL context in the same host. The test then checks a clean `stop` and
   exit, and keeps the last picture (`--picture`) as a workflow artifact. No
   Sony BIOS or game is used.
-- CI runs everything on Linux, macOS (arm64) and Windows, and the Linux tests
-  again under ThreadSanitizer. On Linux and macOS the fake core logs its BIOS
+- CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
+  supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
+  under ThreadSanitizer (on 24.04). On Linux and macOS the fake core logs its BIOS
   line from a thread of its own and waits for it with a relaxed load, as
   SwanStation may log from its threads, so ThreadSanitizer fails if the BIOS
   flag the log callback sets is not atomic. `g_game`, the missing-disc flag
