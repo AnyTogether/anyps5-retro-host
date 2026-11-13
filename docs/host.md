@@ -85,7 +85,12 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   socketpair at descriptor 3, or two pipes passed with a handle list on
   Windows), plays every session whose `tests` includes `host`, and checks the
   outcome. `--strace` (Linux) records the host's network calls for the CI
-  check.
+  check. A read's timeout is for a message to begin: once its first byte has
+  come, the reader waits the 5-second write limit of protocol.md "Framing",
+  counted from that byte, for the rest of the length and the body, because
+  giving up in the middle of a message would read the next body as a length.
+  [`tests/framing_test.py`](../tests/framing_test.py) checks that rule on a
+  socketpair, without the host, on Linux and macOS.
 - [`tests/fake_core.c`](../tests/fake_core.c) is the core the sessions run:
   640 × 480 frames, one option, `.m3u` playlists through the disc interface,
   a memory card, rumble while Cross is held, and a `fake_hang` option that
