@@ -238,7 +238,8 @@ static bool ends_with(const char* text, const char* suffix) {
 #ifndef _WIN32
 /* SwanStation may log from threads of its own. On Linux and macOS the BIOS line comes from a
  * thread, and retro_load_game waits for it with a relaxed load, which orders nothing: under
- * ThreadSanitizer the host's flags for what the log said must be atomic. */
+ * ThreadSanitizer the host's flags for what the log said must be atomic. The thread is joined
+ * at the first retro_run, after the host has read those flags, or at unload. */
 static pthread_t logger;
 static bool logger_started;
 static int logged;
@@ -364,6 +365,9 @@ RETRO_API void retro_run(void) {
   uint32_t fill;
   unsigned i;
   unsigned port;
+#ifndef _WIN32
+  join_logger();
+#endif
   input_poll();
   if (environment(RETRO_ENVIRONMENT_GET_VARIABLE, &hang) && hang.value && strcmp(hang.value, "yes") == 0) {
     for (;;) {
