@@ -4,8 +4,8 @@
 /* A libretro core for the host's tests. It draws frames of the size its fake_size option names
  * (640x480 at first), plays silence, takes .m3u playlists through the disc control interface
  * (labelling each disc with its file name, byte for byte, as SwanStation does), keeps a 128 KiB
- * memory card whose first byte turns 1 after 30 frames, and rumbles port 1's large motor while
- * Cross is held. It logs SwanStation's messages for a BIOS it uses (fake-bios.bin in the system
+ * memory card whose first byte turns 1 after 30 frames, and rumbles a port's large motor while
+ * Cross is held on it and the port has a controller (retro_set_controller_port_device). It logs SwanStation's messages for a BIOS it uses (fake-bios.bin in the system
  * directory) or for none. Setting fake_hang to "yes" makes retro_run never return, as a stuck core
  * would. */
 
@@ -37,7 +37,8 @@ static retro_input_state_t input_state;
 static retro_log_printf_t log_printf;
 static struct retro_rumble_interface rumble;
 static unsigned frame_count;
-static unsigned rumbling;
+static bool rumbling[2];
+static unsigned port_devices[2];
 static uint32_t pixels[MAX_WIDTH * MAX_HEIGHT];
 static int16_t silence[2 * 735];
 static unsigned char card[CARD_BYTES];
@@ -171,7 +172,8 @@ RETRO_API void retro_init(void) {
   environment(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, &disc_control);
   if (!environment(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &rumble)) rumble.set_rumble_state = NULL;
   frame_count = 0;
-  rumbling = 0;
+  rumbling[0] = rumbling[1] = false;
+  port_devices[0] = port_devices[1] = RETRO_DEVICE_NONE;
   disc_count = 0;
   disc_index = 0;
   initial_disc = 0;
@@ -205,8 +207,7 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info) {
 }
 
 RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device) {
-  (void)port;
-  (void)device;
+  if (port < 2) port_devices[port] = device;
 }
 
 RETRO_API void retro_reset(void) { frame_count = 0; }
@@ -362,7 +363,7 @@ RETRO_API void retro_run(void) {
   unsigned width = WIDTH, height = HEIGHT;
   uint32_t fill;
   unsigned i;
-  bool cross;
+  unsigned port;
   input_poll();
   if (environment(RETRO_ENVIRONMENT_GET_VARIABLE, &hang) && hang.value && strcmp(hang.value, "yes") == 0) {
     for (;;) {
@@ -384,10 +385,13 @@ RETRO_API void retro_run(void) {
   for (i = 0; i < width * height; ++i) pixels[i] = fill + (frame_count & 0xFF) * 0x10000u;
   video(pixels, width, height, width * sizeof(uint32_t));
   audio_batch(silence, 735);
-  cross = input_state(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B) != 0;
-  if (rumble.set_rumble_state && cross != (rumbling != 0)) {
-    rumbling = cross ? 1 : 0;
-    rumble.set_rumble_state(0, RETRO_RUMBLE_STRONG, cross ? 0xFFFF : 0);
+  for (port = 0; port < 2; ++port) {
+    const bool cross = port_devices[port] != RETRO_DEVICE_NONE &&
+                       input_state(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B) != 0;
+    if (rumble.set_rumble_state && cross != rumbling[port]) {
+      rumbling[port] = cross;
+      rumble.set_rumble_state(port, RETRO_RUMBLE_STRONG, cross ? 0xFFFF : 0);
+    }
   }
   card[0] = (unsigned char)(frame_count >= 30 ? 1 : 0);
   ++frame_count;

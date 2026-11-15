@@ -37,6 +37,7 @@ class Session:
         self.epoch = None
         self.frames = 0
         self.slot = None
+        self.rumbles = []
         self.host.send_message({'type': 'hello', 'minVersion': 1, 'maxVersion': 1, 'pixelFormats': ['rgba8']})
         welcome = self.read(lambda m: m.get('type') in ('welcome', 'unsupported'))
         if welcome['type'] != 'welcome':
@@ -53,6 +54,8 @@ class Session:
                 self.take_frame()
             elif kind == 'reply' and isinstance(message.get('result'), dict) and 'epoch' in message['result']:
                 self.epoch = message['result']['epoch']
+            elif kind == 'rumble':
+                self.rumbles.append(message)
             if wanted(message):
                 return message
 
@@ -76,6 +79,22 @@ class Session:
             raise c.Failed(f'the frame sequence went back from {self.slot["sequence"]} to {slot["sequence"]}')
         self.slot = slot or self.slot
         self.frames += 1
+
+    def error(self, method, args=None):
+        """The error a call is answered with; a call that succeeds fails the test."""
+        ident = self.send(method, args)
+        reply = self.read(lambda m: m.get('type') == 'reply' and m.get('id') == ident, 6)
+        if 'error' not in reply:
+            raise c.Failed(f'{method} {args!r} was answered with {reply["result"]!r}, not an error')
+        return reply['error']
+
+    def press(self, port, buttons):
+        self.host.send_message({'type': 'input', 'port': port, 'buttons': buttons, 'leftX': 0, 'leftY': 0,
+                                'rightX': 0, 'rightY': 0})
+
+    def rumble(self, port, strong, timeout=5):
+        self.read(lambda m: m.get('type') == 'rumble' and m['port'] == port and m['strong'] == strong and
+                  m['weak'] == 0, timeout)
 
     def read_frames(self, count, timeout=10):
         until = self.frames + count
@@ -381,6 +400,89 @@ def labels_not_utf8(program, core, log):
         session.close()
 
 
+CROSS = 1 << 0
+
+
+def rumble_and_ports(program, core, log):
+    """Cross held rumbles that port's large motor, and letting go stops it; port 2 has a
+    controller only once connectedPorts is 2, and loses it at 1; connectedPorts is refused once the
+    game has ended."""
+    session = Session(program, core, log)
+    try:
+        session.start()
+        session.wait(lambda s: s and s['ready'], 10)
+        session.press(0, CROSS)
+        session.rumble(0, 65535)
+        session.press(0, 0)
+        session.rumble(0, 0)
+        session.press(1, CROSS)
+        session.read_frames(30)
+        if any(message['port'] == 1 for message in session.rumbles):
+            raise c.Failed('port 2 rumbled with no controller in it')
+        if session.call('connectedPorts', 2) is not True:
+            raise c.Failed('connectedPorts 2 was refused')
+        session.rumble(1, 65535)
+        if session.call('connectedPorts', 1) is not True:
+            raise c.Failed('connectedPorts 1 was refused')
+        session.rumble(1, 0)
+        if session.error('connectedPorts', 3)['code'] != 'argument':
+            raise c.Failed('connectedPorts 3 was not an argument error')
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
+        if session.call('connectedPorts', 2) is not False:
+            raise c.Failed('connectedPorts was taken after the game ended')
+    finally:
+        session.close()
+
+
+def discs(program, core, log):
+    """initialDisc picks the disc a playlist boots with, changeDisc swaps discs and refuses what it
+    cannot do, and a game with one disc has no discs in status."""
+    session = Session(program, core, log)
+    try:
+        paths = session.paths
+        session.start(paths['playlist'], initialDisc=1)
+        status = session.wait(lambda s: s and s['ready'], 10)
+        expected = {'labels': ['disc1', 'disc2'], 'inserted': 1, 'insertedDiscPath': paths['disc2'],
+                    'playedDiscPath': paths['disc2'], 'busy': False, 'failed': False}
+        if status.get('discs') != expected:
+            raise c.Failed(f'initialDisc 1 gave {status.get("discs")}')
+        if session.call('changeDisc', 0) is not True:
+            raise c.Failed('changeDisc 0 was refused')
+        status = session.wait(lambda s: not s['discs']['busy'] and s['discs']['playedDiscPath'] == paths['disc1'], 5)
+        if status['discs']['inserted'] != 0 or status['discs']['insertedDiscPath'] != paths['disc1'] or \
+                status['discs']['failed']:
+            raise c.Failed(f'changeDisc 0 gave {status["discs"]}')
+        if session.call('changeDisc', 2) is not False:
+            raise c.Failed('changeDisc past the last disc was taken')
+        if session.error('changeDisc', 128)['code'] != 'argument':
+            raise c.Failed('changeDisc 128 was not an argument error')
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
+        if session.call('changeDisc', 1) is not False:
+            raise c.Failed('changeDisc was taken after the game ended')
+        session.call('release')
+
+        session.start()
+        status = session.wait(lambda s: s and s['ready'], 10)
+        if 'discs' in status or session.call('changeDisc', 0) is not False:
+            raise c.Failed(f'a game of one disc has discs {status.get("discs")} or took changeDisc')
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
+        session.call('release')
+
+        session.start(paths['playlist'], initialDisc=5)
+        status = session.wait(lambda s: s and s['ended'], 10)
+        if status['errorCode'] != 'disc' or status['ready']:
+            raise c.Failed(f'initialDisc past the playlist gave {status}')
+        session.call('release')
+        if session.error('start', {'core': paths['core'], 'disc': paths['disc'], 'system': paths['system'],
+                                   'saves': paths['saves'], 'initialDisc': 0})['code'] != 'argument':
+            raise c.Failed('initialDisc with a .cue was not an argument error')
+    finally:
+        session.close()
+
+
 def core_data_bounds(program, core, log):
     """What the core hands over is bounded: an option with all 128 values and no end marker gives
     128 values, a key the core defines twice is listed once (with its first definition), and a
@@ -504,8 +606,8 @@ def main():
     failures = 0
     tests = [test for test in (stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size,
                                  ring_growth, epochs, launcher_stops_reading, launcher_exits,
-                                 log_lines_with_paths, core_data_bounds, wrong_parent, no_dll_from_working_directory,
-                                 many_games) if not options.names or test.__name__ in options.names]
+                                 log_lines_with_paths, core_data_bounds, rumble_and_ports, discs, wrong_parent,
+                                 no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
     for test in tests:
         try:
             test(options.host.resolve(), options.core.resolve(), log)

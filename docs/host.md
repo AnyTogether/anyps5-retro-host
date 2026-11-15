@@ -134,8 +134,9 @@ A crash gives none of these, so the tests expect the exact code.
   frames of the size its `fake_size` option names (640 × 480, 800 × 600 or
   1920 × 1080), `.m3u` playlists through the disc interface (each disc
   labelled with its file name, byte for byte, as SwanStation does), a memory
-  card whose first byte turns 1 after 30 frames, rumble while Cross is held,
-  and a `fake_hang` option that makes `retro_run` never return.
+  card whose first byte turns 1 after 30 frames, rumble on a port while Cross
+  is held there and the port has a controller, and a `fake_hang` option that
+  makes `retro_run` never return.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
   not. Its fake launcher checks every `ring` (its size and the growth rule)
   and every `frame` (the newest slot's epoch is the one `start` returned, and
@@ -160,6 +161,10 @@ A crash gives none of these, so the tests expect the exact code.
     with 3 after the 5-second write limit when the launcher stops reading;
   - an option of 128 values with no end marker, a key given twice and a
     playlist of 130 discs;
+  - rumble on Cross for ports 1 and 2, and `connectedPorts` giving port 2 a
+    controller and taking it away;
+  - `initialDisc` (and its errors) and `changeDisc` (a swap, and the indexes
+    and games it refuses);
   - discs whose paths hold the words the host looks for in SwanStation's log
     (with and without a BIOS), and an empty `.cue`, which ends with `disc`;
   - Linux and macOS: a host whose parent is not `--parent-pid` exits at once
