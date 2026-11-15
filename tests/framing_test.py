@@ -55,6 +55,8 @@ def reader_and_writer(parts):
         host.arrived = threading.Condition()
         host.closed = False
         host.begun = None
+        host.reading = threading.Event()
+        host.reading.set()
         threading.Thread(target=host.pump, daemon=True).start()
 
         def write(data):

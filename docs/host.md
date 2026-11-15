@@ -110,17 +110,35 @@ A crash gives none of these, so the tests expect the exact code.
   [`tests/framing_test.py`](../tests/framing_test.py) checks that rule
   without the host, on a socketpair on Linux and macOS and on a pipe on Windows.
 - [`tests/fake_core.c`](../tests/fake_core.c) is the core the sessions run:
-  640 × 480 frames, one option, `.m3u` playlists through the disc interface
-  (each disc labelled with its file name, byte for byte, as SwanStation does),
-  a memory card, rumble while Cross is held, and a `fake_hang` option that
-  makes `retro_run` never return.
+  frames of the size its `fake_size` option names (640 × 480, 800 × 600 or
+  1920 × 1080), `.m3u` playlists through the disc interface (each disc
+  labelled with its file name, byte for byte, as SwanStation does), a memory
+  card whose first byte turns 1 after 30 frames, rumble while Cross is held,
+  and a `fake_hang` option that makes `retro_run` never return.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
-  not: a stuck core (the stall limit, then `release` replying and the host
-  exiting), a core that is not a library and a missing disc (each ending the
-  game with `errorCode` `core` or `disc`), a playlist saved in Latin-1 (its
-  labels and paths reach `status` as U+FFFD), and eight games in a row with
-  `volume`, `pause` and `stop` calls in between. Run it like `conformance.py`.
-  The fake launcher refuses a body that is not UTF-8 or has a key twice.
+  not. Its fake launcher checks every `ring` (its size and the growth rule)
+  and every `frame` (the newest slot's epoch is the one `start` returned, and
+  sequences never go back), and refuses a body that is not UTF-8 or has a key
+  twice. The tests:
+  - a stuck core: the stall limit, then `release` replying and the host
+    exiting with 3;
+  - a core that is not a library and a missing disc, each ending the game
+    with `errorCode` `core` or `disc`;
+  - a playlist saved in Latin-1, whose labels and paths reach `status` as
+    U+FFFD;
+  - the memory card: loaded at start, not written before its first 5-second
+    check, and written after `stop`, `shutdown`, end-of-stream and `SIGTERM`
+    and when the launcher's process exits; a card of the wrong size is never
+    written over;
+  - ring growth: 800 × 600 frames bring slots of twice the first ring's,
+    1920 × 1080 slots of what the frame needs, and smaller frames no ring;
+  - epochs through two games;
+  - leaving: within 10 s of end-of-stream, `SIGTERM` or the launcher's exit
+    (a relay process starts the host and exits, leaving the stream open), and
+    with 3 after the 5-second write limit when the launcher stops reading;
+  - eight games in a row with `volume`, `pause` and `stop` calls in between.
+
+  Run it like `conformance.py`.
 - [`tests/ring_access.c`](../tests/ring_access.c) gives the fake launcher the
   sequentially consistent loads and stores of `latest` and `reading` that
   protocol.md asks for; Python cannot make them on shared memory itself. It

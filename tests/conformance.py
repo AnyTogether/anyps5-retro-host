@@ -165,8 +165,113 @@ def compare(expected, actual, loose, where=''):
         raise Failed(f'{where or "message"}: expected {expected!r}, got {actual!r}')
 
 
+class Grandchild:
+    """A host that a relay started (see relay): its exit is watched without being its parent. On
+    Linux the test process is made a child subreaper, so the host becomes its child once the relay
+    has gone and its exit code can be read; on macOS the code is not known (None)."""
+
+    def __init__(self, pid):
+        self.pid = pid
+        self.code = None
+        self.done = False
+        if WINDOWS:
+            import ctypes.wintypes
+            self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            self.kernel.OpenProcess.restype = ctypes.wintypes.HANDLE
+            self.handle = self.kernel.OpenProcess(0x00100000 | 0x1000 | 0x0040 | 0x0001, False, pid)
+            if not self.handle:
+                raise Failed(f'the host {pid} cannot be watched')
+            self._handle = self.handle
+
+    @staticmethod
+    def make_reaper():
+        if SYSTEM == 'linux':
+            ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)
+
+    def poll(self):
+        if self.done:
+            return self.code
+        if WINDOWS:
+            import ctypes.wintypes
+            if self.kernel.WaitForSingleObject(ctypes.wintypes.HANDLE(self.handle), 0) != 0:
+                return None
+            code = ctypes.wintypes.DWORD()
+            self.kernel.GetExitCodeProcess(ctypes.wintypes.HANDLE(self.handle), ctypes.byref(code))
+            self.code, self.done = code.value, True
+            return self.code
+        if SYSTEM == 'linux':
+            try:
+                pid, status = os.waitpid(self.pid, os.WNOHANG)
+            except ChildProcessError:
+                return None
+            if pid == 0:
+                return None
+            self.code, self.done = os.waitstatus_to_exitcode(status), True
+            return self.code
+        state = subprocess.run(['ps', '-o', 'stat=', '-p', str(self.pid)], capture_output=True, text=True).stdout
+        if state.strip() and not state.strip().startswith('Z'):
+            return None
+        self.done = True
+        return None
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None and not self.done:
+            if deadline is not None and time.monotonic() > deadline:
+                raise subprocess.TimeoutExpired(str(self.pid), timeout)
+            time.sleep(0.02)
+        return self.code
+
+    def kill(self):
+        if self.done:
+            return
+        if WINDOWS:
+            import ctypes.wintypes
+            self.kernel.TerminateProcess(ctypes.wintypes.HANDLE(self.handle), 1)
+        else:
+            try:
+                os.kill(self.pid, 9)
+            except ProcessLookupError:
+                pass
+
+
+def spawn(command, relay, log, **options):
+    """Starts the host, or with relay a launcher of its own that starts it (see relay); returns the
+    host as a process and the relay, or None."""
+    if not relay:
+        return subprocess.Popen(command, stdout=log, stderr=log, **options), None
+    Grandchild.make_reaper()
+    launcher = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--relay', *command],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, **options)
+    line = launcher.stdout.readline()
+    if not line.strip().isdigit():
+        launcher.kill()
+        raise Failed('the relay did not start the host')
+    return Grandchild(int(line)), launcher
+
+
+def relay(command):
+    """The launcher between the test and the host for the tests of the host noticing that its
+    launcher has gone. It starts the host with its own process id as --parent-pid, handing on the
+    control stream it was given (descriptor 3, or the two pipe handles), writes the host's process
+    id, and exits at the first line on its standard input, leaving the host and the stream open."""
+    at = command.index('--parent-pid')
+    command[at + 1] = str(os.getpid())
+    if WINDOWS:
+        handles = [int(command[command.index('--ipc-read') + 1]), int(command[command.index('--ipc-write') + 1])]
+        startup = subprocess.STARTUPINFO(lpAttributeList={'handle_list': handles})
+        host = subprocess.Popen(command, close_fds=True, startupinfo=startup, stdin=subprocess.DEVNULL,
+                                stdout=sys.stderr, stderr=sys.stderr)
+    else:
+        host = subprocess.Popen(command, pass_fds=(3,), stdin=subprocess.DEVNULL, stdout=sys.stderr,
+                                stderr=sys.stderr)
+    print(host.pid, flush=True)
+    sys.stdin.readline()
+    return 0
+
+
 class PosixHost:
-    def __init__(self, program, log, trace=None):
+    def __init__(self, program, log, trace=None, relay=False, cwd=None):
         ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket = ours
         child = theirs.fileno()
@@ -179,10 +284,13 @@ class PosixHost:
             # strace takes the shell's process id with exec, so the host's parent is the pid it is given.
             command = ['sh', '-c', 'exec strace -f -qq -o "$1" -e trace=%network -- "$0" --ipc-fd 3 --parent-pid $$',
                        str(program), str(trace)]
-        self.process = subprocess.Popen(command,
-                                        pass_fds=tuple(sorted({child, 3})), preexec_fn=to_three, stdout=log,
-                                        stderr=log)
+        self.process, self.relay = spawn(command, relay, log, pass_fds=tuple(sorted({child, 3})),
+                                         preexec_fn=to_three, cwd=cwd)
         theirs.close()
+
+    def close_stream(self):
+        """Ends the launcher's side of the control stream, as a launcher that exits or crashes does."""
+        self.socket.close()
 
     def send(self, data, descriptors=0):
         if descriptors:
@@ -269,9 +377,7 @@ class PosixHost:
 
     def close(self):
         self.socket.close()
-        if self.process.poll() is None:
-            self.process.kill()
-            self.process.wait()
+        end(self)
 
 
     def ring(self, message, descriptors):
@@ -300,8 +406,18 @@ class PosixHost:
         return Ring(memory, ctypes.addressof(ctypes.c_char.from_buffer(memory)))
 
 
+def end(host):
+    """Kills the host and its relay if they are still running."""
+    if host.relay and host.relay.poll() is None:
+        host.relay.kill()
+        host.relay.wait()
+    if host.process.poll() is None:
+        host.process.kill()
+        host.process.wait()
+
+
 class WindowsHost:
-    def __init__(self, program, log):
+    def __init__(self, program, log, relay=False, cwd=None):
         import msvcrt
         import threading
         self.buffer = b''
@@ -311,19 +427,34 @@ class WindowsHost:
         for handle in handles:
             os.set_handle_inheritable(handle, True)
         startup = subprocess.STARTUPINFO(lpAttributeList={'handle_list': handles})
-        self.process = subprocess.Popen(
+        self.process, self.relay = spawn(
             [str(program), '--ipc-read', str(handles[0]), '--ipc-write', str(handles[1]),
-             '--parent-pid', str(os.getpid())], close_fds=True, startupinfo=startup, stdout=log, stderr=log)
+             '--parent-pid', str(os.getpid())], relay, log, close_fds=True, startupinfo=startup, cwd=cwd)
         os.close(to_host_read)
         os.close(from_host_write)
         self.chunks = []
         self.arrived = threading.Condition()
         self.closed = False
         self.begun = None
+        self.reading = threading.Event()
+        self.reading.set()
         threading.Thread(target=self.pump, daemon=True).start()
+
+    def close_stream(self):
+        """Ends the launcher's side of the control stream, as a launcher that exits or crashes does."""
+        for fd in (self.to_host, self.from_host):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def stop_reading(self):
+        """Reads nothing more from the host after the read in progress, as a stuck launcher would."""
+        self.reading.clear()
 
     def pump(self):
         while True:
+            self.reading.wait()
             try:
                 data = os.read(self.from_host, 65536)
             except OSError:
@@ -414,14 +545,9 @@ class WindowsHost:
             raise Failed(f'the host did not exit within {timeout} s')
 
     def close(self):
-        for fd in (self.to_host, self.from_host):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if self.process.poll() is None:
-            self.process.kill()
-            self.process.wait()
+        self.close_stream()
+        self.reading.set()
+        end(self)
 
 
 class Ring:
@@ -475,6 +601,7 @@ def play(session, program, core, log, trace=None):
     paths = place(work, core)
     host = WindowsHost(program, log) if WINDOWS else PosixHost(program, log, trace)
     ring = None
+    epoch = None
     steps = session['steps']
     poll_id = 1000
     last_call = None
@@ -530,11 +657,17 @@ def play(session, program, core, log, trace=None):
                 os.close(fd)
                 raise Failed('a descriptor came with a message other than ring')
             compare(expected, message, loose)
+            if message.get('type') == 'reply' and isinstance(message.get('result'), dict) and \
+                    'epoch' in message['result']:
+                epoch = message['result']['epoch']
             if message.get('type') == 'frame':
                 if ring is None:
                     raise Failed('a frame came before any ring')
-                if ring.latest() is None:
+                slot = ring.latest()
+                if slot is None:
                     raise Failed('a frame was announced with no frame in the ring')
+                if slot['epoch'] != epoch:
+                    raise Failed(f'a frame of epoch {slot["epoch"]} came while the game of epoch {epoch} runs')
         outcome = session['outcome']
         if outcome == 'protocolError':
             code = host.exits(10)
@@ -564,6 +697,8 @@ def next_from_host(host, timeout, wanted=None):
 
 
 def main():
+    if sys.argv[1:2] == ['--relay']:
+        return relay(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', required=True, type=Path)
     parser.add_argument('--core', required=True, type=Path)

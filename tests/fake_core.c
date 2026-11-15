@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors */
 
-/* A libretro core for the host's tests. It draws 640x480 frames, plays silence, offers one
- * option, takes .m3u playlists through the disc control interface (labelling each disc with its
- * file name, byte for byte, as SwanStation does), keeps a 128 KiB memory card and rumbles port 1's
- * large motor while Cross is held. It logs SwanStation's messages for a BIOS it uses
- * (fake-bios.bin in the system directory) or for none. Setting fake_hang to "yes" makes retro_run
- * never return, as a stuck core would. */
+/* A libretro core for the host's tests. It draws frames of the size its fake_size option names
+ * (640x480 at first), plays silence, takes .m3u playlists through the disc control interface
+ * (labelling each disc with its file name, byte for byte, as SwanStation does), keeps a 128 KiB
+ * memory card whose first byte turns 1 after 30 frames, and rumbles port 1's large motor while
+ * Cross is held. It logs SwanStation's messages for a BIOS it uses (fake-bios.bin in the system
+ * directory) or for none. Setting fake_hang to "yes" makes retro_run never return, as a stuck core
+ * would. */
 
 #include <libretro.h>
 
@@ -22,6 +23,8 @@
 
 #define WIDTH 640
 #define HEIGHT 480
+#define MAX_WIDTH 1920
+#define MAX_HEIGHT 1080
 #define CARD_BYTES (128 * 1024)
 #define MAX_DISCS 8
 
@@ -34,7 +37,7 @@ static retro_log_printf_t log_printf;
 static struct retro_rumble_interface rumble;
 static unsigned frame_count;
 static unsigned rumbling;
-static uint32_t pixels[WIDTH * HEIGHT];
+static uint32_t pixels[MAX_WIDTH * MAX_HEIGHT];
 static int16_t silence[2 * 735];
 static unsigned char card[CARD_BYTES];
 static char disc_paths[MAX_DISCS][2100];
@@ -102,6 +105,14 @@ static struct retro_core_option_v2_definition definitions[] = {
      NULL,
      {{"blue", "Blue"}, {"green", "Green"}, {NULL, NULL}},
      "blue"},
+    {"fake_size",
+     "Frame size",
+     NULL,
+     "The size of the test frame.",
+     NULL,
+     NULL,
+     {{"640x480", "640 x 480"}, {"800x600", "800 x 600"}, {"1920x1080", "1920 x 1080"}, {NULL, NULL}},
+     "640x480"},
     {"fake_region",
      "Region (Restart)",
      NULL,
@@ -163,8 +174,8 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info) {
   memset(info, 0, sizeof *info);
   info->geometry.base_width = WIDTH;
   info->geometry.base_height = HEIGHT;
-  info->geometry.max_width = WIDTH;
-  info->geometry.max_height = HEIGHT;
+  info->geometry.max_width = MAX_WIDTH;
+  info->geometry.max_height = MAX_HEIGHT;
   info->geometry.aspect_ratio = 4.0f / 3.0f;
   info->timing.fps = 60.0;
   info->timing.sample_rate = 44100.0;
@@ -256,6 +267,8 @@ RETRO_API void retro_run(void) {
   struct retro_variable color = {"fake_color", NULL};
   struct retro_variable hang = {"fake_hang", NULL};
   struct retro_variable region = {"fake_region", NULL};
+  struct retro_variable size = {"fake_size", NULL};
+  unsigned width = WIDTH, height = HEIGHT;
   uint32_t fill;
   unsigned i;
   bool cross;
@@ -271,9 +284,14 @@ RETRO_API void retro_run(void) {
   }
   environment(RETRO_ENVIRONMENT_GET_VARIABLE, &color);
   environment(RETRO_ENVIRONMENT_GET_VARIABLE, &region);
+  if (!environment(RETRO_ENVIRONMENT_GET_VARIABLE, &size) || !size.value ||
+      sscanf(size.value, "%ux%u", &width, &height) != 2 || width > MAX_WIDTH || height > MAX_HEIGHT) {
+    width = WIDTH;
+    height = HEIGHT;
+  }
   fill = color.value && strcmp(color.value, "green") == 0 ? 0x0000C000u : 0x000000C0u;
-  for (i = 0; i < WIDTH * HEIGHT; ++i) pixels[i] = fill + (frame_count & 0xFF) * 0x10000u;
-  video(pixels, WIDTH, HEIGHT, WIDTH * sizeof(uint32_t));
+  for (i = 0; i < width * height; ++i) pixels[i] = fill + (frame_count & 0xFF) * 0x10000u;
+  video(pixels, width, height, width * sizeof(uint32_t));
   audio_batch(silence, 735);
   cross = input_state(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B) != 0;
   if (rumble.set_rumble_state && cross != (rumbling != 0)) {
