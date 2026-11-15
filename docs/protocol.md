@@ -171,7 +171,10 @@ until the host has exited. The host loads the core library again for each
 game it starts, so a handle closed after the first game would leave the next
 game's load unprotected. Holding the handles does not stop the host loading
 the library, and no other program can write, rename or delete the file while
-they are open. So the file it checked is the file that runs. On Linux the
+they are open. So the file it checked is the file that runs. The launcher's
+own updater cannot replace those files either, so before it updates the host
+or SwanStation the launcher shuts the host down ([`shutdown`](#shutdown)) and
+waits for it to exit. On Linux the
 launcher hashes the host executable from a
 descriptor it opened with `O_CLOEXEC` at a number above 3 (moved there with
 `F_DUPFD_CLOEXEC` if it came out lower, so the `dup2` to descriptor 3 cannot
