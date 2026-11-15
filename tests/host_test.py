@@ -45,8 +45,14 @@ class Session:
         self.call('volume', {'level': 1, 'muted': False})
 
     def read(self, wanted, timeout=10):
+        """The first message wanted accepts, within timeout seconds in all; frames and other
+        messages coming meanwhile do not move the deadline."""
+        deadline = time.monotonic() + timeout
         while True:
-            message, descriptors = self.host.read(timeout)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise c.Failed(f'the message wanted did not come within {timeout} s')
+            message, descriptors = self.host.read(left)
             kind = message.get('type')
             if kind == 'ring':
                 self.take_ring(message, descriptors)
@@ -152,17 +158,41 @@ def card_session(program, core, log, **options):
     return session, card, saved
 
 
+class Slow(c.Failed):
+    """The game took so long to pass frame 30 that the host's first 5-second card check may have
+    written the card already."""
+
+
 def play_until_card_changes(session, card, saved):
-    """Starts the game and plays past frame 30, checking that the card was not yet written (the
-    host checks it every 5 s, so a write before then can only be the end of the game)."""
+    """Starts the game and plays past frame 30, before the host's first 5-second card check, and
+    checks that the card was not yet written, so a card written after this can only be the
+    end-of-game write."""
     started = time.monotonic()
     session.start()
     status = session.wait(lambda s: s and s['ready'], 10)
     if status.get('cardUnreadable') is not False:
         raise c.Failed(f'a card the host read gives cardUnreadable {status.get("cardUnreadable")}')
     session.read_frames(40)
-    if time.monotonic() - started < 4.5 and card.read_bytes() != saved:
+    if time.monotonic() - started >= 4.5:
+        raise Slow('the game took 4.5 s to pass frame 30')
+    if card.read_bytes() != saved:
         raise c.Failed('the memory card was written before its first 5-second check')
+
+
+def played_card_session(program, core, log, **options):
+    """A card session whose game has passed frame 30 before the host's first card check; a slow
+    run is tried again, up to three times."""
+    for _ in range(3):
+        session, card, saved = card_session(program, core, log, **options)
+        try:
+            play_until_card_changes(session, card, saved)
+            return session, card, saved
+        except Slow:
+            session.close()
+        except BaseException:
+            session.close()
+            raise
+    raise c.Failed('three runs each took 4.5 s or more to pass frame 30')
 
 
 def check_card(card, saved, how):
@@ -184,9 +214,8 @@ def memory_card(program, core, log):
     for how in ways:
         # A launcher that leaves SIGTERM ignored: the host sets it back to its default itself.
         options = {'sigterm': signal.SIG_IGN} if how == 'SIGTERM' else {}
-        session, card, saved = card_session(program, core, log, **options)
+        session, card, saved = played_card_session(program, core, log, **options)
         try:
-            play_until_card_changes(session, card, saved)
             began = time.monotonic()
             if how == 'stop':
                 session.call('stop')
@@ -308,13 +337,13 @@ def launcher_stops_reading(program, core, log):
 def launcher_exits(program, core, log):
     """The launcher's process exits while the control stream stays open elsewhere: the host saves
     the card and exits within 10 s."""
-    session, card, saved = card_session(program, core, log, relay=True)
+    session, card, saved = played_card_session(program, core, log, relay=True)
     try:
-        play_until_card_changes(session, card, saved)
+        began = time.monotonic()
         session.host.relay.stdin.write(b'\n')
         session.host.relay.stdin.flush()
         session.host.relay.wait(5)
-        session.leaves("the launcher's exit", time.monotonic())
+        session.leaves("the launcher's exit", began)
         check_card(card, saved, "the launcher's exit")
     finally:
         session.close()

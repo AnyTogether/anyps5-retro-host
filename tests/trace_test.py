@@ -20,6 +20,8 @@ CASES = [
     ('a sound server\'s local socket', [READ, '3979  socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 7',
                                        '3979  connect(7, {sa_family=AF_UNIX, sun_path="/run/user/1/pulse/native"}, 110) = 0'],
      False),
+    ('a message whose bytes look like calls', [READ, '3978  sendto(3, "J\\0\\0\\0{\\"labels\\":[\\"socket(AF_INET, '
+                                              'bind(x) listen(y)\\"]}", 78, MSG_NOSIGNAL, NULL, 0) = 78'], False),
     ('an empty trace', [], True),
     ('a trace with none of the host\'s reads', [SEND], True),
     ('an IPv4 socket', [READ, '3979  socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, IPPROTO_IP) = 7'], True),

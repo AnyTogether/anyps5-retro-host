@@ -181,9 +181,10 @@ A crash gives none of these, so the tests expect the exact code.
 - CI runs everything on Linux, macOS (arm64) and Windows, and the Linux tests
   again under ThreadSanitizer. On Linux and macOS the fake core logs its BIOS
   line from a thread of its own and waits for it with a relaxed load, as
-  SwanStation may log from its threads, so ThreadSanitizer fails if what the
-  host keeps from the log (`g_game`, the BIOS and missing-disc flags, the
-  console region) is not atomic or locked. GCC 11's ThreadSanitizer reports a false
+  SwanStation may log from its threads, so ThreadSanitizer fails if the BIOS
+  flag the log callback sets, or `g_game` as that thread reads it, is not
+  atomic. The missing-disc flag and the console region get the same treatment
+  (atomic, and the game's mutex), but no test logs them from another thread. GCC 11's ThreadSanitizer reports a false
   "double lock" in `Game::Join`: libstdc++ 11 waits with
   `pthread_cond_clockwait`, which that version does not intercept. Use GCC 12
   or later, or clang 14 or later.

@@ -82,13 +82,17 @@ def network_problems(trace):
         return [f'strace wrote no trace at {trace}']
     lines = trace.read_text(encoding='utf-8', errors='replace').splitlines()
     problems = []
-    if not any(re.search(r'\brecvmsg\(3,', line) for line in lines):
+    # Each line is "<pid>  <call>(<arguments>) = <result>" (strace -f -o); only the call's name and
+    # its first argument count, never the bytes a send or receive shows.
+    calls = [re.match(r'\s*(?:\d+\s+)?(\w+)\(([^,)\s]*)', line) for line in lines]
+    if not any(call and call.group(1) == 'recvmsg' and call.group(2) == '3' for call in calls):
         problems.append(f'{trace.name} holds none of the host\'s reads, so strace traced nothing')
-    for line in lines:
-        family = re.search(r'\bsocket(?:pair)?\(([^,)\s]+)', line)
-        if family and family.group(1) not in LOCAL_FAMILIES:
+    for line, call in zip(lines, calls):
+        if not call:
+            continue
+        if call.group(1) in ('socket', 'socketpair') and call.group(2) not in LOCAL_FAMILIES:
             problems.append(f'a socket that is not AF_UNIX: {line.strip()}')
-        if re.search(r'\b(?:bind|listen)\(', line):
+        if call.group(1) in ('bind', 'listen'):
             problems.append(f'a socket bound or listening: {line.strip()}')
     return problems
 
