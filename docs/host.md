@@ -88,6 +88,12 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   `std::to_chars` for `double` are not used, since libc++ has no `from_chars`
   for `double` before LLVM 20 and marks `to_chars` unavailable before macOS
   13.3.
+- **Bounds on what the core gives.** An option's values stop at
+  `RETRO_NUM_CORE_OPTION_VALUES_MAX` (128) even without a `NULL` entry, as
+  libretro allows; an option key the core defines again is skipped, so status
+  never has a key twice; and `discs` lists at most 128 discs, the ones
+  `changeDisc` and `initialDisc` can reach. A disc past the 128th that the
+  core has inserted shows as `inserted: null`.
 - **A stuck core.** A game limit marks the game ended at once. If the core
   never returns from `retro_run`, `release` replies and then the host exits,
   as protocol.md "release" says.
@@ -152,6 +158,8 @@ A crash gives none of these, so the tests expect the exact code.
   - leaving: within 10 s of end-of-stream, `SIGTERM` or the launcher's exit
     (a relay process starts the host and exits, leaving the stream open), and
     with 3 after the 5-second write limit when the launcher stops reading;
+  - an option of 128 values with no end marker, a key given twice and a
+    playlist of 130 discs;
   - discs whose paths hold the words the host looks for in SwanStation's log
     (with and without a BIOS), and an empty `.cue`, which ends with `disc`;
   - Linux and macOS: a host whose parent is not `--parent-pid` exits at once

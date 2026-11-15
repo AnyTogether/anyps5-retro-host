@@ -381,6 +381,32 @@ def labels_not_utf8(program, core, log):
         session.close()
 
 
+def core_data_bounds(program, core, log):
+    """What the core hands over is bounded: an option with all 128 values and no end marker gives
+    128 values, a key the core defines twice is listed once (with its first definition), and a
+    playlist of 130 discs lists the 128 that changeDisc can reach."""
+    session = Session(program, core, log)
+    try:
+        playlist = Path(session.paths['playlist'])
+        playlist.write_text(''.join(f'disc{at}.cue\n' for at in range(130)), encoding='utf-8')
+        session.start(str(playlist))
+        status = session.wait(lambda s: s and s['ready'], 10)
+        many = status['options']['fake_many']
+        if many['values'] != [f'v{at}' for at in range(128)]:
+            raise c.Failed(f'an option of 128 values gave {len(many["values"])}: {many["values"][120:]}')
+        if status['options']['fake_color']['values'] != ['blue', 'green']:
+            raise c.Failed(f'a key given twice gave {status["options"]["fake_color"]}')
+        if status['discs']['labels'] != [f'disc{at}' for at in range(128)]:
+            raise c.Failed(f'a playlist of 130 discs lists {len(status["discs"]["labels"])}')
+        if session.call('changeDisc', 127) is not True:
+            raise c.Failed('changeDisc to disc 128 was refused')
+        status = session.wait(lambda s: not s['discs']['busy'], 5)
+        if status['discs']['inserted'] != 127 or status['discs']['failed']:
+            raise c.Failed(f'changeDisc to disc 128 gave {status["discs"]}')
+    finally:
+        session.close()
+
+
 def log_lines_with_paths(program, core, log):
     """A disc whose path holds the words the host looks for in SwanStation's log does not fool it:
     they count only at the start of a message. A disc that cannot be read still ends the game
@@ -478,7 +504,8 @@ def main():
     failures = 0
     tests = [test for test in (stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size,
                                  ring_growth, epochs, launcher_stops_reading, launcher_exits,
-                                 log_lines_with_paths, wrong_parent, no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
+                                 log_lines_with_paths, core_data_bounds, wrong_parent, no_dll_from_working_directory,
+                                 many_games) if not options.names or test.__name__ in options.names]
     for test in tests:
         try:
             test(options.host.resolve(), options.core.resolve(), log)

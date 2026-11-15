@@ -26,7 +26,7 @@
 #define MAX_WIDTH 1920
 #define MAX_HEIGHT 1080
 #define CARD_BYTES (128 * 1024)
-#define MAX_DISCS 8
+#define MAX_DISCS 130
 
 static retro_environment_t environment;
 static retro_video_refresh_t video;
@@ -129,8 +129,16 @@ static struct retro_core_option_v2_definition definitions[] = {
      NULL,
      {{"no", "No"}, {"yes", "Yes"}, {NULL, NULL}},
      "no"},
+    /* Filled in by retro_init: all RETRO_NUM_CORE_OPTION_VALUES_MAX values, with no NULL entry after
+     * them, as libretro allows. */
+    {"fake_many", "Many values", NULL, "Has the most values an option can have.", NULL, NULL, {{NULL, NULL}},
+     "v0"},
+    /* A key given twice; the host keeps the first. */
+    {"fake_color", "Color again", NULL, "A second definition of fake_color.", NULL, NULL,
+     {{"red", "Red"}, {NULL, NULL}}, "red"},
     {NULL, NULL, NULL, NULL, NULL, NULL, {{NULL, NULL}}, NULL},
 };
+static char many_values[RETRO_NUM_CORE_OPTION_VALUES_MAX][8];
 static struct retro_core_options_v2 options = {NULL, definitions};
 
 RETRO_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
@@ -145,7 +153,13 @@ RETRO_API void retro_set_input_state(retro_input_state_t callback) { input_state
 RETRO_API void retro_init(void) {
   struct retro_log_callback log;
   unsigned version = 0;
+  unsigned i;
   log_printf = environment(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log) ? log.log : NULL;
+  for (i = 0; i < RETRO_NUM_CORE_OPTION_VALUES_MAX; ++i) {
+    snprintf(many_values[i], sizeof many_values[i], "v%u", i);
+    definitions[4].values[i].value = many_values[i];
+    definitions[4].values[i].label = many_values[i];
+  }
   if (environment(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) && version >= 2) {
     environment(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &options);
   }

@@ -660,11 +660,12 @@ settings can still override it) and `restart` (true when a change only takes
 effect when the game is started again; until then the host keeps giving the
 core the value the game started with).
 
-`discs` has `labels` (array of strings), `inserted` (index of the inserted
-disc, or null while the tray is open), `insertedDiscPath` (string or null),
-`playedDiscPath` (the inserted disc's path once the game has run with it,
-otherwise `""`), `busy` (a disc change is in progress) and `failed` (the last
-change failed).
+`discs` has `labels` (array of at most 128 strings, the discs `changeDisc`
+reaches), `inserted` (index of the inserted disc, or null while the tray is
+open or when the core has inserted a disc past the 128th), `insertedDiscPath`
+(string or null), `playedDiscPath` (the inserted disc's path once the game has
+run with it, otherwise `""`), `busy` (a disc change is in progress) and
+`failed` (the last change failed).
 
 Text the host takes from the core (option titles and labels, disc labels and
 paths, `error`) can hold bytes that are not UTF-8: SwanStation labels a

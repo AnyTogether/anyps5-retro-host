@@ -61,6 +61,8 @@ constexpr size_t kPathBytes = 3 * 32767 + 1;
 constexpr size_t kBiosSizes[] = {0x80000, 0x400000, 0x3E66F0};
 constexpr size_t kTextBytes = 256;
 constexpr size_t kErrorBytes = 1024;
+// changeDisc and initialDisc reach discs 0 to 127, so status lists no more than that.
+constexpr unsigned kMaxDiscs = 128;
 
 constexpr char kResolutionOption[] = "swanstation_GPU_ResolutionScale";
 
@@ -360,7 +362,7 @@ void Game::ApplyPendingWork() {
 void Game::RefreshDiscs() {
   const auto& control = disc_control_->callbacks;
   if (!control.get_num_images || !control.get_image_index || !control.get_eject_state) return;
-  const unsigned count = control.get_num_images();
+  const unsigned count = std::min(control.get_num_images(), kMaxDiscs);
   Disc next;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -387,7 +389,7 @@ void Game::RefreshDiscs() {
       next.paths.emplace_back();
     }
   }
-  if (control.get_eject_state()) {
+  if (control.get_eject_state() || control.get_image_index() >= count) {
     next.inserted.reset();
   } else {
     next.inserted = control.get_image_index();
@@ -481,6 +483,8 @@ bool Game::Environment(unsigned command, void* data) {
       options_.clear();
       for (const retro_core_option_v2_definition* definition = options ? options->definitions : nullptr;
            definition && definition->key; ++definition) {
+        const auto same_key = [&](const Option& known) { return known.key == definition->key; };
+        if (std::any_of(options_.begin(), options_.end(), same_key)) continue;
         Option option;
         option.key = definition->key;
         const std::string text = definition->desc ? definition->desc : definition->key;
@@ -488,7 +492,8 @@ bool Game::Environment(unsigned command, void* data) {
         option.restart = (text.size() >= 9 && text.compare(text.size() - 9, 9, "(Restart)") == 0) ||
                          Listed(kStartOnlyOptions, std::size(kStartOnlyOptions), option.key);
         option.fixed = Listed(kFixedOptions, std::size(kFixedOptions), option.key);
-        for (const retro_core_option_value* value = definition->values; value->value; ++value) {
+        for (const retro_core_option_value* value = definition->values;
+             value != definition->values + RETRO_NUM_CORE_OPTION_VALUES_MAX && value->value; ++value) {
           option.values.emplace_back(value->value);
           option.labels.emplace_back(ClipUtf8(value->label ? value->label : value->value, kTextBytes));
         }
