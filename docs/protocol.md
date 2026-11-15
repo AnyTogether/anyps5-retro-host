@@ -91,8 +91,13 @@ nothing cannot pass.
     with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` that only the launcher holds,
     and only then resumed. So the host never runs outside the job, and it
     ends when the launcher ends.
-  - The host calls `SetErrorMode(SEM_FAILCRITICALERRORS |
-    SEM_NOGPFAULTERRORBOX)` before loading a core.
+  - The host calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`
+    and `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)` before
+    loading a core, and loads the core with
+    `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`. So a
+    library the core or the sound library loads by name comes from the
+    host's directory, the core's directory (for the core's own imports) or
+    System32, never from the working directory or `PATH`.
 - **Linux.**
   - The launcher's end keeps `SOCK_CLOEXEC`. The host's end is moved to
     descriptor 3 in the child (`posix_spawn_file_actions_adddup2`, which

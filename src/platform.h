@@ -36,7 +36,9 @@ uint32_t ProcessId();
 
 // The process setup protocol.md asks for before anything else: on Linux, descriptors above 3
 // closed, every signal unblocked, PR_SET_PDEATHSIG and the parent check; on macOS SO_NOSIGPIPE
-// is set by the channel; on Windows the error mode. False means the launcher is already gone.
+// is set by the channel; on Windows the DLL search path (the application's directory, System32
+// and added directories only, never the working directory or PATH) and the error mode. False
+// means the launcher is already gone.
 bool PrepareProcess(const Arguments& arguments);
 
 // Calls on_gone once, from another thread, when the launcher exits or (on Linux and macOS) the

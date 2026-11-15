@@ -144,6 +144,8 @@ A crash gives none of these, so the tests expect the exact code.
   - leaving: within 10 s of end-of-stream, `SIGTERM` or the launcher's exit
     (a relay process starts the host and exits, leaving the stream open), and
     with 3 after the 5-second write limit when the launcher stops reading;
+  - Windows: a library the core loads by name is not taken from the host's
+    working directory;
   - eight games in a row with `volume`, `pause` and `stop` calls in between.
 
   Run it like `conformance.py`.

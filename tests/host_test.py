@@ -378,6 +378,26 @@ def labels_not_utf8(program, core, log):
         session.close()
 
 
+def no_dll_from_working_directory(program, core, log):
+    """Windows: a library the core loads by name is not taken from the host's working directory.
+    The fake core fails the game if it finds anyps5-cwd-probe.dll."""
+    if not c.WINDOWS:
+        return
+    folder = Path(tempfile.mkdtemp(prefix='retro-host-cwd-'))
+    try:
+        shutil.copy(Path(core).with_name('ring_access.dll'), folder / 'anyps5-cwd-probe.dll')
+        session = Session(program, core, log, cwd=str(folder))
+        try:
+            session.start()
+            status = session.wait(lambda s: s and (s['ready'] or s['ended']), 10)
+            if not status['ready']:
+                raise c.Failed(f'the core loaded a library from the working directory: {status}')
+        finally:
+            session.close()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def many_games(program, core, log):
     session = Session(program, core, log)
     try:
@@ -412,7 +432,8 @@ def main():
     c.load_atomics(options.core.resolve())
     failures = 0
     tests = [test for test in (stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size,
-                                 ring_growth, epochs, launcher_stops_reading, launcher_exits, many_games) if not options.names or test.__name__ in options.names]
+                                 ring_growth, epochs, launcher_stops_reading, launcher_exits,
+                                 no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
     for test in tests:
         try:
             test(options.host.resolve(), options.core.resolve(), log)

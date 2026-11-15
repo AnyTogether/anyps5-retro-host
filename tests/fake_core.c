@@ -237,6 +237,17 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game) {
   enum retro_pixel_format format = RETRO_PIXEL_FORMAT_XRGB8888;
   if (!game || !game->path) return false;
   if (!environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format)) return false;
+#ifdef _WIN32
+  /* A library loaded by name, as a core or miniaudio may load one, must not come from the host's
+   * working directory. host_test.py puts one there; finding it fails the game. */
+  {
+    HMODULE probe = LoadLibraryA("anyps5-cwd-probe.dll");
+    if (probe) {
+      FreeLibrary(probe);
+      return false;
+    }
+  }
+#endif
   if (log_printf) {
     if (has_bios()) log_printf(RETRO_LOG_INFO, "Using BIOS 'fake-bios.bin': fake BIOS\n");
     else log_printf(RETRO_LOG_INFO, "No BIOS image found for NTSC-U/C region\n");

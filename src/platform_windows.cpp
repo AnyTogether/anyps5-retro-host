@@ -125,6 +125,7 @@ int64_t NowMs() {
 uint32_t ProcessId() { return GetCurrentProcessId(); }
 
 bool PrepareProcess(const Arguments& arguments) {
+  SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   g_launcher = OpenProcess(SYNCHRONIZE, FALSE, arguments.parent_pid);
   return g_launcher != nullptr && WaitForSingleObject(g_launcher, 0) == WAIT_TIMEOUT;
@@ -161,7 +162,9 @@ Library::~Library() { Close(); }
 bool Library::Open(const std::string& path, std::string& error) {
   Close();
   const std::wstring wide = Wide(path);
-  handle_ = wide.empty() ? nullptr : LoadLibraryExW(wide.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+  handle_ = wide.empty() ? nullptr
+                         : LoadLibraryExW(wide.c_str(), nullptr,
+                                          LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
   if (!handle_) {
     error = "The core could not be loaded (error " + std::to_string(GetLastError()) + ").";
     return false;
