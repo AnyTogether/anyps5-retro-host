@@ -78,7 +78,10 @@ bool Exists(const std::string& path);
 bool IsDirectory(const std::string& path);
 bool CreateDirectories(const std::string& path);
 std::optional<std::string> ReadWholeFile(const std::string& path);
-// Replaces the file at path with data: written beside it, then renamed over it.
+// Replaces the file at path with data: written beside it and flushed to the disk (fsync, or
+// F_FULLFSYNC on macOS; FlushFileBuffers on Windows), then renamed over it, and on Linux and macOS
+// the directory flushed too, so a power cut leaves the old file or the new one. A failed write
+// removes the file beside it.
 bool WriteFileAtomically(const std::string& path, const std::string& data);
 
 }  // namespace retro_host

@@ -219,14 +219,26 @@ std::optional<std::string> ReadWholeFile(const std::string& path) {
 
 bool WriteFileAtomically(const std::string& path, const std::string& data) {
   const std::wstring target = Wide(path);
+  if (target.empty()) return false;
   const std::wstring temporary = target + L".writing";
-  {
-    std::ofstream out(std::filesystem::path(temporary), std::ios::binary | std::ios::trunc);
-    if (!out) return false;
-    out.write(data.data(), static_cast<std::streamsize>(data.size()));
-    if (!out.flush()) return false;
+  HANDLE file =
+      CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  size_t sent = 0;
+  bool written = true;
+  while (written && sent < data.size()) {
+    DWORD wrote = 0;
+    const DWORD chunk = static_cast<DWORD>(std::min<size_t>(data.size() - sent, 1u << 20));
+    written = ::WriteFile(file, data.data() + sent, chunk, &wrote, nullptr) && wrote != 0;
+    sent += wrote;
   }
-  return MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+  written = written && FlushFileBuffers(file);
+  if (!CloseHandle(file) || !written ||
+      !MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    DeleteFileW(temporary.c_str());
+    return false;
+  }
+  return true;
 }
 
 std::unique_ptr<Channel> OpenChannel(const Arguments& arguments) {

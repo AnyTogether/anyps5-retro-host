@@ -339,15 +339,47 @@ std::optional<std::string> ReadWholeFile(const std::string& path) {
   return data.str();
 }
 
+namespace {
+
+// Asks the system to put the file's data on the disk before it returns. On macOS fsync only
+// reaches the drive's cache; F_FULLFSYNC flushes that too, where the file system has it.
+bool Flush(int fd) {
+#ifdef __APPLE__
+  if (fcntl(fd, F_FULLFSYNC) == 0) return true;
+#endif
+  return fsync(fd) == 0;
+}
+
+bool WriteAll(int fd, const std::string& data) {
+  size_t written = 0;
+  while (written < data.size()) {
+    const ssize_t result = write(fd, data.data() + written, data.size() - written);
+    if (result < 0 && errno == EINTR) continue;
+    if (result <= 0) return false;
+    written += static_cast<size_t>(result);
+  }
+  return true;
+}
+
+}  // namespace
+
 bool WriteFileAtomically(const std::string& path, const std::string& data) {
   const std::string temporary = path + ".writing";
-  {
-    std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-    if (!out) return false;
-    out.write(data.data(), static_cast<std::streamsize>(data.size()));
-    if (!out.flush()) return false;
+  const int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+  if (fd < 0) return false;
+  const bool written = WriteAll(fd, data) && Flush(fd);
+  if (close(fd) != 0 || !written || std::rename(temporary.c_str(), path.c_str()) != 0) {
+    unlink(temporary.c_str());
+    return false;
   }
-  return std::rename(temporary.c_str(), path.c_str()) == 0;
+  const size_t slash = path.find_last_of('/');
+  const std::string directory = slash == std::string::npos ? "." : slash == 0 ? "/" : path.substr(0, slash);
+  const int folder = open(directory.c_str(), O_RDONLY | O_CLOEXEC);
+  if (folder >= 0) {
+    Flush(folder);
+    close(folder);
+  }
+  return true;
 }
 
 std::unique_ptr<Channel> OpenChannel(const Arguments& arguments) {
