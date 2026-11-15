@@ -77,6 +77,17 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   never returns from `retro_run`, `release` replies and then the host exits,
   as protocol.md "release" says.
 
+## Exit codes
+
+| Code | When |
+| --- | --- |
+| 0 | After `shutdown`, end-of-stream, the launcher's exit or `SIGTERM`, after `unsupported`, and when the launcher is already gone at start |
+| 2 | After a [protocol error](protocol.md#protocol-errors) |
+| 3 | After a missed limit: a write that took 5 s, leaving that took 10 s, a game that did not end 5 s after `stop`, or a `release` of a game whose core is stuck |
+| 64 | A command line that is not the one protocol.md gives |
+
+A crash gives none of these, so the tests expect the exact code.
+
 ## Tests
 
 - `json_test` checks the JSON and path rules.

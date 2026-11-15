@@ -82,8 +82,8 @@ def stuck_core(program, core, log):
         if session.call('release') is not None:
             raise c.Failed('release did not reply null')
         code = session.host.exits(5)
-        if code == 0:
-            raise c.Failed('the host exited with 0 after a stuck core')
+        if code != c.EXIT_MISSED_LIMIT:
+            raise c.Failed(f'the host exited with {code}, not {c.EXIT_MISSED_LIMIT}, after a stuck core')
     finally:
         session.close()
 

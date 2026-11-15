@@ -26,6 +26,11 @@ SYSTEM = 'windows' if WINDOWS else ('macos' if sys.platform == 'darwin' else 'li
 IGNORED = {'frame', 'rumble'}
 NONE = 0xFFFFFFFF
 WRITE_LIMIT = 5.0
+# The host's exit codes (docs/host.md "Exit codes"). A crash gives none of them: a negative code
+# for the signal on Linux and macOS, an NTSTATUS such as 0xC0000005 on Windows.
+EXIT_CLEAN = 0
+EXIT_PROTOCOL_ERROR = 2
+EXIT_MISSED_LIMIT = 3
 
 
 class Failed(Exception):
@@ -509,8 +514,8 @@ def play(session, program, core, log, trace=None):
         outcome = session['outcome']
         if outcome == 'protocolError':
             code = host.exits(10)
-            if code == 0:
-                raise Failed('the host exited with 0 after a protocol error')
+            if code != EXIT_PROTOCOL_ERROR:
+                raise Failed(f'the host exited with {code}, not {EXIT_PROTOCOL_ERROR}, after a protocol error')
         elif outcome in ('clean', 'unsupported') and host.process.poll() is None:
             host.send_message({'type': 'shutdown'})
             if host.exits(10) != 0:
