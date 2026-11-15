@@ -68,8 +68,15 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   configured name without looking inside it, so a damaged one boots and never
   shows a frame; that game ends with `didNotStart` after 60 seconds.
 - **Missing disc tracks.** SwanStation boots the BIOS with no disc, logging
-  `Booting BIOS with no disc`, when it cannot open the disc image (a `.cue`
-  whose `.bin` is missing). The host ends that game with `errorCode` `disc`.
+  `Failed to load CD image '<path>': <why>. Booting BIOS with no disc.`, when
+  it cannot open the disc image (a `.cue` whose `.bin` is missing). The host
+  ends that game with `errorCode` `disc`.
+- **Reading SwanStation's log.** Its libretro log lines are `[<channel or
+  function>] <message>`. The host matches `Using BIOS '`, `Falling back to
+  possibly-incompatible image '`, `Console Region: ` and `Failed to load CD
+  image '` at the start of the message (the last also by its end), never
+  anywhere in the line, because SwanStation logs the disc's path (`Loading CD
+  image '<path>'...`), and a path can hold those words.
 - **Disc changes.** These happen between two frames: open the tray, choose
   the disc, close the tray, then check the result. A change that fails puts
   the previous disc back and sets `discs.failed`.
@@ -145,6 +152,8 @@ A crash gives none of these, so the tests expect the exact code.
   - leaving: within 10 s of end-of-stream, `SIGTERM` or the launcher's exit
     (a relay process starts the host and exits, leaving the stream open), and
     with 3 after the 5-second write limit when the launcher stops reading;
+  - discs whose paths hold the words the host looks for in SwanStation's log
+    (with and without a BIOS), and an empty `.cue`, which ends with `disc`;
   - Linux and macOS: a host whose parent is not `--parent-pid` exits at once
     with 0;
   - Windows: a library the core loads by name is not taken from the host's

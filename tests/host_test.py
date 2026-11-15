@@ -381,6 +381,27 @@ def labels_not_utf8(program, core, log):
         session.close()
 
 
+def log_lines_with_paths(program, core, log):
+    """A disc whose path holds the words the host looks for in SwanStation's log does not fool it:
+    they count only at the start of a message. A disc that cannot be read still ends the game
+    with errorCode disc."""
+    cases = [("Using BIOS 'x'.cue", False, 'bios'), ('x. Booting BIOS with no disc.cue', True, None),
+             ('empty.cue', True, 'disc')]
+    for name, bios, code in cases:
+        session = Session(program, core, log)
+        try:
+            disc = Path(session.paths['disc']).with_name(name)
+            disc.write_text('' if name == 'empty.cue' else 'FILE "game.bin" BINARY\n', encoding='utf-8')
+            if not bios:
+                (Path(session.paths['system']) / 'fake-bios.bin').unlink()
+            session.start(str(disc))
+            status = session.wait(lambda s: s and (s['ready'] or s['ended']), 10)
+            if (status['errorCode'] or None) != code:
+                raise c.Failed(f'{name} gave errorCode {status["errorCode"]!r}, not {code!r}')
+        finally:
+            session.close()
+
+
 def wrong_parent(program, core, log):
     """Linux and macOS: a host whose parent is not --parent-pid exits at once with 0 and sends
     nothing."""
@@ -457,7 +478,7 @@ def main():
     failures = 0
     tests = [test for test in (stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size,
                                  ring_growth, epochs, launcher_stops_reading, launcher_exits,
-                                 wrong_parent, no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
+                                 log_lines_with_paths, wrong_parent, no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
     for test in tests:
         try:
             test(options.host.resolve(), options.core.resolve(), log)

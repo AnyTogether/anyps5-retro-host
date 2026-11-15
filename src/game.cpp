@@ -104,6 +104,27 @@ std::string Directory(const std::string& path) {
   return slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
 }
 
+bool StartsWith(std::string_view text, std::string_view start) {
+  return text.size() >= start.size() && text.compare(0, start.size(), start) == 0;
+}
+
+bool EndsWith(std::string_view text, std::string_view end) {
+  return text.size() >= end.size() && text.compare(text.size() - end.size(), end.size(), end) == 0;
+}
+
+// The message in one of SwanStation's log lines, "[<channel or function>] <message>\n"
+// (src/libretro/libretro_host_interface.cpp, LibretroLogCallback), without the trailing line end.
+// A line without that start is all message. The host matches its words at the start of the
+// message, since a message can hold the disc's path ("Loading CD image '<path>'...").
+std::string_view LogMessage(std::string_view line) {
+  if (StartsWith(line, "[")) {
+    const size_t end = line.find("] ");
+    if (end != std::string_view::npos) line.remove_prefix(end + 2);
+  }
+  while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.remove_suffix(1);
+  return line;
+}
+
 bool IsAbsolute(const std::string& path) {
   if (!path.empty() && IsSeparator(path[0])) return true;
 #ifdef _WIN32
@@ -645,11 +666,14 @@ int16_t Game::InputState(unsigned port, unsigned device, unsigned index, unsigne
 }
 
 void Game::Log(int level, const char* text) {
-  if (std::strstr(text, "Using BIOS '") || std::strstr(text, "Falling back to possibly-incompatible image")) {
+  const std::string_view message = LogMessage(text);
+  if (StartsWith(message, "Using BIOS '") || StartsWith(message, "Falling back to possibly-incompatible image '")) {
     bios_found_ = true;
   }
-  if (const char* region = std::strstr(text, "Console Region: ")) console_region_ = region + 16;
-  if (std::strstr(text, "Booting BIOS with no disc")) disc_missing_ = true;
+  if (StartsWith(message, "Console Region: ")) console_region_ = std::string(message.substr(16));
+  if (StartsWith(message, "Failed to load CD image '") && EndsWith(message, ". Booting BIOS with no disc.")) {
+    disc_missing_ = true;
+  }
   std::fprintf(stderr, "[core %d] %s", level, text);
   const size_t length = std::strlen(text);
   if (length == 0 || text[length - 1] != '\n') std::fputc('\n', stderr);

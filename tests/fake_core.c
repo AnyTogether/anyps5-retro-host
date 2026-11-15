@@ -211,6 +211,15 @@ static bool ends_with(const char* text, const char* suffix) {
   return true;
 }
 
+static bool is_empty(const char* path) {
+  FILE* file = fopen(path, "rb");
+  bool empty;
+  if (!file) return false;
+  empty = fgetc(file) == EOF;
+  fclose(file);
+  return empty;
+}
+
 static void load_playlist(const char* path) {
   char line[1024];
   char directory[1024];
@@ -248,9 +257,17 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game) {
     }
   }
 #endif
+  /* SwanStation's lines, as its libretro log callback writes them: "[<channel or function>]
+   * <message>". The disc's path comes first, so a path that holds the host's words must not count. */
   if (log_printf) {
-    if (has_bios()) log_printf(RETRO_LOG_INFO, "Using BIOS 'fake-bios.bin': fake BIOS\n");
-    else log_printf(RETRO_LOG_INFO, "No BIOS image found for NTSC-U/C region\n");
+    log_printf(RETRO_LOG_INFO, "[System] Loading CD image '%s'...\n", game->path);
+    if (has_bios()) log_printf(RETRO_LOG_INFO, "[HostInterface] Using BIOS 'fake-bios.bin': fake BIOS\n");
+    else log_printf(RETRO_LOG_INFO, "[HostInterface] No BIOS image found for NTSC-U/C region\n");
+    if (is_empty(game->path)) {
+      log_printf(RETRO_LOG_WARN,
+                 "[System::Boot] Failed to load CD image '%s': the file is empty. Booting BIOS with no disc.\n",
+                 game->path);
+    }
   }
   if (ends_with(game->path, ".m3u")) {
     load_playlist(game->path);
