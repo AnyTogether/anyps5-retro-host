@@ -95,8 +95,11 @@ A crash gives none of these, so the tests expect the exact code.
   protocol.md "Fixtures". It starts the host as a launcher would (a
   socketpair at descriptor 3, or two pipes passed with a handle list on
   Windows), plays every session whose `tests` includes `host`, and checks the
-  outcome. `--strace` (Linux) records the host's network calls for the CI
-  check. A read's timeout is for a message to begin: once its first byte has
+  outcome. `--strace` (Linux) records each session's network calls and fails
+  the session on what protocol.md "Network" forbids, or when its trace is
+  missing or has none of the host's reads;
+  [`tests/trace_test.py`](../tests/trace_test.py) checks that rule on sample
+  strace lines. A read's timeout is for a message to begin: once its first byte has
   come, the reader waits the 5-second write limit of protocol.md "Framing",
   counted from that byte, for the rest of the length and the body, because
   giving up in the middle of a message would read the next body as a length.

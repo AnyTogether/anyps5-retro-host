@@ -9,6 +9,7 @@ import ctypes
 import json
 import mmap
 import os
+import re
 import select
 import shutil
 import socket
@@ -67,6 +68,29 @@ def decode(body):
         raise Failed(f'the host sent a body that is not UTF-8: {problem}')
     except ValueError as problem:
         raise Failed(f'the host sent a body that is not JSON: {problem}')
+
+
+LOCAL_FAMILIES = {'AF_UNIX', 'AF_LOCAL', 'PF_UNIX', 'PF_LOCAL'}
+
+
+def network_problems(trace):
+    """What breaks protocol.md "Network" in the strace -f -e trace=%network log of one session:
+    a socket of any family but AF_UNIX, any bind or listen, and a log that cannot be trusted,
+    because it is missing or holds none of the host's reads of descriptor 3, which every session
+    has."""
+    if not trace.is_file():
+        return [f'strace wrote no trace at {trace}']
+    lines = trace.read_text(encoding='utf-8', errors='replace').splitlines()
+    problems = []
+    if not any(re.search(r'\brecvmsg\(3,', line) for line in lines):
+        problems.append(f'{trace.name} holds none of the host\'s reads, so strace traced nothing')
+    for line in lines:
+        family = re.search(r'\bsocket(?:pair)?\(([^,)\s]+)', line)
+        if family and family.group(1) not in LOCAL_FAMILIES:
+            problems.append(f'a socket that is not AF_UNIX: {line.strip()}')
+        if re.search(r'\b(?:bind|listen)\(', line):
+            problems.append(f'a socket bound or listening: {line.strip()}')
+    return problems
 
 
 def close_all(descriptors):
@@ -523,6 +547,10 @@ def play(session, program, core, log, trace=None):
     finally:
         host.close()
         shutil.rmtree(work, ignore_errors=True)
+    if trace:
+        problems = network_problems(trace)
+        if problems:
+            raise Failed('; '.join(problems))
 
 
 def next_from_host(host, timeout, wanted=None):
@@ -541,7 +569,9 @@ def main():
     parser.add_argument('--core', required=True, type=Path)
     parser.add_argument('--log', type=Path)
     parser.add_argument('--sessions', type=Path, default=SESSIONS)
-    parser.add_argument('--strace', type=Path, help='Linux: trace the network calls of the host into this file')
+    parser.add_argument('--strace', type=Path,
+                        help='Linux: trace the host\'s network calls into this file, with the session\'s name '
+                             'added, and fail a session that breaks protocol.md "Network" or has no trace')
     parser.add_argument('names', nargs='*')
     options = parser.parse_args()
     options.host = options.host.resolve()

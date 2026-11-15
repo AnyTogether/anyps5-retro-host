@@ -57,8 +57,10 @@ network connection under this rule, and neither is playing sound through the
 system's sound service over its local socket (PulseAudio or PipeWire on
 Linux). The host repository's CI traces the host's network calls with
 `strace -f -e trace=%network` on Linux while it runs the conformance
-sessions, and fails on any `AF_INET`, `AF_INET6`, `AF_PACKET` or
-`AF_NETLINK` socket, and on any `bind` or `listen`.
+sessions. A session fails on any socket that is not `AF_UNIX`, on any `bind`
+or `listen`, and when its trace is missing or holds none of the host's reads
+of the control stream, which every session has, so a trace that recorded
+nothing cannot pass.
 
 ### Starting the host
 
