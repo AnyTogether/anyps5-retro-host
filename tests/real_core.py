@@ -236,7 +236,7 @@ try:
     stop()
     host.send_message({'type': 'shutdown'})
     code = host.exits(15)
-    if code != 0:
+    if code != c.EXIT_CLEAN:
         raise c.Failed(f'the host exited with {code}')
     print('real core passed')
 except c.Failed as error:
