@@ -28,6 +28,10 @@ int main() {
   Expect(ParseJson(R"({"type":"ping","id":1})").has_value(), "a plain object parses");
   Expect(!ParseJson(R"({"a":1,"a":2})"), "a duplicate key is refused");
   Expect(!ParseJson(R"({"a":{"b":1,"b":1}})"), "a nested duplicate key is refused");
+  std::string wide = "{";
+  for (int at = 0; at < 20000; ++at) wide += "\"k" + std::to_string(at) + "\":0,";
+  Expect(ParseJson(wide + "\"last\":0}").has_value(), "an object of 20001 keys parses");
+  Expect(!ParseJson(wide + "\"k123\":0}"), "a duplicate key after 20000 others is refused");
   Expect(!ParseJson(R"({"a":"\ud800"})"), "a lone high surrogate is refused");
   Expect(!ParseJson(R"({"a":"\udc00"})"), "a lone low surrogate is refused");
   Expect(ParseJson(R"({"a":"\ud83d\ude00"})").has_value(), "a surrogate pair parses");

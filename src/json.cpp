@@ -3,6 +3,7 @@
 
 #include "json.h"
 
+#include <algorithm>
 #include <clocale>
 #include <cmath>
 #include <cstdio>
@@ -97,6 +98,16 @@ size_t AppendCharacter(std::string& out, std::string_view text, size_t at) {
   return at + length;
 }
 
+// Whether no key appears twice: sorted, so an object of n members costs n log n, not n squared.
+bool UniqueKeys(const JsonObject& members) {
+  if (members.size() < 2) return true;
+  std::vector<std::string_view> keys;
+  keys.reserve(members.size());
+  for (const auto& member : members) keys.emplace_back(member.first);
+  std::sort(keys.begin(), keys.end());
+  return std::adjacent_find(keys.begin(), keys.end()) == keys.end();
+}
+
 class Parser {
  public:
   explicit Parser(std::string_view text) : text_(text) {}
@@ -153,9 +164,6 @@ class Parser {
       if (Peek() != '"') return std::nullopt;
       auto key = String();
       if (!key) return std::nullopt;
-      for (const auto& member : members) {
-        if (member.first == *key) return std::nullopt;
-      }
       SkipSpace();
       if (Peek() != ':') return std::nullopt;
       ++at_;
@@ -168,7 +176,7 @@ class Parser {
         ++at_;
         continue;
       }
-      if (Peek() != '}') return std::nullopt;
+      if (Peek() != '}' || !UniqueKeys(members)) return std::nullopt;
       ++at_;
       return Json(std::move(members));
     }
