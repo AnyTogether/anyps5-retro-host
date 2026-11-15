@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
+#include <clocale>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "json.h"
@@ -62,6 +65,25 @@ int main() {
   Expect(ClipUtf8("a\xc3\xa9", 2) == "a", "clipping keeps whole characters");
   Expect(ClipUtf8("ab\xff", 3) == "ab", "clipping cleans first, then keeps whole characters");
   Expect(ClipUtf8("\xff", 3) == bad, "a clipped U+FFFD that fits is kept");
+
+  const char* const comma_locales[] = {"de_DE.UTF-8", "de_DE.utf8", "de_DE", "German_Germany.1252", "de-DE"};
+  const char* comma = nullptr;
+  for (const char* name : comma_locales) {
+    if (std::setlocale(LC_NUMERIC, name) && std::strcmp(std::localeconv()->decimal_point, ",") == 0) {
+      comma = name;
+      break;
+    }
+  }
+  if (comma) {
+    const auto half = ParseJson(R"({"a":1.5})");
+    Expect(half && half->Find("a")->AsNumber() == 1.5, "a number reads with a '.' under a decimal-comma locale");
+    Expect(Json(4.0 / 3.0).Serialize() == "1.3333333333333333", "a number writes with a '.' under a decimal-comma locale");
+    std::setlocale(LC_NUMERIC, "C");
+  } else if (std::getenv("CI")) {
+    Expect(false, "CI has a locale with a decimal comma (de_DE)");
+  } else {
+    std::printf("No locale with a decimal comma here, so the locale checks did not run.\n");
+  }
 
   using retro_host::IsProtocolPath;
   Expect(IsProtocolPath("/home/a/b.cue", false), "a POSIX absolute path");

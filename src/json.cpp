@@ -3,14 +3,51 @@
 
 #include "json.h"
 
+#include <clocale>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+
+#ifdef _WIN32
+#include <locale.h>
+#elif defined(__APPLE__)
+#include <xlocale.h>
+#else
+#include <locale.h>
+#endif
 
 namespace retro_host {
 namespace {
 
 constexpr int kMaxDepth = 64;
+
+// JSON numbers are read and written in the C locale, whatever LC_NUMERIC the process has: a core
+// or a library it loads may call setlocale, and a locale with a decimal comma would make strtod
+// stop at the '.' and %g write 1,333. std::from_chars and std::to_chars for double are not used:
+// libc++ marks to_chars for double unavailable before macOS 13.3, and has no from_chars for
+// double before LLVM 20.
+#ifdef _WIN32
+_locale_t CLocale() {
+  static const _locale_t locale = _create_locale(LC_NUMERIC, "C");
+  return locale;
+}
+double ReadDouble(const char* text, char** end) { return _strtod_l(text, end, CLocale()); }
+void WriteDouble(char* out, size_t size, double value) {
+  _snprintf_s_l(out, size, _TRUNCATE, "%.17g", CLocale(), value);
+}
+#else
+locale_t CLocale() {
+  static const locale_t locale = newlocale(LC_NUMERIC_MASK, "C", static_cast<locale_t>(0));
+  return locale;
+}
+double ReadDouble(const char* text, char** end) { return strtod_l(text, end, CLocale()); }
+void WriteDouble(char* out, size_t size, double value) {
+  const locale_t previous = uselocale(CLocale());
+  std::snprintf(out, size, "%.17g", value);
+  uselocale(previous);
+}
+#endif
+
 constexpr char kReplacement[] = "\xEF\xBF\xBD";
 
 // The length of the UTF-8 character at text[at], or 0 when the bytes there are not one: an
@@ -276,7 +313,7 @@ class Parser {
     }
     const std::string digits(text_.substr(start, at_ - start));
     char* end = nullptr;
-    const double value = std::strtod(digits.c_str(), &end);
+    const double value = ReadDouble(digits.c_str(), &end);
     if (end != digits.c_str() + digits.size() || !std::isfinite(value)) return std::nullopt;
     return Json(value);
   }
@@ -344,7 +381,7 @@ void Json::SerializeTo(std::string& out) const {
     if (value == std::floor(value) && std::fabs(value) < 9007199254740992.0) {
       std::snprintf(text, sizeof text, "%lld", static_cast<long long>(value));
     } else {
-      std::snprintf(text, sizeof text, "%.17g", value);
+      WriteDouble(text, sizeof text, value);
     }
     out += text;
   } else if (IsString()) {

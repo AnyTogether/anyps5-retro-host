@@ -73,6 +73,14 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 - **Disc changes.** These happen between two frames: open the tray, choose
   the disc, close the tray, then check the result. A change that fails puts
   the previous disc back and sets `discs.failed`.
+- **Numbers.** JSON numbers are read and written in the C locale
+  (`strtod_l` and `uselocale`, or `_strtod_l` and `_snprintf_s_l` on
+  Windows), so a core or library that calls `setlocale` cannot make the host
+  write `1,333` for the aspect. `json_test` checks this under a German locale;
+  CI generates `de_DE.UTF-8` on Linux for it. `std::from_chars` and
+  `std::to_chars` for `double` are not used, since libc++ has no `from_chars`
+  for `double` before LLVM 20 and marks `to_chars` unavailable before macOS
+  13.3.
 - **A stuck core.** A game limit marks the game ended at once. If the core
   never returns from `retro_run`, `release` replies and then the host exits,
   as protocol.md "release" says.
