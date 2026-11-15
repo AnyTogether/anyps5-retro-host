@@ -137,7 +137,7 @@ A crash gives none of these, so the tests expect the exact code.
   - the memory card: loaded at start, not written before its first 5-second
     check, and written after `stop`, `shutdown`, end-of-stream and `SIGTERM`
     and when the launcher's process exits; a card of the wrong size is never
-    written over;
+    written over, and `status.cardUnreadable` says so;
   - ring growth: 800 × 600 frames bring slots of twice the first ring's,
     1920 × 1080 slots of what the frame needs, and smaller frames no ring;
   - epochs through two games;

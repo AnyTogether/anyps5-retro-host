@@ -179,7 +179,9 @@ class Game {
   std::vector<uint8_t> converted_;
   FrameResult frame_failure_ = FrameResult::kShown;
   bool published_ = false;
-  bool card_kept_ = true;
+  // Memory card 1's file is there but could not be read as a card, so it is never written over
+  // (status.cardUnreadable).
+  std::atomic<bool> card_unreadable_{false};
   bool (*update_display_)() = nullptr;
   bool display_refresh_ = false;
   mutable std::mutex pause_mutex_;

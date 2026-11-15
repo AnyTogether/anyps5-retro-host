@@ -138,7 +138,9 @@ def play_until_card_changes(session, card, saved):
     host checks it every 5 s, so a write before then can only be the end of the game)."""
     started = time.monotonic()
     session.start()
-    session.wait(lambda s: s and s['ready'], 10)
+    status = session.wait(lambda s: s and s['ready'], 10)
+    if status.get('cardUnreadable') is not False:
+        raise c.Failed(f'a card the host read gives cardUnreadable {status.get("cardUnreadable")}')
     session.read_frames(40)
     if time.monotonic() - started < 4.5 and card.read_bytes() != saved:
         raise c.Failed('the memory card was written before its first 5-second check')
@@ -183,7 +185,7 @@ def memory_card(program, core, log):
 
 def card_wrong_size(program, core, log):
     """A card file that is not the core's card size is left as it is, past a 5-second check and
-    the end of the game."""
+    the end of the game, and status says so with cardUnreadable."""
     session = Session(program, core, log)
     try:
         card = Path(session.paths['saves']) / 'game.srm'
@@ -191,7 +193,9 @@ def card_wrong_size(program, core, log):
         kept = b'\x5a' * 1000
         card.write_bytes(kept)
         session.start()
-        session.wait(lambda s: s and s['ready'], 10)
+        status = session.wait(lambda s: s and s['ready'], 10)
+        if status.get('cardUnreadable') is not True:
+            raise c.Failed(f'a card of the wrong size gives cardUnreadable {status.get("cardUnreadable")}')
         time.sleep(5.5)
         session.call('stop')
         session.wait(lambda s: s['ended'], 5)

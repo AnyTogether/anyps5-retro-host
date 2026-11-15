@@ -572,7 +572,7 @@ Loads and starts a PS1 game.
 | `core` | path | The SwanStation library the launcher checked |
 | `disc` | path | A `.cue`, `.chd`, `.pbp` or `.m3u` file |
 | `system` | path | The core's system directory (BIOS files) |
-| `saves` | path | Where memory cards are kept; the host creates it if needed. Memory card 1 is the file `<disc's name without its extension>.srm` in it, as libretro frontends name it, and is checked for changes every 5 seconds between frames, also while paused, and written whenever the game ends: to a file beside it, flushed to the disk, then renamed over it, so a crash or power cut leaves the old card or the new one. A card file the host cannot read is left as it is and never written over |
+| `saves` | path | Where memory cards are kept; the host creates it if needed. Memory card 1 is the file `<disc's name without its extension>.srm` in it, as libretro frontends name it, and is checked for changes every 5 seconds between frames, also while paused, and written whenever the game ends: to a file beside it, flushed to the disk, then renamed over it, so a crash or power cut leaves the old card or the new one. A card file the host cannot read is left as it is and never written over, and `status.cardUnreadable` is `true` |
 | `options` | object of strings, optional | Core option values saved by the player, by key, including the internal resolution (`swanstation_GPU_ResolutionScale`). Unknown keys and values are ignored |
 | `initialDisc` | integer 0 to 127, optional | Only for an `.m3u`: the index of the playlist entry to insert at boot. With any other `disc` it is an `argument` error |
 
@@ -624,6 +624,7 @@ No argument. Returns `null` when no game is loaded, or:
 | `progressLabel` | string or null | What is loading right now, while there is something to show |
 | `progressPercent` | integer 0 to 100, or null | How far it is, when known |
 | `options` | object | Each core option the player can change now, by key |
+| `cardUnreadable` | boolean | Memory card 1's file is there but the host could not read it as a card (for example, it is not the core's card size), so it is left as it is and this game's saves are not written anywhere; the launcher can tell the player so. A launcher treats a status without this field as `false` |
 | `discs` | object, optional | Present for multi-disc games |
 
 | `errorCode` | Meaning |

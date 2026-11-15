@@ -219,7 +219,7 @@ void Game::RunGame() {
     if (const auto saved = ReadWholeFile(path); saved && saved->size() == card_size) {
       std::memcpy(card, saved->data(), card_size);
     } else if (Exists(path)) {
-      card_kept_ = false;
+      card_unreadable_ = true;
       Log(RETRO_LOG_WARN, ("The memory card " + path + " cannot be read as one; it is left as it is.").c_str());
     }
     card_.assign(static_cast<const char*>(card), card_size);
@@ -409,7 +409,7 @@ std::string Game::CardPath() const {
 bool Game::SaveCard(bool always) {
   void* card = Get<void* (*)(unsigned)>("retro_get_memory_data")(RETRO_MEMORY_SAVE_RAM);
   const size_t card_size = Get<size_t (*)(unsigned)>("retro_get_memory_size")(RETRO_MEMORY_SAVE_RAM);
-  if (!card || !card_size || !card_kept_) return true;
+  if (!card || !card_size || card_unreadable_) return true;
   std::string now(static_cast<const char*>(card), card_size);
   if (now == card_ && !always) return true;
   if (!CreateDirectories(config_.saves) || !WriteFileAtomically(CardPath(), now)) return false;
@@ -694,7 +694,8 @@ Json Game::Status() const {
                     {"graphicsPending", pending},
                     {"progressLabel", nullptr},
                     {"progressPercent", nullptr},
-                    {"options", std::move(options)}};
+                    {"options", std::move(options)},
+                    {"cardUnreadable", card_unreadable_.load()}};
   if (disc_.labels.size() > 1) {
     JsonObject discs;
     discs.emplace_back("labels", JsonArray(disc_.labels.begin(), disc_.labels.end()));
