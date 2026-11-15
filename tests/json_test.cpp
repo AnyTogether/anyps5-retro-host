@@ -41,6 +41,28 @@ int main() {
   const auto text = ParseJson(R"({"s":"a\"b\\c\n\u00e9"})");
   Expect(text && text->Serialize() == "{\"s\":\"a\\\"b\\\\c\\n\xc3\xa9\"}", "strings round-trip");
 
+  using retro_host::ClipUtf8;
+  using retro_host::Json;
+  using retro_host::ValidUtf8;
+  const std::string bad = "\xef\xbf\xbd";
+  Expect(Json(std::string("Disc \xff" "2")).Serialize() == "\"Disc " + bad + "2\"",
+         "the writer sends a stray 0xFF byte as U+FFFD");
+  Expect(Json(retro_host::JsonObject{{"Spi\xe9l", "Spi\xe9l"}}).Serialize() == "{\"Spi" + bad + "l\":\"Spi" + bad + "l\"}",
+         "the writer cleans keys as well as values");
+  const std::string mixed = "\xc3\x28\xe0\x80\xed\xa0\x80\xf0\x9f\x98!\xc0\xaf\xf4\x90\x80\x80\x80\xc3";
+  Expect(ParseJson("{\"a\":" + Json(mixed).Serialize() + "}").has_value(), "what the writer sends parses");
+  Expect(ValidUtf8("\xc3\xa9\xf0\x9f\x98\x80") == "\xc3\xa9\xf0\x9f\x98\x80", "valid UTF-8 is kept");
+  Expect(ValidUtf8("Spi\xe9l") == "Spi" + bad + "l", "a Latin-1 byte is one U+FFFD");
+  Expect(ValidUtf8("\xe0\x80") == bad + bad, "a lead byte the next byte cannot follow is its own U+FFFD");
+  Expect(ValidUtf8("\xed\xa0\x80") == bad + bad + bad, "an encoded surrogate is three U+FFFD");
+  Expect(ValidUtf8("\xf0\x9f\x98!") == bad + "!", "a character cut short is one U+FFFD");
+  Expect(ValidUtf8("\xc0\xaf") == bad + bad, "an overlong form is one U+FFFD a byte");
+  Expect(ValidUtf8("\xf4\x90\x80\x80") == bad + bad + bad + bad, "a value past U+10FFFF is one U+FFFD a byte");
+  Expect(ValidUtf8("a\xc3") == "a" + bad, "a lead byte at the end is one U+FFFD");
+  Expect(ClipUtf8("a\xc3\xa9", 2) == "a", "clipping keeps whole characters");
+  Expect(ClipUtf8("ab\xff", 3) == "ab", "clipping cleans first, then keeps whole characters");
+  Expect(ClipUtf8("\xff", 3) == bad, "a clipped U+FFFD that fits is kept");
+
   using retro_host::IsProtocolPath;
   Expect(IsProtocolPath("/home/a/b.cue", false), "a POSIX absolute path");
   Expect(!IsProtocolPath("/home/../b.cue", false), "a POSIX path with ..");

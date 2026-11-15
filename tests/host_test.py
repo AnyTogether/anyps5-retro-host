@@ -50,9 +50,9 @@ class Session:
             raise c.Failed(f'{method} failed: {reply["error"]}')
         return reply['result']
 
-    def start(self):
-        result = self.call('start', {'core': self.paths['core'], 'disc': self.paths['disc'],
-                                     'system': self.paths['system'], 'saves': self.paths['saves']})
+    def start(self, disc=None, **extra):
+        result = self.call('start', dict({'core': self.paths['core'], 'disc': disc or self.paths['disc'],
+                                          'system': self.paths['system'], 'saves': self.paths['saves']}, **extra))
         return result['epoch']
 
     def wait(self, test, seconds):
@@ -128,6 +128,27 @@ def restart_option(program, core, log):
         session.close()
 
 
+def labels_not_utf8(program, core, log):
+    """A playlist saved in Latin-1 gives disc labels and paths that are not UTF-8; status still
+    sends only UTF-8, with U+FFFD for each bad byte."""
+    session = Session(program, core, log)
+    try:
+        playlist = Path(session.paths['playlist'])
+        playlist.write_bytes(b'disc1.cue\nSpi\xe9l \xff.cue\n')
+        session.start(str(playlist))
+        status = session.wait(lambda s: s and s['ready'], 10)
+        if status['discs']['labels'] != ['disc1', 'Spi\ufffdl \ufffd']:
+            raise c.Failed(f'the labels are {status["discs"]["labels"]}')
+        if session.call('changeDisc', 1) is not True:
+            raise c.Failed('changeDisc to the second disc was refused')
+        status = session.wait(lambda s: not s['discs']['busy'], 5)
+        expected = str(playlist.with_name('Spi\ufffdl \ufffd.cue'))
+        if status['discs']['inserted'] != 1 or status['discs']['insertedDiscPath'] != expected:
+            raise c.Failed(f'the second disc is {status["discs"]}, not {expected}')
+    finally:
+        session.close()
+
+
 def many_games(program, core, log):
     session = Session(program, core, log)
     try:
@@ -161,7 +182,7 @@ def main():
     log = open(options.log, 'ab') if options.log else c.subprocess.DEVNULL
     c.load_atomics(options.core.resolve())
     failures = 0
-    tests = [test for test in (stuck_core, unloadable, restart_option, many_games) if not options.names or test.__name__ in options.names]
+    tests = [test for test in (stuck_core, unloadable, restart_option, labels_not_utf8, many_games) if not options.names or test.__name__ in options.names]
     for test in tests:
         try:
             test(options.host.resolve(), options.core.resolve(), log)

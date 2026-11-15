@@ -24,7 +24,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/host.cpp`](../src/host.cpp) | The protocol: `hello`, the order rules, every method's argument checks and replies, and the limits |
 | [`src/game.cpp`](../src/game.cpp) | One loaded game: the libretro callbacks, core options, disc control, the memory card, input, rumble and pixel conversion |
 | [`src/ring.cpp`](../src/ring.cpp) | The frame ring writer: the header from protocol.md's byte table, slot choice, and capped doubling when a frame needs more room |
-| [`src/json.cpp`](../src/json.cpp) | A strict JSON reader (duplicate keys, lone surrogates, invalid UTF-8 and non-finite numbers are errors) and writer |
+| [`src/json.cpp`](../src/json.cpp) | A strict JSON reader (duplicate keys, lone surrogates, invalid UTF-8 and non-finite numbers are errors) and a writer that sends every string as valid UTF-8, with U+FFFD for each sequence that is not |
 | [`src/paths.cpp`](../src/paths.cpp) | The path rules of protocol.md "Paths" for Windows and POSIX |
 | [`src/channel.cpp`](../src/channel.cpp) | Framing for the control stream, and the clock the watch thread reads for the write limit |
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
@@ -96,14 +96,17 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   [`tests/framing_test.py`](../tests/framing_test.py) checks that rule
   without the host, on a socketpair on Linux and macOS and on a pipe on Windows.
 - [`tests/fake_core.c`](../tests/fake_core.c) is the core the sessions run:
-  640 × 480 frames, one option, `.m3u` playlists through the disc interface,
+  640 × 480 frames, one option, `.m3u` playlists through the disc interface
+  (each disc labelled with its file name, byte for byte, as SwanStation does),
   a memory card, rumble while Cross is held, and a `fake_hang` option that
   makes `retro_run` never return.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
   not: a stuck core (the stall limit, then `release` replying and the host
   exiting), a core that is not a library and a missing disc (each ending the
-  game with `errorCode` `core` or `disc`), and eight games in a row with
+  game with `errorCode` `core` or `disc`), a playlist saved in Latin-1 (its
+  labels and paths reach `status` as U+FFFD), and eight games in a row with
   `volume`, `pause` and `stop` calls in between. Run it like `conformance.py`.
+  The fake launcher refuses a body that is not UTF-8 or has a key twice.
 - [`tests/ring_access.c`](../tests/ring_access.c) gives the fake launcher the
   sequentially consistent loads and stores of `latest` and `reading` that
   protocol.md asks for; Python cannot make them on shared memory itself. It

@@ -49,6 +49,21 @@ def load_atomics(core):
     ATOMICS.ring_store.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 
 
+def decode(body):
+    """A body as protocol.md "Values" reads it: valid UTF-8, JSON, and no key twice in an object."""
+    def unique(pairs):
+        keys = [key for key, _ in pairs]
+        if len(set(keys)) != len(keys):
+            raise Failed(f'the host sent an object with a key twice: {keys}')
+        return dict(pairs)
+    try:
+        return json.loads(body.decode('utf-8'), object_pairs_hook=unique)
+    except UnicodeDecodeError as problem:
+        raise Failed(f'the host sent a body that is not UTF-8: {problem}')
+    except ValueError as problem:
+        raise Failed(f'the host sent a body that is not JSON: {problem}')
+
+
 def close_all(descriptors):
     for fd in descriptors:
         try:
@@ -212,7 +227,7 @@ class PosixHost:
             if not 2 <= size <= 1 << 20:
                 raise Failed(f'the host sent a length of {size}')
             body, _, _ = self.receive(size, deadline, False)
-            return json.loads(body.decode('utf-8')), descriptors
+            return decode(body), descriptors
         except (Failed, ValueError):
             close_all(descriptors)
             raise
@@ -313,7 +328,7 @@ class WindowsHost:
                 if len(self.buffer) >= 4 + size:
                     body, self.buffer = self.buffer[4:4 + size], self.buffer[4 + size:]
                     self.begun = time.monotonic() if self.buffer else None
-                    return json.loads(body.decode('utf-8')), []
+                    return decode(body), []
             with self.arrived:
                 while not self.chunks and not self.closed:
                     if self.buffer:

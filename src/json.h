@@ -62,6 +62,14 @@ class Json {
 // lone surrogate escape, invalid UTF-8 or a number that is not finite as a double are errors.
 std::optional<Json> ParseJson(std::string_view text);
 
+// text with every byte sequence that is not UTF-8 replaced by U+FFFD, one for each maximal
+// subpart (Unicode, "U+FFFD Substitution of Maximal Subparts"), as a WHATWG decoder does. The
+// writer cleans every string this way, since a message must be valid UTF-8.
+std::string ValidUtf8(std::string_view text);
+
+// ValidUtf8(text), cut to at most bytes at a character boundary.
+std::string ClipUtf8(std::string_view text, size_t bytes);
+
 }  // namespace retro_host
 
 #endif  // ANYPS5_RETRO_HOST_JSON_H_

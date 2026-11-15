@@ -2,9 +2,10 @@
 /* SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors */
 
 /* A libretro core for the host's tests. It draws 640x480 frames, plays silence, offers one
- * option, takes .m3u playlists through the disc control interface, keeps a 128 KiB memory card
- * and rumbles port 1's large motor while Cross is held. It logs SwanStation's messages for a BIOS
- * it uses (fake-bios.bin in the system directory) or for none. Setting fake_hang to "yes" makes retro_run
+ * option, takes .m3u playlists through the disc control interface (labelling each disc with its
+ * file name, byte for byte, as SwanStation does), keeps a 128 KiB memory card and rumbles port 1's
+ * large motor while Cross is held. It logs SwanStation's messages for a BIOS it uses
+ * (fake-bios.bin in the system directory) or for none. Setting fake_hang to "yes" makes retro_run
  * never return, as a stuck core would. */
 
 #include <libretro.h>
@@ -70,9 +71,21 @@ static bool get_image_path(unsigned index, char* path, size_t size) {
   snprintf(path, size, "%s", disc_paths[index]);
   return true;
 }
+/* The entry's file name without its extension, byte for byte, as SwanStation labels .m3u entries:
+ * a playlist saved in Latin-1 gives labels that are not UTF-8. */
 static bool get_image_label(unsigned index, char* label, size_t size) {
+  const char* path;
+  const char* name;
+  const char* backslash;
+  const char* dot;
   if (index >= disc_count) return false;
-  snprintf(label, size, "Disc %u", index + 1);
+  path = disc_paths[index];
+  name = strrchr(path, '/');
+  backslash = strrchr(path, '\\');
+  if (backslash && (!name || backslash > name)) name = backslash;
+  name = name ? name + 1 : path;
+  dot = strrchr(name, '.');
+  snprintf(label, size, "%.*s", dot && dot != name ? (int)(dot - name) : (int)strlen(name), name);
   return true;
 }
 

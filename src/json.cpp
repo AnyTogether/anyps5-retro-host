@@ -11,6 +11,54 @@ namespace retro_host {
 namespace {
 
 constexpr int kMaxDepth = 64;
+constexpr char kReplacement[] = "\xEF\xBF\xBD";
+
+// The length of the UTF-8 character at text[at], or 0 when the bytes there are not one: an
+// overlong form, a surrogate, a value past U+10FFFF, a stray continuation byte or a character cut
+// short. Then subpart is the length of the maximal subpart there, the bytes one U+FFFD replaces.
+size_t Utf8Character(std::string_view text, size_t at, size_t& subpart) {
+  const auto lead = static_cast<unsigned char>(text[at]);
+  subpart = 1;
+  if (lead < 0x80) return 1;
+  size_t extra = 0;
+  unsigned char low = 0x80;
+  unsigned char high = 0xBF;
+  if (lead >= 0xC2 && lead <= 0xDF) {
+    extra = 1;
+  } else if (lead >= 0xE0 && lead <= 0xEF) {
+    extra = 2;
+    if (lead == 0xE0) low = 0xA0;
+    if (lead == 0xED) high = 0x9F;
+  } else if (lead >= 0xF0 && lead <= 0xF4) {
+    extra = 3;
+    if (lead == 0xF0) low = 0x90;
+    if (lead == 0xF4) high = 0x8F;
+  } else {
+    return 0;
+  }
+  for (size_t i = 1; i <= extra; ++i) {
+    if (at + i >= text.size()) return 0;
+    const auto next = static_cast<unsigned char>(text[at + i]);
+    if (next < low || next > high) return 0;
+    low = 0x80;
+    high = 0xBF;
+    subpart = i + 1;
+  }
+  return extra + 1;
+}
+
+// Appends the UTF-8 character at text[at], or U+FFFD for the maximal subpart there, and returns
+// the position after it.
+size_t AppendCharacter(std::string& out, std::string_view text, size_t at) {
+  size_t subpart = 0;
+  const size_t length = Utf8Character(text, at, subpart);
+  if (length == 0) {
+    out += kReplacement;
+    return at + subpart;
+  }
+  out.append(text.substr(at, length));
+  return at + length;
+}
 
 class Parser {
  public:
@@ -145,36 +193,13 @@ class Parser {
     return value;
   }
 
-  // Copies one UTF-8 encoded character, refusing overlong forms, surrogates and values past
-  // U+10FFFF.
+  // Copies one UTF-8 encoded character, refusing what Utf8Character refuses.
   bool CopyUtf8(std::string& out) {
-    const auto lead = static_cast<unsigned char>(text_[at_]);
-    int extra = 0;
-    uint32_t code = 0;
-    if (lead >= 0xC2 && lead <= 0xDF) {
-      extra = 1;
-      code = lead & 0x1F;
-    } else if (lead >= 0xE0 && lead <= 0xEF) {
-      extra = 2;
-      code = lead & 0x0F;
-    } else if (lead >= 0xF0 && lead <= 0xF4) {
-      extra = 3;
-      code = lead & 0x07;
-    } else {
-      return false;
-    }
-    if (at_ + 1 + extra > text_.size()) return false;
-    for (int i = 1; i <= extra; ++i) {
-      const auto next = static_cast<unsigned char>(text_[at_ + i]);
-      if ((next & 0xC0) != 0x80) return false;
-      code = (code << 6) | (next & 0x3F);
-    }
-    if ((extra == 2 && code < 0x800) || (extra == 3 && (code < 0x10000 || code > 0x10FFFF)) ||
-        (code >= 0xD800 && code <= 0xDFFF)) {
-      return false;
-    }
-    out.append(text_.substr(at_, 1 + extra));
-    at_ += 1 + extra;
+    size_t subpart = 0;
+    const size_t length = Utf8Character(text_, at_, subpart);
+    if (length == 0) return false;
+    out.append(text_.substr(at_, length));
+    at_ += length;
     return true;
   }
 
@@ -260,10 +285,16 @@ class Parser {
   size_t at_ = 0;
 };
 
-void AppendString(std::string& out, const std::string& text) {
+// Writes text as a JSON string, with U+FFFD for each maximal subpart that is not UTF-8.
+void AppendString(std::string& out, std::string_view text) {
   out += '"';
-  for (const char raw : text) {
-    const auto c = static_cast<unsigned char>(raw);
+  for (size_t at = 0; at < text.size();) {
+    const auto c = static_cast<unsigned char>(text[at]);
+    if (c >= 0x80) {
+      at = AppendCharacter(out, text, at);
+      continue;
+    }
+    ++at;
     switch (c) {
       case '"': out += "\\\""; break;
       case '\\': out += "\\\\"; break;
@@ -276,7 +307,7 @@ void AppendString(std::string& out, const std::string& text) {
           std::snprintf(escape, sizeof escape, "\\u%04x", c);
           out += escape;
         } else {
-          out += raw;
+          out += static_cast<char>(c);
         }
     }
   }
@@ -348,5 +379,21 @@ std::string Json::Serialize() const {
 }
 
 std::optional<Json> ParseJson(std::string_view text) { return Parser(text).Document(); }
+
+std::string ValidUtf8(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  for (size_t at = 0; at < text.size();) at = AppendCharacter(out, text, at);
+  return out;
+}
+
+std::string ClipUtf8(std::string_view text, size_t bytes) {
+  std::string clean = ValidUtf8(text);
+  if (clean.size() <= bytes) return clean;
+  size_t end = bytes;
+  while (end > 0 && (static_cast<unsigned char>(clean[end]) & 0xC0) == 0x80) --end;
+  clean.resize(end);
+  return clean;
+}
 
 }  // namespace retro_host

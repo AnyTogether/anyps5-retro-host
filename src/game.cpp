@@ -62,13 +62,6 @@ constexpr size_t kBiosSizes[] = {0x80000, 0x400000, 0x3E66F0};
 constexpr size_t kTextBytes = 256;
 constexpr size_t kErrorBytes = 1024;
 
-// text cut to at most bytes, at a UTF-8 character boundary.
-std::string Clip(const std::string& text, size_t bytes) {
-  if (text.size() <= bytes) return text;
-  size_t end = bytes;
-  while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
-  return text.substr(0, end);
-}
 constexpr char kResolutionOption[] = "swanstation_GPU_ResolutionScale";
 
 // SwanStation options it applies only when the console boots. They take effect at the next start,
@@ -360,7 +353,7 @@ void Game::RefreshDiscs() {
     std::string label;
     if (disc_control_->extended && disc_control_->callbacks.get_image_label &&
         disc_control_->callbacks.get_image_label(i, text, buffer.size() - 1) && text[0]) {
-      label = Clip(text, kTextBytes);
+      label = ClipUtf8(text, kTextBytes);
     } else {
       label = "Disc " + std::to_string(i + 1);
     }
@@ -470,13 +463,13 @@ bool Game::Environment(unsigned command, void* data) {
         Option option;
         option.key = definition->key;
         const std::string text = definition->desc ? definition->desc : definition->key;
-        option.title = Clip(text, kTextBytes);
+        option.title = ClipUtf8(text, kTextBytes);
         option.restart = (text.size() >= 9 && text.compare(text.size() - 9, 9, "(Restart)") == 0) ||
                          Listed(kStartOnlyOptions, std::size(kStartOnlyOptions), option.key);
         option.fixed = Listed(kFixedOptions, std::size(kFixedOptions), option.key);
         for (const retro_core_option_value* value = definition->values; value->value; ++value) {
           option.values.emplace_back(value->value);
-          option.labels.emplace_back(Clip(value->label ? value->label : value->value, kTextBytes));
+          option.labels.emplace_back(ClipUtf8(value->label ? value->label : value->value, kTextBytes));
         }
         if (option.values.empty()) continue;
         const auto chosen = [&](const std::string& wanted) {
@@ -693,7 +686,7 @@ Json Game::Status() const {
   }
   JsonObject status{{"ready", ready_},
                     {"ended", ended_},
-                    {"error", Clip(error_, kErrorBytes)},
+                    {"error", ClipUtf8(error_, kErrorBytes)},
                     {"errorCode", error_code_},
                     {"aspect", aspect},
                     {"hardware", false},
