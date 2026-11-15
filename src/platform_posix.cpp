@@ -375,12 +375,12 @@ bool WriteFileAtomically(const std::string& path, const std::string& data) {
   }
   const size_t slash = path.find_last_of('/');
   const std::string directory = slash == std::string::npos ? "." : slash == 0 ? "/" : path.substr(0, slash);
+  // The rename is on the disk only once the directory is. A file system that cannot flush a
+  // directory says EINVAL or ENOTSUP; anything else is a failed save, which the host tries again.
   const int folder = open(directory.c_str(), O_RDONLY | O_CLOEXEC);
-  if (folder >= 0) {
-    Flush(folder);
-    close(folder);
-  }
-  return true;
+  if (folder < 0) return false;
+  const bool flushed = Flush(folder) || errno == EINVAL || errno == ENOTSUP;
+  return close(folder) == 0 && flushed;
 }
 
 std::unique_ptr<Channel> OpenChannel(const Arguments& arguments) {
