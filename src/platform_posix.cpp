@@ -201,13 +201,14 @@ bool PrepareProcess(const Arguments& arguments) {
   sigemptyset(&none);
   sigprocmask(SIG_SETMASK, &none, nullptr);
   signal(SIGPIPE, SIG_IGN);
+  // macOS throws away a signal that is ignored even while it is blocked, so a SIGTERM the
+  // launcher left ignored would never reach WatchLauncher's sigwait. Setting it back here keeps
+  // the host from depending on the launcher's POSIX_SPAWN_SETSIGDEF.
+  signal(SIGTERM, SIG_DFL);
 #ifdef __linux__
   prctl(PR_SET_PDEATHSIG, SIGTERM);
-  if (static_cast<uint32_t>(getppid()) != arguments.parent_pid) return false;
-#else
-  if (kill(static_cast<pid_t>(arguments.parent_pid), 0) != 0 && errno == ESRCH) return false;
 #endif
-  return true;
+  return static_cast<uint32_t>(getppid()) == arguments.parent_pid;
 }
 
 void WatchLauncher(const Arguments& arguments, std::function<void()> on_gone) {

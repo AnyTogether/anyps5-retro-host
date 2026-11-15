@@ -136,6 +136,7 @@ A crash gives none of these, so the tests expect the exact code.
     U+FFFD;
   - the memory card: loaded at start, not written before its first 5-second
     check, and written after `stop`, `shutdown`, end-of-stream and `SIGTERM`
+    (to a host started with `SIGTERM` ignored)
     and when the launcher's process exits; a card of the wrong size is never
     written over, and `status.cardUnreadable` says so;
   - ring growth: 800 × 600 frames bring slots of twice the first ring's,
@@ -144,6 +145,8 @@ A crash gives none of these, so the tests expect the exact code.
   - leaving: within 10 s of end-of-stream, `SIGTERM` or the launcher's exit
     (a relay process starts the host and exits, leaving the stream open), and
     with 3 after the 5-second write limit when the launcher stops reading;
+  - Linux and macOS: a host whose parent is not `--parent-pid` exits at once
+    with 0;
   - Windows: a library the core loads by name is not taken from the host's
     working directory;
   - eight games in a row with `volume`, `pause` and `stop` calls in between.

@@ -159,10 +159,13 @@ def check_card(card, saved, how):
 
 def memory_card(program, core, log):
     """Memory card 1 is loaded at start and written when the game ends: after stop, shutdown,
-    end-of-stream and SIGTERM, the last three within the 10 s the host has to leave."""
+    end-of-stream and SIGTERM (sent to a host started with SIGTERM ignored), the last three within
+    the 10 s the host has to leave."""
     ways = ['stop', 'shutdown', 'end-of-stream'] + ([] if c.WINDOWS else ['SIGTERM'])
     for how in ways:
-        session, card, saved = card_session(program, core, log)
+        # A launcher that leaves SIGTERM ignored: the host sets it back to its default itself.
+        options = {'sigterm': signal.SIG_IGN} if how == 'SIGTERM' else {}
+        session, card, saved = card_session(program, core, log, **options)
         try:
             play_until_card_changes(session, card, saved)
             began = time.monotonic()
@@ -378,6 +381,27 @@ def labels_not_utf8(program, core, log):
         session.close()
 
 
+def wrong_parent(program, core, log):
+    """Linux and macOS: a host whose parent is not --parent-pid exits at once with 0 and sends
+    nothing."""
+    if c.WINDOWS:
+        return
+    host = c.PosixHost(program, log, parent=c.os.getppid())
+    try:
+        code = host.exits(5)
+        if code != c.EXIT_CLEAN:
+            raise c.Failed(f'a host with the wrong parent exited with {code}')
+        try:
+            message, _ = host.read(1)
+        except c.Idle:
+            raise c.Failed('a host with the wrong parent left its stream open')
+        except c.Failed:
+            return
+        raise c.Failed(f'a host with the wrong parent sent {message}')
+    finally:
+        host.close()
+
+
 def no_dll_from_working_directory(program, core, log):
     """Windows: a library the core loads by name is not taken from the host's working directory.
     The fake core fails the game if it finds anyps5-cwd-probe.dll."""
@@ -433,7 +457,7 @@ def main():
     failures = 0
     tests = [test for test in (stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size,
                                  ring_growth, epochs, launcher_stops_reading, launcher_exits,
-                                 no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
+                                 wrong_parent, no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
     for test in tests:
         try:
             test(options.host.resolve(), options.core.resolve(), log)

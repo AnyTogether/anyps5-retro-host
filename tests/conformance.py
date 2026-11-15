@@ -271,15 +271,20 @@ def relay(command):
 
 
 class PosixHost:
-    def __init__(self, program, log, trace=None, relay=False, cwd=None):
+    def __init__(self, program, log, trace=None, relay=False, cwd=None, parent=None, sigterm=None):
+        """parent: the --parent-pid to give, if not this process; sigterm: the SIGTERM handling
+        the host inherits, as a launcher could leave it."""
         ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket = ours
         child = theirs.fileno()
 
         def to_three():
             os.dup2(child, 3)
+            if sigterm is not None:
+                import signal
+                signal.signal(signal.SIGTERM, sigterm)
 
-        command = [str(program), '--ipc-fd', '3', '--parent-pid', str(os.getpid())]
+        command = [str(program), '--ipc-fd', '3', '--parent-pid', str(parent or os.getpid())]
         if trace:
             # strace takes the shell's process id with exec, so the host's parent is the pid it is given.
             command = ['sh', '-c', 'exec strace -f -qq -o "$1" -e trace=%network -- "$0" --ipc-fd 3 --parent-pid $$',

@@ -107,9 +107,10 @@ nothing cannot pass.
     ignores is not blocked in the host.
   - At start the host closes every descriptor above 3 (`close_range(4,
     ~0U, 0)`, or a loop over `/proc/self/fd` where that is missing),
-    unblocks every signal, then calls `prctl(PR_SET_PDEATHSIG, SIGTERM)`.
-    It then exits at once if `getppid()` is not `--parent-pid`. `SIGTERM`
-    is handled like [`shutdown`](#shutdown).
+    unblocks every signal, sets `SIGTERM` back to its default (so it does
+    not depend on the launcher's `POSIX_SPAWN_SETSIGDEF`), then calls
+    `prctl(PR_SET_PDEATHSIG, SIGTERM)`. It then exits at once if `getppid()`
+    is not `--parent-pid`. `SIGTERM` is handled like [`shutdown`](#shutdown).
   - `PR_SET_PDEATHSIG` fires when the thread that started the host exits,
     so the launcher MUST start the host from a thread that lives as long as
     the launcher.
@@ -117,6 +118,9 @@ nothing cannot pass.
   - The launcher spawns with `POSIX_SPAWN_CLOEXEC_DEFAULT` and a dup2 action
     for descriptor 3, so only that descriptor reaches the host. It also sets
     `POSIX_SPAWN_SETSIGMASK` and `POSIX_SPAWN_SETSIGDEF` as on Linux.
+  - At start the host unblocks every signal, sets `SIGTERM` back to its
+    default and exits at once if `getppid()` is not `--parent-pid`, as on
+    Linux. `SIGTERM` is handled like [`shutdown`](#shutdown).
   - Both sides set `SO_NOSIGPIPE` on their end.
   - The host watches `--parent-pid` with a kqueue `EVFILT_PROC` /
     `NOTE_EXIT` filter and treats the launcher's exit like end-of-stream. If
