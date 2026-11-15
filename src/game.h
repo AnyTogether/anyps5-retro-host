@@ -185,12 +185,14 @@ class Game {
   bool (*update_display_)() = nullptr;
   bool display_refresh_ = false;
   mutable std::mutex pause_mutex_;
-  // SwanStation said which BIOS it found in the system folder; without that it boots its built-in
-  // OpenBIOS, unless it loaded the BIOS file its options name for the console region.
-  bool bios_found_ = false;
+  // What SwanStation's log said, written by the log callback, which SwanStation may call from its
+  // own threads: which BIOS it found in the system folder (without that it boots its built-in
+  // OpenBIOS, unless it loaded the BIOS file its options name for the console region), the
+  // console region (under mutex_), and that it could not open the disc and boots the BIOS with no
+  // disc instead.
+  std::atomic<bool> bios_found_{false};
   std::string console_region_;
-  // SwanStation could not open the disc and boots the BIOS with no disc instead.
-  bool disc_missing_ = false;
+  std::atomic<bool> disc_missing_{false};
   bool UsesBios() const;
   std::string card_;
   struct DiscControl;

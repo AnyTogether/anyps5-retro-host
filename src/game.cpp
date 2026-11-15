@@ -23,20 +23,29 @@ struct Game::DiscControl {
 
 namespace {
 
-Game* g_game = nullptr;
+// The game whose core is loaded. Atomic, since a core may call back (its log above all) from
+// threads of its own.
+std::atomic<Game*> g_game{nullptr};
 
-bool OnEnvironment(unsigned command, void* data) { return g_game && g_game->Environment(command, data); }
+bool OnEnvironment(unsigned command, void* data) {
+  Game* game = g_game;
+  return game && game->Environment(command, data);
+}
 void OnVideo(const void* data, unsigned width, unsigned height, size_t pitch) {
-  if (g_game) g_game->Video(data, width, height, pitch);
+  if (Game* game = g_game) game->Video(data, width, height, pitch);
 }
 void OnAudioSample(int16_t left, int16_t right) {
   const int16_t frame[2] = {left, right};
-  if (g_game) g_game->AudioBatch(frame, 1);
+  if (Game* game = g_game) game->AudioBatch(frame, 1);
 }
-size_t OnAudioBatch(const int16_t* samples, size_t frames) { return g_game ? g_game->AudioBatch(samples, frames) : frames; }
+size_t OnAudioBatch(const int16_t* samples, size_t frames) {
+  Game* game = g_game;
+  return game ? game->AudioBatch(samples, frames) : frames;
+}
 void OnInputPoll() {}
 int16_t OnInputState(unsigned port, unsigned device, unsigned index, unsigned id) {
-  return g_game ? g_game->InputState(port, device, index, id) : 0;
+  Game* game = g_game;
+  return game ? game->InputState(port, device, index, id) : 0;
 }
 void OnLog(enum retro_log_level level, const char* format, ...) {
   va_list arguments;
@@ -48,10 +57,11 @@ void OnLog(enum retro_log_level level, const char* format, ...) {
   std::string text(length > 0 ? static_cast<size_t>(length) : 0, '\0');
   if (length > 0) std::vsnprintf(text.data(), text.size() + 1, format, arguments);
   va_end(arguments);
-  if (g_game) g_game->Log(static_cast<int>(level), text.c_str());
+  if (Game* game = g_game) game->Log(static_cast<int>(level), text.c_str());
 }
 bool OnRumble(unsigned port, enum retro_rumble_effect effect, uint16_t strength) {
-  return g_game && g_game->Rumble(port, static_cast<int>(effect), strength);
+  Game* game = g_game;
+  return game && game->Rumble(port, static_cast<int>(effect), strength);
 }
 
 constexpr unsigned kDualShock = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_ANALOG, 0);
@@ -675,7 +685,10 @@ void Game::Log(int level, const char* text) {
   if (StartsWith(message, "Using BIOS '") || StartsWith(message, "Falling back to possibly-incompatible image '")) {
     bios_found_ = true;
   }
-  if (StartsWith(message, "Console Region: ")) console_region_ = std::string(message.substr(16));
+  if (StartsWith(message, "Console Region: ")) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    console_region_ = std::string(message.substr(16));
+  }
   if (StartsWith(message, "Failed to load CD image '") && EndsWith(message, ". Booting BIOS with no disc.")) {
     disc_missing_ = true;
   }
@@ -849,10 +862,15 @@ void Game::SetAspect(const retro_game_geometry& geometry) {
 
 bool Game::UsesBios() const {
   if (bios_found_) return true;
+  std::string region;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    region = console_region_;
+  }
   const char* key = nullptr;
-  if (console_region_.rfind("NTSC-J", 0) == 0) key = "swanstation_BIOS_PathNTSCJ";
-  else if (console_region_.rfind("NTSC-U", 0) == 0) key = "swanstation_BIOS_PathNTSCU";
-  else if (console_region_.rfind("PAL", 0) == 0) key = "swanstation_BIOS_PathPAL";
+  if (region.rfind("NTSC-J", 0) == 0) key = "swanstation_BIOS_PathNTSCJ";
+  else if (region.rfind("NTSC-U", 0) == 0) key = "swanstation_BIOS_PathNTSCU";
+  else if (region.rfind("PAL", 0) == 0) key = "swanstation_BIOS_PathPAL";
   if (!key) return false;
   std::string name;
   {

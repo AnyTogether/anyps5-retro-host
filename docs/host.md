@@ -174,7 +174,11 @@ A crash gives none of these, so the tests expect the exact code.
   protocol.md asks for; Python cannot make them on shared memory itself. It
   is built next to `fake_core`, where both scripts look for it.
 - CI runs everything on Linux, macOS (arm64) and Windows, and the Linux tests
-  again under ThreadSanitizer. GCC 11's ThreadSanitizer reports a false
+  again under ThreadSanitizer. On Linux and macOS the fake core logs its BIOS
+  line from a thread of its own and waits for it with a relaxed load, as
+  SwanStation may log from its threads, so ThreadSanitizer fails if what the
+  host keeps from the log (`g_game`, the BIOS and missing-disc flags, the
+  console region) is not atomic or locked. GCC 11's ThreadSanitizer reports a false
   "double lock" in `Game::Join`: libstdc++ 11 waits with
   `pthread_cond_clockwait`, which that version does not intercept. Use GCC 12
   or later, or clang 14 or later.

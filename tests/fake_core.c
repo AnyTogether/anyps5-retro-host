@@ -14,6 +14,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <pthread.h>
 #include <unistd.h>
 #endif
 
@@ -45,6 +46,10 @@ static unsigned disc_count;
 static unsigned disc_index;
 static unsigned initial_disc;
 static bool tray_open;
+
+#ifndef _WIN32
+static void join_logger(void);
+#endif
 
 static bool set_eject_state(bool open) {
   tray_open = open;
@@ -174,7 +179,11 @@ RETRO_API void retro_init(void) {
   memset(card, 0, sizeof card);
 }
 
-RETRO_API void retro_deinit(void) {}
+RETRO_API void retro_deinit(void) {
+#ifndef _WIN32
+  join_logger();
+#endif
+}
 
 RETRO_API void retro_get_system_info(struct retro_system_info* info) {
   memset(info, 0, sizeof *info);
@@ -224,6 +233,38 @@ static bool ends_with(const char* text, const char* suffix) {
   }
   return true;
 }
+
+#ifndef _WIN32
+/* SwanStation may log from threads of its own. On Linux and macOS the BIOS line comes from a
+ * thread, and retro_load_game waits for it with a relaxed load, which orders nothing: under
+ * ThreadSanitizer the host's flags for what the log said must be atomic. */
+static pthread_t logger;
+static bool logger_started;
+static int logged;
+
+static void* log_bios(void* unused) {
+  (void)unused;
+  if (has_bios()) log_printf(RETRO_LOG_INFO, "[HostInterface] Using BIOS 'fake-bios.bin': fake BIOS\n");
+  else log_printf(RETRO_LOG_INFO, "[HostInterface] No BIOS image found for NTSC-U/C region\n");
+  __atomic_store_n(&logged, 1, __ATOMIC_RELAXED);
+  return NULL;
+}
+
+static void log_bios_from_thread(void) {
+  __atomic_store_n(&logged, 0, __ATOMIC_RELAXED);
+  logger_started = pthread_create(&logger, NULL, log_bios, NULL) == 0;
+  if (!logger_started) {
+    log_bios(NULL);
+    return;
+  }
+  while (!__atomic_load_n(&logged, __ATOMIC_RELAXED)) usleep(1000);
+}
+
+static void join_logger(void) {
+  if (logger_started) pthread_join(logger, NULL);
+  logger_started = false;
+}
+#endif
 
 static bool is_empty(const char* path) {
   FILE* file = fopen(path, "rb");
@@ -275,8 +316,12 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game) {
    * <message>". The disc's path comes first, so a path that holds the host's words must not count. */
   if (log_printf) {
     log_printf(RETRO_LOG_INFO, "[System] Loading CD image '%s'...\n", game->path);
+#ifdef _WIN32
     if (has_bios()) log_printf(RETRO_LOG_INFO, "[HostInterface] Using BIOS 'fake-bios.bin': fake BIOS\n");
     else log_printf(RETRO_LOG_INFO, "[HostInterface] No BIOS image found for NTSC-U/C region\n");
+#else
+    log_bios_from_thread();
+#endif
     if (is_empty(game->path)) {
       log_printf(RETRO_LOG_WARN,
                  "[System::Boot] Failed to load CD image '%s': the file is empty. Booting BIOS with no disc.\n",
@@ -301,7 +346,11 @@ RETRO_API bool retro_load_game_special(unsigned type, const struct retro_game_in
   return false;
 }
 
-RETRO_API void retro_unload_game(void) {}
+RETRO_API void retro_unload_game(void) {
+#ifndef _WIN32
+  join_logger();
+#endif
+}
 
 RETRO_API unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
 
