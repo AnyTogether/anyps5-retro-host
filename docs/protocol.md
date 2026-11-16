@@ -375,7 +375,8 @@ A file named inside a `.cue` or `.m3u` is found as the core finds it.
 SwanStation treats a name as absolute only when it is a drive path on
 Windows (`C:\Games\a.bin` or `C:/Games/a.bin`) or starts with `/` on Linux
 and macOS, and the core opens such a name as written. It joins any other
-name to the directory of the file that names it.
+name to the directory of the file that names it. The host's own reading of
+an `.m3u` entry, for `initialDisc`, follows the same rule.
 
 **UNC names.** On Windows, a `.cue` or `.m3u` can name a UNC path
 (`\\server\share\track.bin`). The core does not open it as a UNC path: it
