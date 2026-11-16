@@ -165,6 +165,7 @@ int main() {
          "comments after spaces, empty and blank lines are no entries");
   Expect(entry_is("/p.m3u", "a b.cue", 0, false, "/a b.cue"), "a space inside an entry is kept");
   Expect(!PlaylistEntry("/p.m3u", "", 0, false), "an empty playlist has no entry");
+  Expect(retro_host::HasExtension("/a/Game.CUE", ".cue"), "extensions ignore case");
 
   if (failures == 0) std::printf("All JSON and path checks passed.\n");
   return failures == 0 ? 0 : 1;
