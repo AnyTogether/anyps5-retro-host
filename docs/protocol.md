@@ -57,10 +57,13 @@ network connection under this rule, and neither is playing sound through the
 system's sound service over its local socket (PulseAudio or PipeWire on
 Linux). The host repository's CI traces the host's network calls with
 `strace -f -e trace=%network` on Linux while it runs the conformance
-sessions. A session fails on any socket that is not `AF_UNIX`, on any `bind`
+sessions, and while it runs an OpenGL game with `DISPLAY` naming an X server
+over TCP (`host_test.py`, `gpu_network`). A session fails on any socket that is not `AF_UNIX`, on any `bind`
 or `listen`, and when its trace is missing or holds none of the host's reads
 of the control stream, which every session has, so a trace that recorded
-nothing cannot pass.
+nothing cannot pass. The host makes its OpenGL contexts without a window
+system (host.md, "GPU rendering"), so `DISPLAY` and `WAYLAND_DISPLAY` lead it
+nowhere.
 
 ### Starting the host
 

@@ -309,7 +309,6 @@ void Game::RunGame() {
   auto next = std::chrono::steady_clock::now();
   int64_t last_card_check = NowMs();
   while (end_code.empty() && !stop_) {
-    if (gpu_) gpu_->Pump();
     if (NowMs() - last_card_check >= kCardSaveMs) {
       SaveCard();
       last_card_check = NowMs();
@@ -343,6 +342,11 @@ void Game::RunGame() {
     }
     if (frame_failure_ == FrameResult::kGpuFailed) {
       end_error = "The GPU stopped handing over the game's picture.";
+      end_code = "other";
+      break;
+    }
+    if (hardware_ && gpu_->Lost()) {
+      end_error = "The GPU was reset, and the game's OpenGL context with it.";
       end_code = "other";
       break;
     }
@@ -646,7 +650,11 @@ bool Game::Environment(unsigned command, void* data) {
       if (!core && request->context_type != RETRO_HW_CONTEXT_OPENGL) return false;
       gpu_.reset();
       gpu_ = Gpu::Create(core ? request->version_major : 0, core ? request->version_minor : 0, core);
-      if (!gpu_) return false;
+      if (!gpu_) {
+        std::fprintf(stderr, "[host] No OpenGL context could be made; the core draws in software.\n");
+        return false;
+      }
+      std::fprintf(stderr, "[host] OpenGL: %s\n", gpu_->Description().c_str());
       request->get_current_framebuffer = OnCurrentFramebuffer;
       request->get_proc_address = OnProcAddress;
       hw_context_reset_ = request->context_reset;

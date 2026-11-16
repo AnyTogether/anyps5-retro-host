@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
+#include <string>
 #include <type_traits>
 
 namespace retro_host {
@@ -19,7 +21,12 @@ namespace {
 // Values from the Khronos OpenGL registry, api/GL/glcorearb.h.
 constexpr unsigned kFramebuffer = 0x8D40;
 constexpr unsigned kReadFramebuffer = 0x8CA8;
+constexpr unsigned kDrawFramebuffer = 0x8CA9;
 constexpr unsigned kRenderbuffer = 0x8D41;
+constexpr unsigned kReadFramebufferBinding = 0x8CAA;
+constexpr unsigned kDrawFramebufferBinding = 0x8CA6;
+constexpr unsigned kRenderbufferBinding = 0x8CA7;
+constexpr unsigned kPixelPackBufferBinding = 0x88ED;
 constexpr unsigned kColorAttachment0 = 0x8CE0;
 constexpr unsigned kDepthAttachment = 0x8D00;
 constexpr unsigned kDepthStencilAttachment = 0x821A;
@@ -38,6 +45,14 @@ constexpr unsigned kNoError = 0;
 constexpr unsigned kPixelPackBuffer = 0x88EB;
 constexpr unsigned kMaxRenderbufferSize = 0x84E8;
 constexpr unsigned kMaxViewportDims = 0x0D3A;
+constexpr unsigned kVendor = 0x1F00;
+constexpr unsigned kRenderer = 0x1F01;
+constexpr unsigned kVersion = 0x1F02;
+constexpr unsigned kResetNotificationStrategy = 0x8256;
+constexpr unsigned kLoseContextOnReset = 0x8252;
+
+// The pack settings Read changes, in the order it sets them: alignment 1, the rest 0.
+constexpr unsigned kPackSettings[] = {kPackAlignment, kPackRowLength, kPackSkipRows, kPackSkipPixels};
 
 }  // namespace
 
@@ -56,9 +71,23 @@ struct Gpu::Functions {
   void(GL_CALL* BindBuffer)(unsigned, unsigned);
   unsigned(GL_CALL* GetError)();
   void(GL_CALL* GetIntegerv)(unsigned, int*);
+  const unsigned char*(GL_CALL* GetString)(unsigned);
+  unsigned(GL_CALL* GetGraphicsResetStatus)();
+
+  int Integer(unsigned name) {
+    int value = 0;
+    GetIntegerv(name, &value);
+    return value;
+  }
 };
 
-bool Gpu::LoadFunctions() {
+namespace {
+
+std::string Text(const unsigned char* text) { return text ? reinterpret_cast<const char*>(text) : "?"; }
+
+}  // namespace
+
+bool Gpu::LoadFunctions(const std::string& way) {
   auto gl = std::make_shared<Functions>();
   const auto load = [this](auto& function, const char* name) {
     function = reinterpret_cast<std::remove_reference_t<decltype(function)>>(Proc(name));
@@ -71,9 +100,24 @@ bool Gpu::LoadFunctions() {
       !load(gl->FramebufferRenderbuffer, "glFramebufferRenderbuffer") ||
       !load(gl->CheckFramebufferStatus, "glCheckFramebufferStatus") || !load(gl->ReadPixels, "glReadPixels") ||
       !load(gl->PixelStorei, "glPixelStorei") || !load(gl->BindBuffer, "glBindBuffer") || !load(gl->GetError, "glGetError") ||
-      !load(gl->GetIntegerv, "glGetIntegerv")) {
+      !load(gl->GetIntegerv, "glGetIntegerv") || !load(gl->GetString, "glGetString")) {
     return false;
   }
+  // A robust context made with reset notification (Gpu::Create asks EGL or WGL for one) says so in
+  // GL_RESET_NOTIFICATION_STRATEGY; any other context answers GL_INVALID_ENUM or "no notification".
+  for (int pending = 0; pending < 16 && gl->GetError() != kNoError; ++pending) {
+  }
+  const int strategy = gl->Integer(kResetNotificationStrategy);
+  const bool robust = gl->GetError() == kNoError && strategy == static_cast<int>(kLoseContextOnReset);
+  gl->GetGraphicsResetStatus = nullptr;
+  if (robust) {
+    for (const char* name : {"glGetGraphicsResetStatus", "glGetGraphicsResetStatusARB", "glGetGraphicsResetStatusKHR"}) {
+      if (load(gl->GetGraphicsResetStatus, name)) break;
+    }
+  }
+  description_ = way + ", " + Text(gl->GetString(kVendor)) + ", " + Text(gl->GetString(kRenderer)) + ", " +
+                 Text(gl->GetString(kVersion)) +
+                 (gl->GetGraphicsResetStatus ? ", a GPU reset ends the game" : ", no GPU reset notification");
   int renderbuffer = 0;
   int viewport[2] = {0, 0};
   gl->GetIntegerv(kMaxRenderbufferSize, &renderbuffer);
@@ -91,24 +135,40 @@ bool Gpu::Reserve(uint32_t width, uint32_t height, bool depth, bool stencil) {
   }
   width = std::max(width, width_);
   height = std::max(height, height_);
-  ReleaseFramebuffer();
-  gl_->GenFramebuffers(1, &framebuffer_);
-  gl_->BindFramebuffer(kFramebuffer, framebuffer_);
-  gl_->GenRenderbuffers(1, &color_);
-  gl_->BindRenderbuffer(kRenderbuffer, color_);
+  const auto draw = static_cast<uint32_t>(gl_->Integer(kDrawFramebufferBinding));
+  const auto read = static_cast<uint32_t>(gl_->Integer(kReadFramebufferBinding));
+  const auto renderbuffer = static_cast<uint32_t>(gl_->Integer(kRenderbufferBinding));
+  // The new framebuffer is made while the old one still exists, so its names differ from the old
+  // ones and a core still bound to the old framebuffer can be moved to the new one.
+  uint32_t framebuffer = 0;
+  uint32_t color = 0;
+  uint32_t depth_buffer = 0;
+  gl_->GenFramebuffers(1, &framebuffer);
+  gl_->BindFramebuffer(kFramebuffer, framebuffer);
+  gl_->GenRenderbuffers(1, &color);
+  gl_->BindRenderbuffer(kRenderbuffer, color);
   gl_->RenderbufferStorage(kRenderbuffer, kRgba8, static_cast<int>(width), static_cast<int>(height));
-  gl_->FramebufferRenderbuffer(kFramebuffer, kColorAttachment0, kRenderbuffer, color_);
+  gl_->FramebufferRenderbuffer(kFramebuffer, kColorAttachment0, kRenderbuffer, color);
   if (depth || stencil) {
-    gl_->GenRenderbuffers(1, &depth_);
-    gl_->BindRenderbuffer(kRenderbuffer, depth_);
+    gl_->GenRenderbuffers(1, &depth_buffer);
+    gl_->BindRenderbuffer(kRenderbuffer, depth_buffer);
     gl_->RenderbufferStorage(kRenderbuffer, stencil ? kDepth24Stencil8 : kDepthComponent24, static_cast<int>(width),
                              static_cast<int>(height));
     gl_->FramebufferRenderbuffer(kFramebuffer, stencil ? kDepthStencilAttachment : kDepthAttachment, kRenderbuffer,
-                                 depth_);
+                                 depth_buffer);
   }
-  gl_->BindRenderbuffer(kRenderbuffer, 0);
   const bool complete = gl_->CheckFramebufferStatus(kFramebuffer) == kFramebufferComplete;
-  gl_->BindFramebuffer(kFramebuffer, 0);
+  const auto kept = [&](uint32_t bound) {
+    return bound != 0 && bound == framebuffer_ ? (complete ? framebuffer : 0) : bound;
+  };
+  gl_->BindFramebuffer(kDrawFramebuffer, kept(draw));
+  gl_->BindFramebuffer(kReadFramebuffer, kept(read));
+  const bool ours = renderbuffer != 0 && (renderbuffer == color_ || renderbuffer == depth_);
+  gl_->BindRenderbuffer(kRenderbuffer, ours ? 0 : renderbuffer);
+  ReleaseFramebuffer();
+  framebuffer_ = framebuffer;
+  color_ = color;
+  depth_ = depth_buffer;
   if (!complete) {
     ReleaseFramebuffer();
     return false;
@@ -125,15 +185,19 @@ bool Gpu::Read(uint32_t width, uint32_t height, bool bgra, bool bottom_left, uin
   const size_t row = static_cast<size_t>(width) * 4;
   for (int pending = 0; pending < 16 && gl_->GetError() != kNoError; ++pending) {
   }
+  const int pack_buffer = gl_->Integer(kPixelPackBufferBinding);
+  const int read = gl_->Integer(kReadFramebufferBinding);
+  int pack[std::size(kPackSettings)];
+  for (size_t i = 0; i < std::size(kPackSettings); ++i) pack[i] = gl_->Integer(kPackSettings[i]);
   gl_->BindBuffer(kPixelPackBuffer, 0);
   gl_->BindFramebuffer(kReadFramebuffer, framebuffer_);
-  gl_->PixelStorei(kPackAlignment, 1);
-  gl_->PixelStorei(kPackRowLength, 0);
-  gl_->PixelStorei(kPackSkipRows, 0);
-  gl_->PixelStorei(kPackSkipPixels, 0);
+  for (const unsigned setting : kPackSettings) gl_->PixelStorei(setting, setting == kPackAlignment ? 1 : 0);
   gl_->ReadPixels(0, 0, static_cast<int>(width), static_cast<int>(height), bgra ? kBgra : kRgba, kUnsignedByte, out);
-  gl_->BindFramebuffer(kReadFramebuffer, 0);
-  if (gl_->GetError() != kNoError) return false;
+  const bool read_back = gl_->GetError() == kNoError;
+  for (size_t i = 0; i < std::size(kPackSettings); ++i) gl_->PixelStorei(kPackSettings[i], pack[i]);
+  gl_->BindFramebuffer(kReadFramebuffer, static_cast<unsigned>(read));
+  gl_->BindBuffer(kPixelPackBuffer, static_cast<unsigned>(pack_buffer));
+  if (!read_back) return false;
   if (bottom_left) {
     for (uint32_t y = 0; y < height / 2; ++y) {
       std::swap_ranges(out + y * row, out + (y + 1) * row, out + (height - 1 - y) * row);
@@ -142,6 +206,8 @@ bool Gpu::Read(uint32_t width, uint32_t height, bool bgra, bool bottom_left, uin
   for (size_t at = 3; at < row * height; at += 4) out[at] = 0xFF;
   return true;
 }
+
+bool Gpu::Lost() { return gl_ && gl_->GetGraphicsResetStatus && gl_->GetGraphicsResetStatus() != kNoError; }
 
 void Gpu::ReleaseFramebuffer() {
   if (!gl_) return;

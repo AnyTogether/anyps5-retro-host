@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace retro_host {
 
@@ -28,23 +29,32 @@ class Gpu {
   uint32_t MaxWidth() const { return max_width_; }
   uint32_t MaxHeight() const { return max_height_; }
 
-  // Makes the framebuffer at least width x height; false when OpenGL refuses.
+  // Where the context comes from and what draws in it, for the log: the system's way of making it,
+  // GL_VENDOR, GL_RENDERER, GL_VERSION, and whether a GPU reset is reported.
+  const std::string& Description() const { return description_; }
+
+  // Makes the framebuffer at least width x height; false when OpenGL refuses. The core's bindings
+  // of the draw and read framebuffers and of the renderbuffer are kept, a binding of the old
+  // framebuffer moving to the new one.
   bool Reserve(uint32_t width, uint32_t height, bool depth, bool stencil);
   uintptr_t Framebuffer() const { return framebuffer_; }
 
   // Reads the frame of width x height into out as rows of width x 4 bytes, top row first, in RGBA
-  // or BGRA order; bottom_left says the core draws with OpenGL's bottom-left origin.
+  // or BGRA order; bottom_left says the core draws with OpenGL's bottom-left origin. The core's
+  // read framebuffer, pixel pack buffer and pack settings are put back afterwards.
   bool Read(uint32_t width, uint32_t height, bool bgra, bool bottom_left, uint8_t* out);
+
+  // True once the context reports a GPU reset (glGetGraphicsResetStatus); always false for a
+  // context made without reset notification, where a reset may show only as an OpenGL error.
+  bool Lost();
 
   // Releases the framebuffer; called before the context goes away.
   void ReleaseFramebuffer();
 
-  // Answers the messages the system sends to the context's window, where it needs one; called on
-  // the game's thread between frames, so the window never looks hung to other programs.
-  virtual void Pump() {}
-
  protected:
-  bool LoadFunctions();
+  // Loads the functions the host calls and reads the context's limits; way names the system's
+  // way of making the context, for Description.
+  bool LoadFunctions(const std::string& way);
 
  private:
   struct Functions;
@@ -58,6 +68,7 @@ class Gpu {
   uint32_t max_height_ = 0;
   bool with_depth_ = false;
   bool with_stencil_ = false;
+  std::string description_;
 };
 
 }  // namespace retro_host
