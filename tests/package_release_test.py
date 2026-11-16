@@ -7,8 +7,9 @@ user name, password or token, or GitHub Actions' GITHUB_REPOSITORY at GITHUB_SHA
 checkout, and that it refuses a checkout with changes that are not committed, a checkout git cannot
 read, a local remote and a build it cannot name, and does not take another repository's HEAD for an
 unpacked source inside it. It also checks that --check refuses a zip entry that could unpack outside
-its folder, is held twice or is not a plain file, and a SHA256SUMS name that is no release file. Each case runs in a new git repository in a temporary folder, with the
-user's and the system's git configuration left out."""
+its folder or over another entry on Windows or macOS, is held twice or is not a plain file, and a
+SHA256SUMS name that is no release file. Each case runs in a new git repository in a temporary
+folder, with the user's and the system's git configuration left out."""
 
 import os
 import subprocess
@@ -195,7 +196,10 @@ with tempfile.TemporaryDirectory() as folder:
     check('a release the packer would write', checked(release(folder / 'good', good)), 'accepted')
     for label, name in [('a .. part', '../outside'), ('an absolute name', '/outside'), ('a drive', 'C:outside'),
                         ('a backslash', 'licenses\\..\\outside'), ('an empty part', 'licenses//LICENSE'),
-                        ('a . part', './LICENSE'), ('a control character', 'licenses/LIC\x07ENSE')]:
+                        ('a . part', './LICENSE'), ('a control character', 'licenses/LIC\x07ENSE'),
+                        ('a trailing dot', 'anyps5-retro-host.'), ('a character Windows changes', 'licenses/a?'),
+                        ('a space', 'licenses/a b'), ('a Windows device name', 'licenses/NUL.txt'),
+                        ('another case of a name', 'ANYPS5-RETRO-HOST')]:
         check(f'a zip entry with {label} is refused',
               refused(checked(release(folder / label, good + [(name, b'x', p.PLAIN)]))), True)
     twice = good + [('anyps5-retro-host', b'other', p.EXECUTABLE)]

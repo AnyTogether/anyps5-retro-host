@@ -592,10 +592,12 @@ release can be packed and checked by hand the same way.
   it. `python3 tools/package_release.py --check <folder>` checks a folder of
   them as a launcher checks a download, without the signature. It refuses a
   `SHA256SUMS` name that is not a release file before reading it, and a zip
-  entry that is held twice, is not a plain file with the packer's
-  permissions, or has a name that could unpack outside its folder (an
-  absolute name, a drive, a backslash, or an empty, `.` or `..` part); the
-  packer refuses to write such a name.
+  entry that is not a plain file with the packer's permissions, or whose
+  name could unpack outside its folder or over another entry on some system:
+  each part of a name must be letters, digits and `._+-`, must not start or
+  end with a dot or be a Windows device name such as `NUL`, and no two names
+  may differ only in case. The packer refuses to write such a name, so a
+  licence file with a space in its name stops the build.
   [`tests/package_release_test.py`](../tests/package_release_test.py) covers
   each case.
 

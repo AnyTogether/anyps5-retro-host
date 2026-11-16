@@ -35,8 +35,9 @@ sorts them (LC_ALL=C sort -k2), so signing it there gives the same SHA256SUMS.
 checks a release folder as a launcher checks a download, without the signature: SHA256SUMS lists
 each zip and .files with their digests (and at most one source archive), and every zip holds
 exactly the files its .files lists, with those digests, each once, as a plain file with the
-packer's permissions, under a relative name with no empty, . or .. part, no backslash, no : and no
-control character, so no entry can unpack outside the folder it is unpacked into.
+packer's permissions. Each name is relative, and each part of it is letters, digits and ._+-,
+does not start or end with a dot and is no Windows device name, and no two names differ only in
+case, so no entry can unpack outside its folder or over another entry on any system.
 """
 
 import argparse
@@ -216,16 +217,27 @@ def dependency_notices(folder):
             for path in found]
 
 
+MEMBER_PART = re.compile(r'^[A-Za-z0-9_+-][A-Za-z0-9._+-]*(?<!\.)$')
+RESERVED = re.compile(r'^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)', re.IGNORECASE)
+
+
 def safe_member(name):
-    parts = name.split('/')
-    return all(part not in ('', '.', '..') and ':' not in part and '\\' not in part
-               and all(character.isprintable() for character in part) for part in parts)
+    return all(MEMBER_PART.match(part) and not RESERVED.match(part) for part in name.split('/'))
+
+
+def unique_members(names):
+    seen = set()
+    for name in names:
+        if not safe_member(name) or name.casefold() in seen:
+            return name
+        seen.add(name.casefold())
+    return None
 
 
 def write_zip(path, files):
-    for name, _, _ in files:
-        if not safe_member(name):
-            raise SystemExit(f'{name!r} is not a name a zip entry may have')
+    clash = unique_members(name for name, _, _ in files)
+    if clash is not None:
+        raise SystemExit(f'{clash!r} is not a name a zip entry may have, or another entry has it')
     with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name, data, mode in sorted(files, key=lambda entry: entry[0].encode('utf-8')):
             info = zipfile.ZipInfo(name, date_time=TIME)
@@ -316,10 +328,12 @@ def check(folder):
         listed = parse_sums((folder / f'{stem}.files').read_text('utf-8'), allow_slash=True)
         held = {}
         with zipfile.ZipFile(folder / f'{stem}.zip') as archive:
-            for info in archive.infolist():
+            members = archive.infolist()
+            clash = unique_members(info.filename for info in members)
+            if clash is not None:
+                raise SystemExit(f'{stem}.zip holds {clash!r} twice or under a name it may not have')
+            for info in members:
                 mode = info.external_attr >> 16
-                if info.filename in held or not safe_member(info.filename):
-                    raise SystemExit(f'{stem}.zip holds {info.filename!r} twice or under a name it may not have')
                 if info.create_system != 3 or not stat.S_ISREG(mode) or mode not in (EXECUTABLE, PLAIN):
                     raise SystemExit(f'{stem}.zip holds {info.filename!r}, which is not a plain file')
                 held[info.filename] = sha256(archive.read(info))
