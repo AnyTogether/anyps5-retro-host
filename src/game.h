@@ -136,7 +136,6 @@ class Game {
   std::string ResolutionError() const;
   std::string CardPath() const;
   void RefreshDiscs();
-  std::optional<std::string> PlaylistEntry(unsigned index) const;
   template <typename T>
   T Get(const char* name) const {
     return reinterpret_cast<T>(library_.Symbol(name));

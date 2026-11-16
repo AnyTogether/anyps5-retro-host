@@ -11,6 +11,8 @@ namespace {
 
 bool IsLetter(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
 
+bool IsCSpace(char c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
+
 std::vector<std::string_view> Split(std::string_view text, bool slash_too) {
   std::vector<std::string_view> parts;
   size_t start = 0;
@@ -77,6 +79,31 @@ bool IsProtocolPath(std::string_view path, bool windows) {
 bool IsCoreAbsolute(std::string_view name, bool windows) {
   if (!windows) return !name.empty() && name[0] == '/';
   return name.size() >= 3 && IsLetter(name[0]) && name[1] == ':' && (name[2] == '/' || name[2] == '\\');
+}
+
+std::optional<std::string> PlaylistEntry(std::string_view m3u_path, std::string_view text, unsigned index,
+                                         bool windows) {
+  unsigned at = 0;
+  size_t start = 0;
+  while (start < text.size()) {
+    size_t end = text.find('\n', start);
+    if (end == std::string_view::npos) end = text.size();
+    const std::string_view line = text.substr(start, end - start);
+    start = end + 1;
+    size_t first = 0;
+    while (first < line.size() && IsCSpace(line[first])) ++first;
+    if (first == line.size() || line[first] == '#') continue;
+    size_t last = line.size() - 1;
+    while (IsCSpace(line[last]) && last > first) --last;
+    if (first == last) continue;
+    if (at++ != index) continue;
+    const std::string_view name = line.substr(first, last - first + 1);
+    if (IsCoreAbsolute(name, windows)) return std::string(name);
+    const size_t slash = m3u_path.find_last_of(windows ? "/\\" : "/");
+    std::string path(slash == std::string_view::npos ? std::string_view() : m3u_path.substr(0, slash + 1));
+    return path.append(name);
+  }
+  return std::nullopt;
 }
 
 bool HasExtension(std::string_view path, std::string_view extension) {
