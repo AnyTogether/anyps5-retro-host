@@ -336,9 +336,23 @@ it says that the file name cannot be used and sends nothing.
 
 File extensions (`.cue`, `.CUE`) match without regard to ASCII case.
 
-A file named inside a `.cue` or `.m3u` is found as the core finds it: a
-relative name against the directory of the file that names it, and an
-absolute or UNC name as it is.
+A file named inside a `.cue` or `.m3u` is found as the core finds it.
+SwanStation treats a name as absolute only when it is a drive path on
+Windows (`C:\Games\a.bin` or `C:/Games/a.bin`) or starts with `/` on Linux
+and macOS, and the core opens such a name as written. It joins any other
+name to the directory of the file that names it.
+
+**UNC names.** On Windows, a `.cue` or `.m3u` can name a UNC path
+(`\\server\share\track.bin`). The core does not open it as a UNC path: it
+joins the name to the directory of the file that names it, and Windows reads
+the run of separators as one, so the name points to a file under that
+directory (`C:\Games\server\share\track.bin`). So a UNC name in a shared
+`.cue` or `.m3u` does not make Windows connect to that server. A drive path
+is still opened as written, so a name on a mapped network drive reaches the
+server behind that drive. A core that opened UNC names as written would let
+the named server get the player's Windows account name and, when the sign-in
+uses NTLM, a response it can try to crack offline. Before the host moves to
+another SwanStation commit, its maintainers check this again.
 
 ## Messages
 
@@ -649,11 +663,14 @@ No argument. Returns `null` when no game is loaded, or:
 | `didNotStart` | The game produced no first frame in time |
 | `frameTooLarge` | The game's frame was larger than 8192 × 8192 |
 | `other` | Any other cause |
+| `hostExited` | Only the launcher's client reports it: the host exited without being asked or sent a protocol error (see [Host failure](#host-failure)) |
+| `hostHung` | Only the launcher's client reports it: the host missed one of the launcher's time limits and the launcher closed it (see [Host failure](#host-failure)) |
 
 The host always sends every field above (`discs` only for a multi-disc
 game), including for a game that ended before its first frame. The shorter
 form in [Host failure](#host-failure) is never sent by a host; only the
-launcher's client reports it.
+launcher's client reports it. A launcher that gets `hostExited` or
+`hostHung` from a host treats it as `other`.
 
 Each option has `title` (string), `values` (array of strings), `labels`
 (array of strings, the same length as `values`), `selected` (index into
