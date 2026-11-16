@@ -549,8 +549,8 @@ def core_data_bounds(program, core, log):
 
 def option_keys_not_utf8(program, core, log):
     """Two option keys that differ only in a byte that is not UTF-8 are the same key once status
-    cleans them, so status lists it once, with the first definition, and option sets that one by
-    the key status sends."""
+    cleans them, so status lists it once, with the first definition, and option and start.options
+    set that one by the key status sends."""
     session = Session(program, core, log)
     try:
         session.start()
@@ -562,6 +562,13 @@ def option_keys_not_utf8(program, core, log):
         if session.call('option', {'key': key, 'value': 'two'}) is not True:
             raise c.Failed('the option was not taken by the key status sends')
         session.wait(lambda s: s['options'][key]['activeValue'] == 'two', 3)
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
+        session.call('release')
+        session.start(options={key: 'two'})
+        status = session.wait(lambda s: s and s['ready'], 10)
+        if status['options'][key]['activeValue'] != 'two':
+            raise c.Failed(f'start.options by the key status sends gave {status["options"][key]}')
     finally:
         session.close()
 

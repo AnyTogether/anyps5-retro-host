@@ -280,7 +280,17 @@ def spawn(command, relay, log, **options):
     if not line.strip().isdigit():
         launcher.kill()
         raise Failed('the relay did not start the host')
-    return Grandchild(int(line)), launcher
+    try:
+        return Grandchild(int(line)), launcher
+    except Failed:
+        if not WINDOWS:
+            try:
+                os.kill(int(line), 9)
+            except ProcessLookupError:
+                pass
+        launcher.kill()
+        launcher.wait()
+        raise
 
 
 def relay(command):
