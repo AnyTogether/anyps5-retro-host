@@ -609,7 +609,8 @@ release can be packed and checked by hand the same way.
   lists (no entry changed, missing or added); all names must carry one
   version, and with `--version` that one; with `--host-repository` and
   `--host-commit`, every zip's `SOURCE.txt` must name that repository at that
-  commit (the `sums` job passes this run's). It refuses a
+  commit, read from the same bytes that were hashed, so the entry is read only
+  once (the `sums` job passes this run's). It refuses a
   `SHA256SUMS` name that is not a release file before reading it, an entry
   that states more than 256 MiB before reading it, and a zip
   entry that is not a plain file with the packer's permissions, or whose

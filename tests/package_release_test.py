@@ -11,7 +11,8 @@ its folder or over another entry on Windows or macOS, is held twice or is not a 
 SHA256SUMS name that is no release file; that it compares each zip with its .files (a changed byte,
 an extra entry, a missing entry) and each file with SHA256SUMS; that a missing file, a damaged zip,
 damaged deflated data, an encrypted entry, a name that is not UTF-8, an unknown zip version and an
-entry over the size cap end in a refusal, not a traceback; and that it holds a release to one
+entry over the size cap end in a refusal, not a traceback; that SOURCE.txt is checked from the bytes
+that were hashed; and that it holds a release to one
 version and its SOURCE.txt to the source asked. Last, that --mit-notice writes each copyright
 line of the files that grant MIT once, with the grant, and refuses a folder that grants none. Each
 case runs in a new git repository in a temporary folder, with the user's and the system's git
@@ -23,6 +24,7 @@ import sys
 import tempfile
 import textwrap
 import zipfile
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
@@ -313,6 +315,43 @@ with tempfile.TemporaryDirectory() as folder:
     resum(utf8_name)
     check('a central name marked UTF-8 that is not UTF-8 is refused, not a traceback',
           refused(checked(utf8_name), 'not a zip that can be read'), True)
+    tail = folder / 'tail-after-source'
+    tail.mkdir()
+    source_data = f'host{chr(10)}{FORK} at commit {"c" * 40}.{chr(10)}'.encode()
+    source_entries = good + [('SOURCE.txt', source_data, p.PLAIN)]
+    packer = zlib.compressobj(9, zlib.DEFLATED, -15)
+    tail_stream = packer.compress(source_data) + packer.flush(zlib.Z_SYNC_FLUSH)
+    tail_stream += b'\x00\x00\x00\xff\xff' * (p.CHUNK // 5 + 1) + b'\x07'
+    with zipfile.ZipFile(tail / f'{stem}.zip', 'w') as archive:
+        for name, data, mode in source_entries:
+            info = zipfile.ZipInfo(name, date_time=p.TIME)
+            info.create_system = 3
+            info.external_attr = mode << 16
+            archive.writestr(info, data)
+    raw = bytearray((tail / f'{stem}.zip').read_bytes())
+    with zipfile.ZipFile(tail / f'{stem}.zip') as archive:
+        info = archive.getinfo('SOURCE.txt')
+        start = info.header_offset + 30 + len(info.filename)
+        end = start + info.compress_size
+    head = raw[:info.header_offset]
+    local = bytearray(raw[info.header_offset:start])
+    local[8:10] = (8).to_bytes(2, 'little')
+    local[18:22] = len(tail_stream).to_bytes(4, 'little')
+    rest = bytearray(raw[end:])
+    for at in range(len(rest) - 4):
+        if rest[at:at + 4] == b'PK\x01\x02' and rest[at + 46:at + 46 + 10] == b'SOURCE.txt':
+            rest[at + 10:at + 12] = (8).to_bytes(2, 'little')
+            rest[at + 20:at + 24] = len(tail_stream).to_bytes(4, 'little')
+    shift = len(tail_stream) - (end - start)
+    eocd = rest.rindex(b'PK\x05\x06')
+    directory = int.from_bytes(rest[eocd + 16:eocd + 20], 'little')
+    rest[eocd + 16:eocd + 20] = (directory + shift).to_bytes(4, 'little')
+    (tail / f'{stem}.zip').write_bytes(bytes(head + local + tail_stream + rest))
+    (tail / f'{stem}.files').write_bytes(
+        p.sums_text([(name, p.sha256(data)) for name, data, _ in source_entries]).encode('utf-8'))
+    resum(tail)
+    check('a SOURCE.txt whose deflated data goes on past its end is checked as hashed, read once',
+          checked(tail, None, FORK, 'c' * 40), 'accepted')
     check('a zip that needs an unknown zip version is refused, not a traceback',
           refused(checked(central_patched('zip-version', 6, bytes([64, 0]))), 'not a zip that can be read'), True)
     mixed = release(folder / 'mixed', good)

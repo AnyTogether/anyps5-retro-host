@@ -394,11 +394,13 @@ def file_digest(path, name):
     return digest.hexdigest()
 
 
-def entry_digest(archive, info, label):
+def entry_digest(archive, info, label, kept=None):
     """The sha256 of one zip entry, read in blocks after its stated size is checked against
     MAX_ENTRY, and refused when it is encrypted, packed other than stored or deflated (as the packer
     writes), unpacks to more bytes than it states, holds damaged data or fails its CRC. The zip is
-    untrusted input, so any error zipfile or zlib raises on it is a refusal, never a traceback."""
+    untrusted input, so any error zipfile or zlib raises on it is a refusal, never a traceback.
+    With kept, a list, the bytes read are added to it, so what is checked later is what was hashed
+    and the entry is never read a second time."""
     if info.file_size > MAX_ENTRY:
         raise SystemExit(f'{label} holds {info.filename!r}, which is larger than {MAX_ENTRY} bytes')
     if info.flag_bits & 0x1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
@@ -412,6 +414,8 @@ def entry_digest(archive, info, label):
                 if size > info.file_size:
                     raise SystemExit(f'{label} holds {info.filename!r}, which unpacks to more than it states')
                 digest.update(block)
+                if kept is not None:
+                    kept.append(block)
     except Exception as error:
         raise SystemExit(f'{label} cannot be read at {info.filename!r}: {type(error).__name__}: {error}')
     return digest.hexdigest()
@@ -458,6 +462,7 @@ def check(folder, version=None, host_repository=None, host_commit=None):
             raise SystemExit(f'{stem} needs both its .zip and its .files')
         listed = parse_sums(read_list(folder / f'{stem}.files', f'{stem}.files'), allow_slash=True)
         held = {}
+        source_blocks = []
         try:
             archive = zipfile.ZipFile(folder / f'{stem}.zip')
         except Exception as error:
@@ -471,7 +476,8 @@ def check(folder, version=None, host_repository=None, host_commit=None):
                 mode = info.external_attr >> 16
                 if info.create_system != 3 or not stat.S_ISREG(mode) or mode not in (EXECUTABLE, PLAIN):
                     raise SystemExit(f'{stem}.zip holds {info.filename!r}, which is not a plain file')
-                held[info.filename] = entry_digest(archive, info, f'{stem}.zip')
+                keep = source_line and info.filename == 'SOURCE.txt' and info.file_size <= MAX_LIST
+                held[info.filename] = entry_digest(archive, info, f'{stem}.zip', source_blocks if keep else None)
             missing = sorted(set(listed) - set(held))
             extra = sorted(set(held) - set(listed))
             changed = sorted(name for name in set(held) & set(listed) if held[name] != listed[name])
@@ -484,7 +490,7 @@ def check(folder, version=None, host_repository=None, host_commit=None):
             if source_line:
                 if 'SOURCE.txt' not in held or archive.getinfo('SOURCE.txt').file_size > MAX_LIST:
                     raise SystemExit(f'{stem}.zip holds no SOURCE.txt that can be read')
-                lines = archive.read('SOURCE.txt').decode('utf-8', 'replace').splitlines()
+                lines = b''.join(source_blocks).decode('utf-8', 'replace').splitlines()
                 if source_line not in lines:
                     raise SystemExit(f'the SOURCE.txt in {stem}.zip does not name {source_line[:-1]}')
         print(f'{stem}: {len(listed)} files match')
