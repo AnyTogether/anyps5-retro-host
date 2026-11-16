@@ -2,10 +2,11 @@
 # SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
 """Host behaviour the fixtures do not cover: a stuck core, the memory card, ring growth, epochs
-across games, how the host leaves when the launcher goes, and many start, volume and stop calls in
-a row."""
+across games, how the host leaves when the launcher goes, many start, volume and stop calls in a
+row, the internal resolutions a GPU game is offered, and an OpenGL game's network calls."""
 
 import argparse
+import os
 import shutil
 import signal
 import sys
@@ -25,12 +26,22 @@ LEAVE_LIMIT = 10
 class Session:
     """A fake launcher that checks every ring and frame as it reads: a ring's size, the growth rule
     of protocol.md "Checks the launcher makes", and that the newest slot's epoch is the one start
-    returned."""
+    returned. With --strace, each session's host is traced as conformance.py traces it."""
+
+    # With --strace: the path each session's trace is named after, and the traces of the test that
+    # runs, each with its host, which main checks once the test has ended.
+    trace_prefix = None
+    traces = []
 
     def __init__(self, program, core, log, **options):
         self.work = Path(tempfile.mkdtemp(prefix='retro-host-test-'))
         self.paths = c.place(self.work, core)
+        traced = bool(Session.trace_prefix) and 'trace' not in options
+        if traced:
+            options['trace'] = Session.trace_prefix.with_name(f'{Session.trace_prefix.name}.{len(Session.traces) + 1}')
         self.host = (c.WindowsHost if c.WINDOWS else c.PosixHost)(program, log, **options)
+        if traced:
+            Session.traces.append((options['trace'], self.host))
         self.next_id = 0
         self.ring = None
         self.rings = []
@@ -138,7 +149,7 @@ class Session:
     def leaves(self, how, began, timeout=LEAVE_LIMIT):
         """The host's exit code once it has exited, within timeout seconds of began."""
         code = self.host.exits(max(0.0, began + timeout - time.monotonic()))
-        if code not in (c.EXIT_CLEAN, None):
+        if code != c.EXIT_CLEAN:
             raise c.Failed(f'after {how} the host exited with {code}, not 0')
         return code
 
@@ -464,6 +475,85 @@ def rumble_and_ports(program, core, log):
         session.close()
 
 
+def gpu_limits(program, core, log, require_gpu):
+    """The fake core's largest geometry is 1024 x 512 times the scale and a 640-wide screen's frames
+    640 x 480 times it, as SwanStation's are. A saved 16x would make frames 10240 pixels wide, more
+    than protocol.md's 8192, so the host offers only the scales whose largest geometry fits, starts
+    at the largest of them and says why in resolutionError."""
+    session = Session(program, core, log)
+    key = 'swanstation_GPU_ResolutionScale'
+    try:
+        (Path(session.paths['system']) / 'fake-gpu').write_bytes(b'')
+        session.start(options={key: '16'})
+        status = session.wait(lambda s: s and (s['ready'] or s['ended']), 30)
+        if status['ended']:
+            raise c.Failed(f'a saved 16x ended the game: {status["errorCode"]!r} {status["error"]!r}')
+        if not status['hardware']:
+            if require_gpu:
+                raise c.Failed('the host made no OpenGL context')
+            return 'skipped: the host made no OpenGL context here'
+        option = status['options'][key]
+        largest = max(int(value) for value in option['values'])
+        if any(1024 * int(value) > 8192 for value in option['values']) or largest < 1:
+            raise c.Failed(f'scales whose frames can pass 8192 are offered: {option["values"]}')
+        if option['activeValue'] != str(largest) or option['values'][option['selected']] != str(largest):
+            raise c.Failed(f'a saved 16x did not start at the largest scale offered: {option}')
+        if '16x' not in status['resolutionError']:
+            raise c.Failed(f'resolutionError does not say why 16x is not used: {status["resolutionError"]!r}')
+
+        def frame_width(width):
+            def test(s):
+                slot = session.ring.latest() if session.ring else None
+                return s['ended'] or (slot is not None and slot['width'] == width)
+            return test
+
+        status = session.wait(frame_width(640 * largest), 30)
+        if status['ended']:
+            raise c.Failed(f'the game ended at {largest}x: {status["errorCode"]!r} {status["error"]!r}')
+        if session.call('option', {'key': key, 'value': '16'}) is not False:
+            raise c.Failed('a scale that is not offered was taken')
+        if session.call('option', {'key': key, 'value': '2'}) is not True:
+            raise c.Failed('2x was not taken')
+        status = session.wait(frame_width(1280), 30)
+        if status['ended'] or status['resolutionError'] or status['options'][key]['activeValue'] != '2':
+            raise c.Failed(f'after choosing 2x: {status}')
+        session.call('stop')
+        status = session.wait(lambda s: s['ended'], 10)
+        if status['errorCode'] or status['resolutionError']:
+            raise c.Failed(f'the game stopped with {status}')
+        session.call('release')
+
+        # 2x chosen after the core read 16x but before the host saw its geometry: by the time the
+        # core's context is reset, the host gives it 2x, offers no 16x, and refused nothing.
+        system = Path(session.paths['system'])
+        for step in ('load', 'reset'):
+            (system / f'fake-hold-{step}').write_bytes(b'')
+
+        def held(step):
+            deadline = time.monotonic() + 10
+            while not (system / f'fake-held-{step}').exists():
+                if time.monotonic() > deadline:
+                    raise c.Failed(f'the fake core never held at {step}')
+                time.sleep(0.05)
+
+        session.start(options={key: '16'})
+        held('load')
+        if session.call('option', {'key': key, 'value': '2'}) is not True:
+            raise c.Failed('2x was not taken while the game loaded')
+        (system / 'fake-hold-load').unlink()
+        held('reset')
+        status = session.call('status')
+        option = status['options'][key]
+        if status['resolutionError'] or option['activeValue'] != '2' or '16' in option['values']:
+            raise c.Failed(f'2x chosen while loading at 16x, at context_reset: {status}')
+        (system / 'fake-hold-reset').unlink()
+        status = session.wait(frame_width(1280), 30)
+        if status['ended'] or status['resolutionError'] or status['options'][key]['activeValue'] != '2':
+            raise c.Failed(f'2x chosen while loading at 16x: {status}')
+    finally:
+        session.close()
+
+
 def discs(program, core, log):
     """initialDisc picks the disc a playlist boots with, changeDisc swaps discs and refuses what it
     cannot do, and a game with one disc has no discs in status."""
@@ -538,6 +628,32 @@ def core_data_bounds(program, core, log):
         session.close()
 
 
+def option_keys_not_utf8(program, core, log):
+    """Two option keys that differ only in a byte that is not UTF-8 are the same key once status
+    cleans them, so status lists it once, with the first definition, and option and start.options
+    set that one by the key status sends."""
+    session = Session(program, core, log)
+    try:
+        session.start()
+        status = session.wait(lambda s: s and s['ready'], 10)
+        key = 'fake_bytes\ufffd'
+        names = [name for name in status['options'] if name.startswith('fake_bytes')]
+        if names != [key] or status['options'][key]['values'] != ['one', 'two']:
+            raise c.Failed(f'keys that are one key once cleaned gave {names}: {status["options"].get(key)}')
+        if session.call('option', {'key': key, 'value': 'two'}) is not True:
+            raise c.Failed('the option was not taken by the key status sends')
+        session.wait(lambda s: s['options'][key]['activeValue'] == 'two', 3)
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
+        session.call('release')
+        session.start(options={key: 'two'})
+        status = session.wait(lambda s: s and s['ready'], 10)
+        if status['options'][key]['activeValue'] != 'two':
+            raise c.Failed(f'start.options by the key status sends gave {status["options"][key]}')
+    finally:
+        session.close()
+
+
 def log_lines_with_paths(program, core, log):
     """A disc whose path holds the words the host looks for in SwanStation's log does not fool it:
     they count only at the start of a message. A disc that cannot be read still ends the game
@@ -600,12 +716,31 @@ def no_dll_from_working_directory(program, core, log):
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def many_games(program, core, log):
+def many_games(program, core, log, require_gpu):
+    """Eight games in a row in one host, each an OpenGL game where a context can be made, so the
+    host makes and drops eight contexts and loads and unloads the system's OpenGL eight times."""
     session = Session(program, core, log)
     try:
+        (Path(session.paths['system']) / 'fake-gpu').write_bytes(b'')
         for game in range(1, 9):
             if session.start() != game:
                 raise c.Failed('epochs do not count up')
+            status = session.wait(lambda s: s and (s['ready'] or s['ended']), 30)
+            if status['ended']:
+                raise c.Failed(f'game {game} ended at start: {status["errorCode"]!r} {status["error"]!r}')
+            if require_gpu and not status['hardware']:
+                raise c.Failed(f'game {game} made no OpenGL context')
+            session.read_frames(5)
+            if session.call('status')['ended']:
+                raise c.Failed(f'game {game} ended by itself; the host log says why')
+            if game == 1 and status['hardware']:
+                if session.call('option', {'key': 'swanstation_GPU_ResolutionScale', 'value': '2'}) is not True:
+                    raise c.Failed('2x was not taken')
+                session.wait(lambda s: s['ended'] or (session.ring and session.ring.latest() and
+                                                      session.ring.latest()['width'] == 1280), 30)
+                session.read_frames(5)
+                if session.call('status')['ended']:
+                    raise c.Failed('game 1 ended after its framebuffer grew for 2x; the host log says why')
             for level in range(10):
                 session.send('volume', {'level': level / 10, 'muted': level % 2 == 0})
             session.call('pause', True)
@@ -623,28 +758,97 @@ def many_games(program, core, log):
         session.close()
 
 
+def gpu_network(program, core, log, require_gpu):
+    """Linux: an OpenGL game run under strace makes no network call that protocol.md "Network"
+    forbids. DISPLAY names an X server over TCP, as SSH forwarding sets it, so a host that let EGL
+    reach a window system (eglGetDisplay's default display) would show a socket that is not
+    AF_UNIX in the trace."""
+    if c.SYSTEM != 'linux':
+        return 'skipped: strace runs on Linux only'
+    if not shutil.which('strace'):
+        if require_gpu:
+            raise c.Failed('strace is not installed')
+        return 'skipped: strace is not installed'
+    folder = Path(tempfile.mkdtemp(prefix='retro-host-trace-'))
+    try:
+        return traced_gpu_game(program, core, log, require_gpu, folder / 'gpu.trace')
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def traced_gpu_game(program, core, log, require_gpu, trace):
+    saved = {name: os.environ.get(name) for name in ('DISPLAY', 'WAYLAND_DISPLAY')}
+    os.environ['DISPLAY'] = '127.0.0.1:9'
+    os.environ.pop('WAYLAND_DISPLAY', None)
+    try:
+        session = Session(program, core, log, trace=trace)
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    try:
+        (Path(session.paths['system']) / 'fake-gpu').write_bytes(b'')
+        session.start()
+        status = session.wait(lambda s: s and (s['ready'] or s['ended']), 30)
+        if status['ended']:
+            raise c.Failed(f'the game ended at start: {status["errorCode"]!r} {status["error"]!r}')
+        if not status['hardware']:
+            if require_gpu:
+                raise c.Failed('the host made no OpenGL context')
+            return 'skipped: the host made no OpenGL context here'
+        session.read_frames(10)
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 10)
+        session.call('release')
+        session.host.send_message({'type': 'shutdown'})
+        if session.host.exits(10) != 0:
+            raise c.Failed('the host did not exit cleanly')
+        problems = c.trace_problems(trace, session.host.process.pid)
+        if problems:
+            raise c.Failed('; '.join(problems))
+    finally:
+        session.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', required=True, type=Path)
     parser.add_argument('--core', required=True, type=Path)
     parser.add_argument('--log', type=Path)
+    parser.add_argument('--require-gpu', action='store_true', help='fail, not skip, when the host makes no OpenGL context or, on Linux, strace is missing')
+    parser.add_argument('--strace', type=Path,
+                        help='Linux: trace the network calls of each session\'s host into this file, with the '
+                             'test\'s name and a count added, and fail a test whose sessions break protocol.md '
+                             '"Network" or have no trace, as conformance.py --strace does')
     parser.add_argument('names', nargs='*')
     options = parser.parse_args()
     log = open(options.log, 'ab') if options.log else c.subprocess.DEVNULL
     c.load_atomics(options.core.resolve())
     failures = 0
-    tests = [test for test in (stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size,
-                                 ring_growth, epochs, launcher_stops_reading, launcher_exits,
-                                 log_lines_with_paths, core_data_bounds, rumble_and_ports, discs, wrong_parent,
-                                 no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
-    for test in tests:
+    tests = {test.__name__: test for test in (
+        stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
+        launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, option_keys_not_utf8,
+        rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory)}
+    for test in (many_games, gpu_limits, gpu_network):
+        tests[test.__name__] = lambda program, core, log, test=test: test(program, core, log, options.require_gpu)
+    chosen = [(name, test) for name, test in tests.items() if not options.names or name in options.names]
+    for name, test in chosen:
+        if options.strace:
+            Session.trace_prefix = options.strace.with_name(f'{options.strace.name}.{name}')
+            Session.traces = []
         try:
-            test(options.host.resolve(), options.core.resolve(), log)
-            print(f'ok    {test.__name__}')
+            skipped = test(options.host.resolve(), options.core.resolve(), log)
+            problems = [problem for trace, host in Session.traces
+                        for problem in c.trace_problems(trace, host.process.pid)]
+            if problems:
+                raise c.Failed('; '.join(problems))
+            print(f'ok    {name}' + (f' ({skipped})' if skipped else ''))
         except c.Failed as problem:
             failures += 1
-            print(f'FAIL  {test.__name__}: {problem}')
-    print(f'{len(tests) - failures} of {len(tests)} host tests passed.')
+            print(f'FAIL  {name}: {problem}')
+    print(f'{len(chosen) - failures} of {len(chosen)} host tests passed.')
     return 1 if failures else 0
 
 

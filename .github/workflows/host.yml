@@ -7,13 +7,20 @@ permissions:
   contents: read
 jobs:
   linux:
-    runs-on: ubuntu-24.04
+    # 22.04 is the oldest Linux the launcher supports, with libglvnd 1.4 and Mesa 23.2.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           submodules: true
           persist-credentials: false
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build strace locales
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build strace locales
+          libegl1 libgl1 libegl-mesa0
       - name: A locale with a decimal comma, for json_test
         run: sudo locale-gen de_DE.UTF-8
       - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -23,7 +30,9 @@ jobs:
       - run: python3 tests/trace_test.py
       - name: Conformance sessions; each fails on a socket that is not AF_UNIX, a bind or listen, or no trace (protocol.md, "Network")
         run: python3 tests/conformance.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --strace build/network.trace
-      - run: python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log
+      - name: Host tests, with Mesa's OpenGL for the resolution limits, eight OpenGL games in one host, and an OpenGL game under strace; each fails on what the conformance sessions fail on
+        run: python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --require-gpu --strace build/host-test.trace
+      - run: python3 -I tests/fake_host_selftest.py
       - if: failure()
         run: tail -200 build/host.log || true
 
@@ -61,12 +70,16 @@ jobs:
       - run: ctest --test-dir build --output-on-failure
       - run: python3 tests/framing_test.py
       - run: python3 tests/conformance.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log
-      - run: python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log
+      - name: Host tests, with Apple's OpenGL (the runner has only its software renderer)
+        run: python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --require-gpu
+      - run: python3 -I tests/fake_host_selftest.py
       - if: failure()
         run: tail -200 build/host.log || true
 
   windows:
     runs-on: windows-2022
+    env:
+      GALLIUM_DRIVER: llvmpipe
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -74,10 +87,32 @@ jobs:
           persist-credentials: false
       - run: cmake -S . -B build
       - run: cmake --build build --config Release
+      # The runner's own opengl32.dll makes no OpenGL 3.3 context. Mesa's, from mesa-dist-win (MIT;
+      # Mesa built with MSVC) at a fixed release and checked by its SHA-256, is put next to the
+      # host and the tests, which load it from there, so WGL, the readback and the hidden window
+      # are tested too. Nothing ships it.
+      - name: Mesa's software OpenGL (llvmpipe) next to the host
+        shell: pwsh
+        env:
+          MESA: 26.2.4
+          MESA_SHA256: 351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695
+        run: |
+          $archive = "$env:RUNNER_TEMP\mesa.7z"
+          Invoke-WebRequest "https://github.com/pal1000/mesa-dist-win/releases/download/$env:MESA/mesa3d-$env:MESA-release-msvc.7z" -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $env:MESA_SHA256) { throw "mesa3d-$env:MESA-release-msvc.7z does not match its SHA-256" }
+          7z x $archive "-o$env:RUNNER_TEMP\mesa" -y | Out-Null
+          foreach ($name in 'opengl32.dll', 'libgallium_wgl.dll', 'libglapi.dll') {
+            $dll = "$env:RUNNER_TEMP\mesa\x64\$name"
+            if (Test-Path $dll) { Copy-Item $dll build/Release }
+          }
+          if (-not (Test-Path build/Release/opengl32.dll)) { throw 'the Mesa archive has no x64\opengl32.dll' }
+      - run: ctest --test-dir build -C Release --output-on-failure -V -R gpu_thread
       - run: ctest --test-dir build -C Release --output-on-failure
       - run: python tests/framing_test.py
       - run: python tests/conformance.py --host build/Release/anyps5-retro-host.exe --core build/Release/fake_core.dll --log build/host.log
-      - run: python tests/host_test.py --host build/Release/anyps5-retro-host.exe --core build/Release/fake_core.dll --log build/host.log
+      - name: Host tests, with Mesa's OpenGL through WGL
+        run: python tests/host_test.py --host build/Release/anyps5-retro-host.exe --core build/Release/fake_core.dll --log build/host.log --require-gpu
+      - run: python -I tests/fake_host_selftest.py
       - if: failure()
         shell: bash
         run: tail -200 build/host.log || true

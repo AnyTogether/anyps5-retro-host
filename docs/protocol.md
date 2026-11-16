@@ -57,10 +57,13 @@ network connection under this rule, and neither is playing sound through the
 system's sound service over its local socket (PulseAudio or PipeWire on
 Linux). The host repository's CI traces the host's network calls with
 `strace -f -e trace=%network` on Linux while it runs the conformance
-sessions. A session fails on any socket that is not `AF_UNIX`, on any `bind`
+sessions and its own host tests, among them an OpenGL game with `DISPLAY`
+naming an X server over TCP (`host_test.py`, `gpu_network`). A session fails on any socket that is not `AF_UNIX`, on any `bind`
 or `listen`, and when its trace is missing or holds none of the host's reads
 of the control stream, which every session has, so a trace that recorded
-nothing cannot pass.
+nothing cannot pass. The host makes its OpenGL contexts without a window
+system (host.md, "GPU rendering"), so `DISPLAY` and `WAYLAND_DISPLAY` lead it
+nowhere.
 
 ### Starting the host
 
@@ -649,7 +652,7 @@ No argument. Returns `null` when no game is loaded, or:
 | `error` | string | Why the game ended, in English for logs, or `""` |
 | `errorCode` | string | Why the game ended, for the UI to show in the player's language (table below), or `""` |
 | `aspect` | number, greater than 0 and at most 10 | The display aspect ratio the core reports; 1.3333333333333333 until it reports one |
-| `hardware` | boolean | The core draws with the GPU (not the software renderer) |
+| `hardware` | boolean | The core draws with its OpenGL renderer, in a context the host made, not with its own software renderer. The OpenGL implementation itself may run on the CPU (Mesa's or Apple's software renderer on a machine with no GPU driver for it) |
 | `resolutionError` | string | Why the last internal resolution could not be used, or `""` |
 | `graphicsPending` | boolean | A graphics option is waiting to be applied |
 | `progressLabel` | string or null | What is loading right now, while there is something to show |
@@ -685,6 +688,15 @@ settings can still override it) and `restart` (true when a change only takes
 effect when the game is started again; until then the host keeps giving the
 core the value the game started with).
 
+For the internal resolution (`swanstation_GPU_ResolutionScale`), while
+`hardware` is `true`, `values` lists only the whole-number scales whose
+largest frame the host can pass on (at most 8192 × 8192 and no larger than
+the OpenGL context can draw), and any value that is not a whole number. A saved value
+larger than those starts the game at the largest one listed, and
+`resolutionError` says why until the player chooses another value. Without
+an OpenGL context, or when not even the smallest scale fits, every value is listed; a
+frame larger than 8192 × 8192 then ends the game with `frameTooLarge`.
+
 `discs` has `labels` (array of at most 128 strings, the discs `changeDisc`
 reaches), `inserted` (index of the inserted disc, or null while the tray is
 open or when the core has inserted a disc past the 128th), `insertedDiscPath`
@@ -692,12 +704,15 @@ open or when the core has inserted a disc past the 128th), `insertedDiscPath`
 run with it, otherwise `""`), `busy` (a disc change is in progress) and
 `failed` (the last change failed).
 
-Text the host takes from the core (option titles and labels, disc labels and
-paths, `error`) can hold bytes that are not UTF-8: SwanStation labels a
+Text the host takes from the core (option keys, titles and labels, disc labels
+and paths, `error`) can hold bytes that are not UTF-8: SwanStation labels a
 playlist's discs with the file names in the `.m3u`, which may be saved in
 Latin-1. The host sends each such byte sequence as U+FFFD, one for each
 maximal subpart as Unicode describes, so a status reply is always valid UTF-8.
-A disc path cleaned this way is for showing; it may not name a file.
+A disc path cleaned this way is for showing; it may not name a file. Option
+keys are compared after this cleaning: `options` lists two keys that become
+the same once, with the core's first definition, and `option` and
+`start.options` take the key as `status` sends it.
 
 ### pause
 
