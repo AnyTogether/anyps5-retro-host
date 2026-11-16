@@ -257,9 +257,14 @@ What the fake does with each step:
   rules: framing and [Values](protocol.md#values), nothing but `hello`
   before `welcome`, one `hello`, nothing after `unsupported`, call and
   ping ids counting up, and each `input`'s `port`, `buttons` and sticks in
-  their ranges. "Before `welcome`" is decided when the message's length
-  arrives: one that arrived before the fake began to send `welcome` was sent
-  before the launcher had it. It waits `--timeout` seconds (default 30).
+  their ranges. "Before `welcome`" is decided by where the message starts in
+  the stream: just before it sends `welcome`, the fake notes how many bytes
+  it has read plus how many are waiting unread (`FIONREAD` on the socket,
+  `PeekNamedPipe` on Windows), and a message that starts before that point
+  was sent before the launcher had `welcome`. On Windows the fake therefore
+  reads only the bytes `PeekNamedPipe` reports, since a waiting `ReadFile`
+  on the same pipe would block the peek. It waits `--timeout` seconds
+  (default 30).
 - **`pollWithin`**: nothing. The reply that follows already matches, so the
   launcher's first call is the last.
 - **`silence`**: reads nothing and answers nothing. **`wait`**: answers pings
@@ -267,14 +272,17 @@ What the fake does with each step:
 - **The step after which the launcher ends the host** (a host step,
   `silence` or `wait` followed by `launcherKillsHost`, or the last host step
   of a session whose outcome is not `clean`): the fake first waits
-  `--kill-pause` seconds (default 0.5; before a host step it answers pings
-  meanwhile, and a `silence` or `wait` goes on as written), and being ended
-  then is a failure, because the launcher ended the host before the step
-  that should make it. A host step's message is then sent: all but its last
-  bytes, then the report is set to `awaitingKill`, then the rest. A launcher
-  cannot act on a message before its last bytes arrive, so a launcher that
-  ends the host as soon as it reads the message always finds the report
-  set. A `silence` or `wait` sets it once the pause is over.
+  `--kill-pause` seconds (default 0.5), and being ended then is a failure,
+  because the launcher ended the host before the step that should make it.
+  Before a host step the fake keeps checking the launcher's messages during
+  the pause and answers pings; any other message is dropped, as it is while
+  the fake waits to be ended. A `silence` or `wait` goes on as written. When
+  the pause is over, the report is set to `awaitingKill` and then the host
+  step's message is written. The report is set just before the write, not
+  after it: a launcher may end the host the moment it has read the message,
+  before the fake could write a report, and setting it after would fail a
+  correct launcher. A launcher that ends the host early does it during the
+  pause, after the message before.
 - **`launcherKillsHost`**, and the end of a session whose outcome is not
   `clean`: waits `--kill-within` seconds (default 10) to be ended, and fails
   after that. End-of-stream is ignored then.

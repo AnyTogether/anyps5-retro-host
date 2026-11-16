@@ -35,7 +35,6 @@ ENVIRONMENT = {'session': 'ANYPS5_FAKE_HOST_SESSION', 'report': 'ANYPS5_FAKE_HOS
                'resume': 'ANYPS5_FAKE_HOST_RESUME', 'kill_pause': 'ANYPS5_FAKE_HOST_KILL_PAUSE'}
 INPUT_FIELDS = (('port', 0, 1), ('buttons', 0, 65535), ('leftX', -32768, 32767), ('leftY', -32768, 32767),
                 ('rightX', -32768, 32767), ('rightY', -32768, 32767))
-HELD_BACK = 3
 
 
 class Failed(Exception):
@@ -196,26 +195,34 @@ class Report:
 class Link:
     def __init__(self):
         self.events = queue.Queue()
-        self.welcome_sent = threading.Event()
+        self.consumed = 0
+        self.boundary = None
 
     def start(self):
         threading.Thread(target=self.pump, daemon=True).start()
 
+    def mark_welcome(self):
+        consumed = self.consumed
+        self.boundary = consumed + self.pending()
+
+    def before_welcome(self, start):
+        return self.boundary is None or start < self.boundary
+
     def pump(self):
         try:
             while True:
+                start = self.consumed
                 header = self.read_exact(4, True)
                 if header is None:
                     self.events.put(('eof',))
                     return
-                early = not self.welcome_sent.is_set()
                 size = struct.unpack('<I', header)[0]
                 if not 2 <= size <= 1 << 20:
                     raise Failed(f'a length of {size} is outside 2 to 1 MiB')
                 body = self.read_exact(size, False)
                 if body is None:
                     raise Failed('the stream ended inside a message')
-                self.events.put(('message', decode(body), early))
+                self.events.put(('message', decode(body), start))
         except Failed as problem:
             self.events.put(('bad', str(problem)))
 
@@ -254,8 +261,17 @@ class PosixLink(Link):
                 if first and not data:
                     return None
                 raise Failed('the stream ended inside a message')
+            self.consumed += len(chunk)
             data += chunk
         return data
+
+    def pending(self):
+        import fcntl
+        import termios
+        try:
+            return struct.unpack('i', fcntl.ioctl(self.socket.fileno(), termios.FIONREAD, b'\0' * 4))[0]
+        except OSError:
+            return 0
 
     def send(self, data, descriptors=()):
         flags = getattr(socket, 'MSG_NOSIGNAL', 0)
@@ -272,6 +288,8 @@ class PosixLink(Link):
 
 class WindowsLink(Link):
     def __init__(self, read_handle, write_handle):
+        import ctypes
+        import ctypes.wintypes as w
         import msvcrt
         super().__init__()
         try:
@@ -279,21 +297,46 @@ class WindowsLink(Link):
             self.writer = msvcrt.open_osfhandle(write_handle, os.O_WRONLY | os.O_BINARY)
         except OSError as problem:
             raise Failed(f'the --ipc-read or --ipc-write handle cannot be used ({problem})')
+        self.read_handle = msvcrt.get_osfhandle(self.reader)
+        self.ctypes = ctypes
+        self.dword = w.DWORD
+        self.peek_pipe = ctypes.WinDLL('kernel32', use_last_error=True).PeekNamedPipe
+        self.peek_pipe.argtypes = [w.HANDLE, ctypes.c_void_p, w.DWORD, ctypes.c_void_p, ctypes.POINTER(w.DWORD),
+                                   ctypes.c_void_p]
+        self.peeks = self.peek() is not None
         self.start()
+
+    def peek(self):
+        available = self.dword()
+        if not self.peek_pipe(self.read_handle, None, 0, None, self.ctypes.byref(available), None):
+            return None
+        return available.value
 
     def read_exact(self, size, first):
         data = b''
         while len(data) < size:
+            wanted = size - len(data)
+            if self.peeks:
+                ready = self.peek()
+                if ready == 0:
+                    time.sleep(0.001)
+                    continue
+                if ready is not None:
+                    wanted = min(wanted, ready)
             try:
-                chunk = os.read(self.reader, size - len(data))
+                chunk = os.read(self.reader, wanted)
             except OSError:
                 chunk = b''
             if not chunk:
                 if first and not data:
                     return None
                 raise Failed('the stream ended inside a message')
+            self.consumed += len(chunk)
             data += chunk
         return data
+
+    def pending(self):
+        return (self.peek() or 0) if self.peeks else 0
 
     def send(self, data, descriptors=()):
         if descriptors:
@@ -664,7 +707,7 @@ class Fake:
                 self.control(event)
                 continue
             message = event[1]
-            self.check_order(message, event[2])
+            self.check_order(message, self.link.before_welcome(event[2]))
             kind = message['type']
             if kind == wanted:
                 return message
@@ -716,12 +759,8 @@ class Fake:
             self.link.send(data, descriptors)
             return
         self.pause()
-        split = min(HELD_BACK, len(data) - 1)
-        if split > 0:
-            self.link.send(data[:split], descriptors)
-            descriptors = ()
         self.arm()
-        self.link.send(data[split:], descriptors)
+        self.link.send(data, descriptors)
 
     def spare_descriptors(self, count):
         if count and WINDOWS:
@@ -749,7 +788,7 @@ class Fake:
             if step.get('wrongPid'):
                 written = step['message'].get('pid')
                 message['pid'] = written if isinstance(written, int) and written != self.pid else self.pid + 1
-            self.link.welcome_sent.set()
+            self.link.mark_welcome()
         elif kind == 'unsupported':
             self.unsupported = True
         elif kind == 'reply':
