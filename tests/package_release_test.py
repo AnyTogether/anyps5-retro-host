@@ -9,9 +9,9 @@ read, a local remote and a build it cannot name, and does not take another repos
 unpacked source inside it. It also checks that --check refuses a zip entry that could unpack outside
 its folder or over another entry on Windows or macOS, is held twice or is not a plain file, and a
 SHA256SUMS name that is no release file; that it compares each zip with its .files (a changed byte,
-an extra entry, a missing entry) and each file with SHA256SUMS; that a missing file, a damaged zip
-and an entry over the size cap end in a refusal, not a traceback; and that it holds a release to
-one version and its SOURCE.txt to the source asked. Last, that --mit-notice writes each copyright
+an extra entry, a missing entry) and each file with SHA256SUMS; that a missing file, a damaged zip,
+damaged deflated data, an encrypted entry and an entry over the size cap end in a refusal, not a
+traceback; and that it holds a release to one version and its SOURCE.txt to the source asked. Last, that --mit-notice writes each copyright
 line of the files that grant MIT once, with the grant, and refuses a folder that grants none. Each
 case runs in a new git repository in a temporary folder, with the user's and the system's git
 configuration left out."""
@@ -271,6 +271,31 @@ with tempfile.TemporaryDirectory() as folder:
     resum(broken)
     check('an entry whose bytes fail their CRC is refused, not a traceback',
           refused(checked(broken), 'cannot be read'), True)
+    def deflated(name):
+        target = folder / name
+        target.mkdir()
+        p.write_zip(target / f'{stem}.zip', good)
+        (target / f'{stem}.files').write_bytes(listed.encode('utf-8'))
+        resum(target)
+        return target
+    check('a deflated release the packer writes', checked(deflated('deflated')), 'accepted')
+    broken = deflated('bad-deflate')
+    data = bytearray((broken / f'{stem}.zip').read_bytes())
+    with zipfile.ZipFile(broken / f'{stem}.zip') as archive:
+        info = archive.getinfo('anyps5-retro-host')
+        start = info.header_offset + 30 + len(info.filename)
+        data[start:start + info.compress_size] = b'\xff' * info.compress_size
+    (broken / f'{stem}.zip').write_bytes(bytes(data))
+    resum(broken)
+    check('an entry whose deflated data is damaged is refused, not a traceback',
+          refused(checked(broken), 'cannot be read'), True)
+    locked = deflated('encrypted')
+    data = bytearray((locked / f'{stem}.zip').read_bytes())
+    central = data.index(b'PK\x01\x02')
+    data[central + 8] |= 0x01
+    (locked / f'{stem}.zip').write_bytes(bytes(data))
+    resum(locked)
+    check('an encrypted entry is refused, not a traceback', refused(checked(locked), 'encrypted'), True)
     mixed = release(folder / 'mixed', good)
     (mixed / 'anyps5-retro-host-1.0.1-source.tar.gz').write_bytes(b'source')
     resum(mixed)

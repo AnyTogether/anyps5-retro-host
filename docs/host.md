@@ -617,8 +617,10 @@ release can be packed and checked by hand the same way.
   each part of a name must be letters, digits and `._+-`, must not start or
   end with a dot or be a Windows device name such as `NUL`, no two names may
   differ only in case, and no entry may have the name of a folder another
-  entry is in (in any case). A missing file, a damaged zip or a failed CRC is
-  refused with a message, not a traceback. The packer refuses to write such a
+  entry is in (in any case). A missing file, a damaged zip, damaged deflated
+  data, a failed CRC, and an encrypted entry or one packed other than stored
+  or deflated are refused with a message, not a traceback. The packer refuses
+  to write such a
   name, so a licence file with a space in its name stops the build.
   [`tests/package_release_test.py`](../tests/package_release_test.py) covers
   each case.

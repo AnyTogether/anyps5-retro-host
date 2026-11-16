@@ -56,6 +56,7 @@ import subprocess
 import sys
 import textwrap
 import zipfile
+import zlib
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -396,9 +397,12 @@ def file_digest(path, name):
 
 def entry_digest(archive, info, label):
     """The sha256 of one zip entry, read in blocks after its stated size is checked against
-    MAX_ENTRY, and refused when it unpacks to more bytes than it states or fails its CRC."""
+    MAX_ENTRY, and refused when it is encrypted, packed other than stored or deflated (as the packer
+    writes), unpacks to more bytes than it states, holds damaged data or fails its CRC."""
     if info.file_size > MAX_ENTRY:
         raise SystemExit(f'{label} holds {info.filename!r}, which is larger than {MAX_ENTRY} bytes')
+    if info.flag_bits & 0x1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+        raise SystemExit(f'{label} holds {info.filename!r} encrypted or packed in a way the packer never writes')
     digest = hashlib.sha256()
     size = 0
     try:
@@ -408,7 +412,8 @@ def entry_digest(archive, info, label):
                 if size > info.file_size:
                     raise SystemExit(f'{label} holds {info.filename!r}, which unpacks to more than it states')
                 digest.update(block)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, OSError, EOFError) as error:
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, NotImplementedError, RuntimeError, OSError,
+            EOFError) as error:
         raise SystemExit(f'{label} cannot be read at {info.filename!r}: {error}')
     return digest.hexdigest()
 
