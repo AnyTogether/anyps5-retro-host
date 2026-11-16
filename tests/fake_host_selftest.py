@@ -31,6 +31,7 @@ INPUT = {'type': 'input', 'port': 0, 'buttons': 0, 'leftX': 0, 'leftY': 0, 'righ
 MISTAKES = {
     'wrong-first-call': "expected call 'volume'",
     'call-before-welcome': 'the launcher sent call before welcome',
+    'call-in-welcome-pause': 'the launcher sent call before welcome',
     'id-not-counting': 'does not count up',
     'second-hello': 'the launcher sent a second hello',
     'descriptor': 'the launcher sent a descriptor',
@@ -475,6 +476,11 @@ class Launcher:
         if kind == 'hello' and mistake == 'call-before-welcome':
             self.started.send(encode(message) + encode({'type': 'call', 'id': 1, 'method': 'status'}))
             raise Made()
+        if kind == 'hello' and mistake == 'call-in-welcome-pause':
+            self.send(message)
+            time.sleep(0.2)
+            self.send({'type': 'call', 'id': 1, 'method': 'status'})
+            raise Made()
         if kind == 'call':
             if self.welcomed and not self.shut:
                 self.extra_ping()
@@ -644,6 +650,8 @@ def main():
             ('play-and-quit, a wrong first call', SESSIONS / 'play-and-quit.json', {'mistake': 'wrong-first-call'}),
             ('play-and-quit, a call before welcome', SESSIONS / 'play-and-quit.json',
              {'mistake': 'call-before-welcome'}),
+            ('welcome-wrong-pid, a call during the pause before welcome', SESSIONS / 'welcome-wrong-pid.json',
+             {'mistake': 'call-in-welcome-pause'}),
             ('play-and-quit, a call id that does not count up', SESSIONS / 'play-and-quit.json',
              {'mistake': 'id-not-counting'}),
             ('play-and-quit, a second hello', SESSIONS / 'play-and-quit.json', {'mistake': 'second-hello'}),

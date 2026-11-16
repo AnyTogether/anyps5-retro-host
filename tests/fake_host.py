@@ -15,6 +15,7 @@ import os
 import queue
 import random
 import re
+import select
 import socket
 import string
 import struct
@@ -197,13 +198,14 @@ class Link:
         self.events = queue.Queue()
         self.consumed = 0
         self.boundary = None
+        self.taking = threading.Lock()
 
     def start(self):
         threading.Thread(target=self.pump, daemon=True).start()
 
     def mark_welcome(self):
-        consumed = self.consumed
-        self.boundary = consumed + self.pending()
+        with self.taking:
+            self.boundary = self.consumed + self.pending()
 
     def before_welcome(self, start):
         return self.boundary is None or start < self.boundary
@@ -244,11 +246,17 @@ class PosixLink(Link):
     def read_exact(self, size, first):
         data = b''
         while len(data) < size:
-            try:
-                chunk, control, flags, _ = self.socket.recvmsg(size - len(data), socket.CMSG_SPACE(4 * 4),
-                                                               getattr(socket, 'MSG_CMSG_CLOEXEC', 0))
-            except (ConnectionResetError, OSError):
-                chunk, control, flags = b'', [], 0
+            select.select([self.socket], [], [], 0.05)
+            with self.taking:
+                try:
+                    chunk, control, flags, _ = self.socket.recvmsg(
+                        size - len(data), socket.CMSG_SPACE(4 * 4),
+                        getattr(socket, 'MSG_CMSG_CLOEXEC', 0) | socket.MSG_DONTWAIT)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    chunk, control, flags = b'', [], 0
+                self.consumed += len(chunk)
             for level, kind, payload in control:
                 if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
                     for descriptor in array.array('i', payload[:len(payload) - len(payload) % 4]):
@@ -261,7 +269,6 @@ class PosixLink(Link):
                 if first and not data:
                     return None
                 raise Failed('the stream ended inside a message')
-            self.consumed += len(chunk)
             data += chunk
         return data
 
@@ -317,23 +324,31 @@ class WindowsLink(Link):
         while len(data) < size:
             wanted = size - len(data)
             if self.peeks:
-                ready = self.peek()
+                with self.taking:
+                    ready = self.peek()
+                    if ready:
+                        chunk = self.read_some(min(wanted, ready))
                 if ready == 0:
                     time.sleep(0.001)
                     continue
-                if ready is not None:
-                    wanted = min(wanted, ready)
-            try:
-                chunk = os.read(self.reader, wanted)
-            except OSError:
-                chunk = b''
+                if ready is None:
+                    chunk = self.read_some(wanted)
+            else:
+                chunk = self.read_some(wanted)
             if not chunk:
                 if first and not data:
                     return None
                 raise Failed('the stream ended inside a message')
-            self.consumed += len(chunk)
             data += chunk
         return data
+
+    def read_some(self, count):
+        try:
+            chunk = os.read(self.reader, count)
+        except OSError:
+            chunk = b''
+        self.consumed += len(chunk)
+        return chunk
 
     def pending(self):
         return (self.peek() or 0) if self.peeks else 0
@@ -754,12 +769,13 @@ class Fake:
     def send(self, message, descriptors=()):
         self.link.send_message(message, descriptors)
 
-    def deliver(self, data, descriptors, armed):
-        if not armed:
-            self.link.send(data, descriptors)
-            return
-        self.pause()
-        self.arm()
+    def deliver(self, data, descriptors, armed, welcome=False):
+        if armed:
+            self.pause()
+        if welcome:
+            self.link.mark_welcome()
+        if armed:
+            self.arm()
         self.link.send(data, descriptors)
 
     def spare_descriptors(self, count):
@@ -788,7 +804,6 @@ class Fake:
             if step.get('wrongPid'):
                 written = step['message'].get('pid')
                 message['pid'] = written if isinstance(written, int) and written != self.pid else self.pid + 1
-            self.link.mark_welcome()
         elif kind == 'unsupported':
             self.unsupported = True
         elif kind == 'reply':
@@ -814,7 +829,7 @@ class Fake:
             self.ring.publish(step['publish'])
         spare = self.spare_descriptors(count)
         try:
-            self.deliver(encode(message), attach + spare, armed)
+            self.deliver(encode(message), attach + spare, armed, kind == 'welcome')
         finally:
             for descriptor in spare:
                 os.close(descriptor)

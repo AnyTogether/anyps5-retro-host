@@ -184,7 +184,8 @@ A crash gives none of these, so the tests expect the exact code.
   by playing the launcher side of every launcher session, started as a
   launcher starts the host, directly, from environment variables and through
   a shim. It also plays wrong launchers, and each must get a failed report
-  for its own reason: a wrong first call, a call before `welcome`, a call id
+  for its own reason: a wrong first call, a call before `welcome` (sent with
+  `hello`, and sent during the pause before a breaking `welcome`), a call id
   that does not count up, a second `hello`, an `input` for port 2, a
   descriptor from the launcher (Linux and macOS), an extra call during a
   `wait`, a launcher that never ends the host, and a launcher that ends it
@@ -258,13 +259,16 @@ What the fake does with each step:
   before `welcome`, one `hello`, nothing after `unsupported`, call and
   ping ids counting up, and each `input`'s `port`, `buttons` and sticks in
   their ranges. "Before `welcome`" is decided by where the message starts in
-  the stream: just before it sends `welcome`, the fake notes how many bytes
-  it has read plus how many are waiting unread (`FIONREAD` on the socket,
-  `PeekNamedPipe` on Windows), and a message that starts before that point
-  was sent before the launcher had `welcome`. On Windows the fake therefore
-  reads only the bytes `PeekNamedPipe` reports, since a waiting `ReadFile`
-  on the same pipe would block the peek. It waits `--timeout` seconds
-  (default 30).
+  the stream: just before it writes `welcome` (after the pause below, when
+  there is one), the fake notes how many bytes it has read plus how many are
+  waiting unread (`FIONREAD` on the socket, `PeekNamedPipe` on Windows), and
+  a message that starts before that point was sent before the launcher had
+  `welcome`. The reader takes bytes off the stream only under the lock that
+  this count holds, so none are missed between the two numbers: it waits
+  with `select` and reads without blocking on Linux and macOS, and on
+  Windows reads only the bytes `PeekNamedPipe` reports, since a waiting
+  `ReadFile` on the same pipe would block the peek. It waits `--timeout`
+  seconds (default 30).
 - **`pollWithin`**: nothing. The reply that follows already matches, so the
   launcher's first call is the last.
 - **`silence`**: reads nothing and answers nothing. **`wait`**: answers pings
