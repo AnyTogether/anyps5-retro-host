@@ -6,13 +6,15 @@ really built from: HEAD of the checkout and the public https URL of the remote i
 user name, password or token, or GitHub Actions' GITHUB_REPOSITORY at GITHUB_SHA without a
 checkout, and that it refuses a checkout with changes that are not committed, a checkout git cannot
 read, a local remote and a build it cannot name, and does not take another repository's HEAD for an
-unpacked source inside it. Each case runs in a new git repository in a temporary folder, with the
+unpacked source inside it. It also checks that --check refuses a zip entry that could unpack outside
+its folder, is held twice or is not a plain file, and a SHA256SUMS name that is no release file. Each case runs in a new git repository in a temporary folder, with the
 user's and the system's git configuration left out."""
 
 import os
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
@@ -159,6 +161,61 @@ with tempfile.TemporaryDirectory() as folder:
                                                             '--host-repository'), True)
     check('GitHub Enterprise', outcome(plain, environment={**CI, 'GITHUB_SERVER_URL': 'https://git.example.org/'}),
           ('https://git.example.org/example-ci/anyps5-retro-host', CI['GITHUB_SHA']))
+
+
+def checked(folder):
+    try:
+        p.check(folder)
+        return 'accepted'
+    except SystemExit as refusal:
+        return f'refused: {refusal}'
+
+
+def release(folder, entries, files_text=None, extra_sums=()):
+    folder.mkdir(parents=True)
+    stem = 'anyps5-retro-host-1.0.0-linux-x64'
+    with zipfile.ZipFile(folder / f'{stem}.zip', 'w') as archive:
+        for name, data, mode in entries:
+            info = zipfile.ZipInfo(name, date_time=p.TIME)
+            info.create_system = 3
+            info.external_attr = mode << 16
+            archive.writestr(info, data)
+    if files_text is None:
+        files_text = p.sums_text([(name, p.sha256(data)) for name, data, _ in entries])
+    (folder / f'{stem}.files').write_bytes(files_text.encode('utf-8'))
+    sums = [(name, p.sha256((folder / name).read_bytes())) for name in (f'{stem}.zip', f'{stem}.files')]
+    (folder / 'SHA256SUMS').write_bytes(p.sums_text(sums + list(extra_sums)).encode('utf-8'))
+    return folder
+
+
+with tempfile.TemporaryDirectory() as folder:
+    folder = Path(folder)
+    good = [('anyps5-retro-host', b'host', p.EXECUTABLE), ('swanstation_libretro.so', b'core', p.PLAIN),
+            ('licenses/LICENSE', b'licence', p.PLAIN)]
+    check('a release the packer would write', checked(release(folder / 'good', good)), 'accepted')
+    for label, name in [('a .. part', '../outside'), ('an absolute name', '/outside'), ('a drive', 'C:outside'),
+                        ('a backslash', 'licenses\\..\\outside'), ('an empty part', 'licenses//LICENSE'),
+                        ('a . part', './LICENSE'), ('a control character', 'licenses/LIC\x07ENSE')]:
+        check(f'a zip entry with {label} is refused',
+              refused(checked(release(folder / label, good + [(name, b'x', p.PLAIN)]))), True)
+    twice = good + [('anyps5-retro-host', b'other', p.EXECUTABLE)]
+    listed = p.sums_text([(name, p.sha256(data)) for name, data, _ in good])
+    check('a zip entry held twice is refused', refused(checked(release(folder / 'twice', twice, listed)), 'twice'),
+          True)
+    check('a symbolic link is refused',
+          refused(checked(release(folder / 'link', good + [('link', b'/etc/passwd', 0o120777)])), 'plain file'), True)
+    check('a directory entry is refused',
+          refused(checked(release(folder / 'dir', good + [('licenses/', b'', 0o040755)])), 'licenses/'), True)
+    check('a SHA256SUMS name outside the folder is refused before it is read',
+          refused(checked(release(folder / 'outer', good, extra_sums=[('..', '0' * 64)])), 'not allowed'), True)
+    check('a SHA256SUMS name that is no release file is refused before it is read',
+          refused(checked(release(folder / 'other', good, extra_sums=[('missing.bin', '0' * 64)])),
+                  'not a host release file'), True)
+    try:
+        p.write_zip(folder / 'bad.zip', [('../outside', b'x', p.PLAIN)])
+        check('the packer refuses an unsafe name', 'written', 'refused')
+    except SystemExit:
+        check('the packer refuses an unsafe name', 'refused', 'refused')
 
 print('FAILED: ' + '; '.join(failures) if failures else 'package_release passed')
 sys.exit(1 if failures else 0)

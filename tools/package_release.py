@@ -34,13 +34,16 @@ sorts them (LC_ALL=C sort -k2), so signing it there gives the same SHA256SUMS.
 
 checks a release folder as a launcher checks a download, without the signature: SHA256SUMS lists
 each zip and .files with their digests (and at most one source archive), and every zip holds
-exactly the files its .files lists, with those digests.
+exactly the files its .files lists, with those digests, each once, as a plain file with the
+packer's permissions, under a relative name with no empty, . or .. part, no backslash, no : and no
+control character, so no entry can unpack outside the folder it is unpacked into.
 """
 
 import argparse
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import sys
 import zipfile
@@ -213,7 +216,16 @@ def dependency_notices(folder):
             for path in found]
 
 
+def safe_member(name):
+    parts = name.split('/')
+    return all(part not in ('', '.', '..') and ':' not in part and '\\' not in part
+               and all(character.isprintable() for character in part) for part in parts)
+
+
 def write_zip(path, files):
+    for name, _, _ in files:
+        if not safe_member(name):
+            raise SystemExit(f'{name!r} is not a name a zip entry may have')
     with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name, data, mode in sorted(files, key=lambda entry: entry[0].encode('utf-8')):
             info = zipfile.ZipInfo(name, date_time=TIME)
@@ -272,7 +284,7 @@ def parse_sums(text, allow_slash):
         if not match:
             raise SystemExit(f'cannot read the line {line!r}')
         name = match.group(2)
-        if (not allow_slash and '/' in name) or '\\' in name or name in entries:
+        if (not allow_slash and '/' in name) or not safe_member(name) or name in entries:
             raise SystemExit(f'the name {name!r} is not allowed')
         entries[name] = match.group(1)
     return entries
@@ -284,15 +296,15 @@ def check(folder):
     stems = {}
     sources = 0
     for name, digest in sums.items():
+        match = RELEASE_NAME.match(name)
+        if not SOURCE_NAME.match(name) and (not match or match.group(2) not in SYSTEMS):
+            raise SystemExit(f'SHA256SUMS lists {name}, which is not a host release file')
         actual = sha256((folder / name).read_bytes())
         if actual != digest:
             raise SystemExit(f'{name} does not match SHA256SUMS')
-        if SOURCE_NAME.match(name):
+        if not match:
             sources += 1
             continue
-        match = RELEASE_NAME.match(name)
-        if not match or match.group(2) not in SYSTEMS:
-            raise SystemExit(f'SHA256SUMS lists {name}, which is not a host release file')
         stems.setdefault(name.rsplit('.', 1)[0], set()).add(match.group(3))
     if not stems:
         raise SystemExit('SHA256SUMS lists no host release')
@@ -302,8 +314,15 @@ def check(folder):
         if kinds != {'zip', 'files'}:
             raise SystemExit(f'{stem} needs both its .zip and its .files')
         listed = parse_sums((folder / f'{stem}.files').read_text('utf-8'), allow_slash=True)
+        held = {}
         with zipfile.ZipFile(folder / f'{stem}.zip') as archive:
-            held = {info.filename: sha256(archive.read(info)) for info in archive.infolist() if not info.is_dir()}
+            for info in archive.infolist():
+                mode = info.external_attr >> 16
+                if info.filename in held or not safe_member(info.filename):
+                    raise SystemExit(f'{stem}.zip holds {info.filename!r} twice or under a name it may not have')
+                if info.create_system != 3 or not stat.S_ISREG(mode) or mode not in (EXECUTABLE, PLAIN):
+                    raise SystemExit(f'{stem}.zip holds {info.filename!r}, which is not a plain file')
+                held[info.filename] = sha256(archive.read(info))
         if held != listed:
             raise SystemExit(f'{stem}.zip does not hold exactly what {stem}.files lists')
         host_name, core_name = SYSTEMS[RELEASE_NAME.match(f'{stem}.zip').group(2)]

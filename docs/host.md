@@ -31,7 +31,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
 | [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio, with the volume, mute and pause |
 | [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
-| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source") |
+| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries ("Result") |
 
 ## Choices made for version 1
 
@@ -590,7 +590,14 @@ release can be packed and checked by hand the same way.
   three zips, the three `.files`, the source archive and `SHA256SUMS`, written as `shasum -a 256`
   writes it and sorted by name as AnyPS5-ARM's `tools/release/sign.sh` sorts
   it. `python3 tools/package_release.py --check <folder>` checks a folder of
-  them as a launcher checks a download, without the signature.
+  them as a launcher checks a download, without the signature. It refuses a
+  `SHA256SUMS` name that is not a release file before reading it, and a zip
+  entry that is held twice, is not a plain file with the packer's
+  permissions, or has a name that could unpack outside its folder (an
+  absolute name, a drive, a backslash, or an empty, `.` or `..` part); the
+  packer refuses to write such a name.
+  [`tests/package_release_test.py`](../tests/package_release_test.py) covers
+  each case.
 
 **Where the maintainers sign.** The workflow holds no key, so `SHA256SUMS` is
 unsigned and nothing is published. A maintainer with the release key:
