@@ -14,6 +14,8 @@
 #include <iterator>
 #include <new>
 
+#include "paths.h"
+
 namespace retro_host {
 
 struct Game::DiscControl {
@@ -95,9 +97,11 @@ bool Listed(const char* const* list, size_t count, const std::string& key) {
 }
 
 #ifdef _WIN32
+constexpr bool kWindows = true;
 constexpr char kSeparators[] = "/\\";
 constexpr char kSeparator = '\\';
 #else
+constexpr bool kWindows = false;
 constexpr char kSeparators[] = "/";
 constexpr char kSeparator = '/';
 #endif
@@ -135,15 +139,6 @@ std::string_view LogMessage(std::string_view line) {
   }
   while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.remove_suffix(1);
   return line;
-}
-
-bool IsAbsolute(const std::string& path) {
-  if (!path.empty() && IsSeparator(path[0])) return true;
-#ifdef _WIN32
-  return path.size() > 2 && path[1] == ':' && IsSeparator(path[2]);
-#else
-  return false;
-#endif
 }
 
 }  // namespace
@@ -427,7 +422,7 @@ std::optional<std::string> Game::PlaylistEntry(unsigned index) const {
     while (first < line.size() && (line[first] == ' ' || line[first] == '\t')) ++first;
     line.erase(0, first);
     if (line.empty() || line[0] == '#') continue;
-    if (at == index) return IsAbsolute(line) ? line : Directory(config_.disc) + line;
+    if (at == index) return IsCoreAbsolute(line, kWindows) ? line : Directory(config_.disc) + line;
     ++at;
   }
   return std::nullopt;
