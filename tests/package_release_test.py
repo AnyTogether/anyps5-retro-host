@@ -10,8 +10,9 @@ unpacked source inside it. It also checks that --check refuses a zip entry that 
 its folder or over another entry on Windows or macOS, is held twice or is not a plain file, and a
 SHA256SUMS name that is no release file; that it compares each zip with its .files (a changed byte,
 an extra entry, a missing entry) and each file with SHA256SUMS; that a missing file, a damaged zip,
-damaged deflated data, an encrypted entry and an entry over the size cap end in a refusal, not a
-traceback; and that it holds a release to one version and its SOURCE.txt to the source asked. Last, that --mit-notice writes each copyright
+damaged deflated data, an encrypted entry, a name that is not UTF-8, an unknown zip version and an
+entry over the size cap end in a refusal, not a traceback; and that it holds a release to one
+version and its SOURCE.txt to the source asked. Last, that --mit-notice writes each copyright
 line of the files that grant MIT once, with the grant, and refuses a folder that grants none. Each
 case runs in a new git repository in a temporary folder, with the user's and the system's git
 configuration left out."""
@@ -296,6 +297,24 @@ with tempfile.TemporaryDirectory() as folder:
     (locked / f'{stem}.zip').write_bytes(bytes(data))
     resum(locked)
     check('an encrypted entry is refused, not a traceback', refused(checked(locked), 'encrypted'), True)
+    def central_patched(name, offset, value):
+        target = deflated(name)
+        data = bytearray((target / f'{stem}.zip').read_bytes())
+        central = data.index(b'PK\x01\x02')
+        data[central + offset:central + offset + len(value)] = value
+        (target / f'{stem}.zip').write_bytes(bytes(data))
+        resum(target)
+        return target
+    utf8_name = central_patched('utf8-name', 8, (0x0800).to_bytes(2, 'little'))
+    data = bytearray((utf8_name / f'{stem}.zip').read_bytes())
+    central = data.index(b'PK\x01\x02')
+    data[central + 46] = 0xff
+    (utf8_name / f'{stem}.zip').write_bytes(bytes(data))
+    resum(utf8_name)
+    check('a central name marked UTF-8 that is not UTF-8 is refused, not a traceback',
+          refused(checked(utf8_name), 'not a zip that can be read'), True)
+    check('a zip that needs an unknown zip version is refused, not a traceback',
+          refused(checked(central_patched('zip-version', 6, bytes([64, 0]))), 'not a zip that can be read'), True)
     mixed = release(folder / 'mixed', good)
     (mixed / 'anyps5-retro-host-1.0.1-source.tar.gz').write_bytes(b'source')
     resum(mixed)

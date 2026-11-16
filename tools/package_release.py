@@ -56,7 +56,6 @@ import subprocess
 import sys
 import textwrap
 import zipfile
-import zlib
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -398,7 +397,8 @@ def file_digest(path, name):
 def entry_digest(archive, info, label):
     """The sha256 of one zip entry, read in blocks after its stated size is checked against
     MAX_ENTRY, and refused when it is encrypted, packed other than stored or deflated (as the packer
-    writes), unpacks to more bytes than it states, holds damaged data or fails its CRC."""
+    writes), unpacks to more bytes than it states, holds damaged data or fails its CRC. The zip is
+    untrusted input, so any error zipfile or zlib raises on it is a refusal, never a traceback."""
     if info.file_size > MAX_ENTRY:
         raise SystemExit(f'{label} holds {info.filename!r}, which is larger than {MAX_ENTRY} bytes')
     if info.flag_bits & 0x1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
@@ -412,9 +412,8 @@ def entry_digest(archive, info, label):
                 if size > info.file_size:
                     raise SystemExit(f'{label} holds {info.filename!r}, which unpacks to more than it states')
                 digest.update(block)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, zlib.error, NotImplementedError, RuntimeError, OSError,
-            EOFError) as error:
-        raise SystemExit(f'{label} cannot be read at {info.filename!r}: {error}')
+    except Exception as error:
+        raise SystemExit(f'{label} cannot be read at {info.filename!r}: {type(error).__name__}: {error}')
     return digest.hexdigest()
 
 
@@ -461,8 +460,8 @@ def check(folder, version=None, host_repository=None, host_commit=None):
         held = {}
         try:
             archive = zipfile.ZipFile(folder / f'{stem}.zip')
-        except (zipfile.BadZipFile, OSError) as error:
-            raise SystemExit(f'{stem}.zip is not a zip that can be read: {error}')
+        except Exception as error:
+            raise SystemExit(f'{stem}.zip is not a zip that can be read: {type(error).__name__}: {error}')
         with archive:
             members = archive.infolist()
             clash = unique_members(info.filename for info in members)

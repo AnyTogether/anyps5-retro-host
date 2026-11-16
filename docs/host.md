@@ -617,9 +617,10 @@ release can be packed and checked by hand the same way.
   each part of a name must be letters, digits and `._+-`, must not start or
   end with a dot or be a Windows device name such as `NUL`, no two names may
   differ only in case, and no entry may have the name of a folder another
-  entry is in (in any case). A missing file, a damaged zip, damaged deflated
-  data, a failed CRC, and an encrypted entry or one packed other than stored
-  or deflated are refused with a message, not a traceback. The packer refuses
+  entry is in (in any case). A missing file, a damaged zip (any error Python's
+  `zipfile` or `zlib` raises on it, such as damaged deflated data, a failed
+  CRC or a name that is not UTF-8), and an encrypted entry or one packed other
+  than stored or deflated are refused with a message, not a traceback. The packer refuses
   to write such a
   name, so a licence file with a space in its name stops the build.
   [`tests/package_release_test.py`](../tests/package_release_test.py) covers
@@ -630,9 +631,10 @@ unsigned and nothing is published. A maintainer with the release key:
 
 1. Takes the files from one run only: the `release` run for the push of the
    tag `v<version>` in AnyTogether/anyps5-retro-host, whose head SHA is the
-   commit the tag points at, with every job green. Runs in a fork, for a
-   branch or for a pull request are never signed, and their artifact is not
-   named `unsigned`:
+   commit the tag points at, with every job green. A run for a branch or a
+   pull request names its artifact `not-a-release-<commit>`, not `unsigned`.
+   A tag pushed in a fork gets an `unsigned` artifact too, so the repository
+   and the head SHA are what pick the run; a fork's run is never signed:
 
    ```sh
    commit="$(git rev-parse "v<version>^{commit}")"
