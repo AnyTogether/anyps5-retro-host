@@ -190,6 +190,20 @@ A crash gives none of these, so the tests expect the exact code.
   sequentially consistent loads and stores of `latest` and `reading` that
   protocol.md asks for; Python cannot make them on shared memory itself. It
   is built next to `fake_core`, where both scripts look for it.
+- [`tests/fake_host.py`](../tests/fake_host.py) is the fake host of
+  protocol.md "Fixtures", for testing a launcher; see below.
+  [`tests/fake_host_selftest.py`](../tests/fake_host_selftest.py) tests it
+  by playing the launcher side of every launcher session, started as a
+  launcher starts the host, directly, from environment variables and through
+  a shim. It also plays wrong launchers, and each must get a failed report
+  for its own reason: a wrong first call, a call before `welcome` (sent with
+  `hello`, and sent during the pause before a breaking `welcome`), a call id
+  that does not count up, a second `hello`, an `input` for port 2, a
+  descriptor from the launcher (Linux and macOS), an extra call during a
+  `wait`, a launcher that never ends the host, and a launcher that ends it
+  one step early (before the breaking message of a protocol error session,
+  and at the start of a `wait`). Run it with
+  `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux, macOS (arm64) and Windows, and the Linux tests
   again under ThreadSanitizer. On Linux and macOS the fake core logs its BIOS
   line from a thread of its own and waits for it with a relaxed load, as
@@ -202,3 +216,120 @@ A crash gives none of these, so the tests expect the exact code.
   "double lock" in `Game::Join`: libstdc++ 11 waits with
   `pthread_cond_clockwait`, which that version does not intercept. Use GCC 12
   or later, or clang 14 or later.
+
+## Testing a launcher with the fake host
+
+The launcher under test starts `fake_host.py` through its own start path, as
+if it were the host, and the fake plays one session whose `tests` includes
+`launcher`:
+
+```bash
+python3 -I tests/fake_host.py --session <session.json> --report <report.json> \
+  [--paths <paths.json>] --ipc-fd 3 --parent-pid <pid>
+python -I tests\fake_host.py --session <session.json> --report <report.json> ^
+  [--paths <paths.json>] --ipc-read <handle> --ipc-write <handle> --parent-pid <pid>
+```
+
+The last arguments are the host's own (protocol.md "Starting the host"); the
+fake checks them. A launcher starts one executable with only those
+arguments, so the other three can come from `ANYPS5_FAKE_HOST_SESSION`,
+`ANYPS5_FAKE_HOST_REPORT` and `ANYPS5_FAKE_HOST_PATHS`, and the launcher
+runs a shim that starts the fake. A command-line option wins over its
+variable.
+
+- **Linux and macOS.** The shim must `exec`, so the process the launcher
+  started is the fake: `exec python3 -I /path/to/fake_host.py "$@"`.
+- **Windows.** A `.cmd` shim works: `@python -I C:\path\fake_host.py %*`
+  then `@exit /b %ERRORLEVEL%`. The fake finds the process the launcher
+  started by walking up from itself to the process whose parent is
+  `--parent-pid`, and uses it as the host: its id goes in `welcome`, each
+  ring's section handle is duplicated into it, and its exit counts as the
+  launcher ending the host.
+
+`--paths` names a JSON object of placeholder names to strings, such as
+`{"core": "/opt/a/swanstation_libretro.so", "disc": "/games/a.cue"}`. A
+session that uses a placeholder the file does not give fails.
+
+What the fake does with each step:
+
+- **From the host**: sends it as written. `welcome` carries the started
+  process's id, or another with `wrongPid`. A `reply` or `pong` whose `id` is
+  in `anyValueFor` echoes the id the launcher used in the matching step. A
+  `ring` step creates the memory object of `memoryBytes` (a sealed or
+  unsealed memfd, an unlinked POSIX shared memory object, or an unnamed
+  `SEC_COMMIT` section whose handle goes in the message), writes the header,
+  fills each slot's `width × height × 4` pixel bytes with `0x80` when it is
+  `visible` (zero otherwise, cut off at the slot), and keeps every ring until
+  it exits. `publish` writes the slot, then `latest`. Python has no atomic
+  store, so `latest` is a plain aligned 4-byte store; the `frame` message
+  that follows is a system call, so a launcher that reads the ring after the
+  message sees every write.
+- **From the launcher**: reads the next message and compares it with
+  `anyValueFor`. It answers `ping` with `pong`, and skips `pong` and
+  `input`, unless the step names them. It also checks the launcher's own
+  rules: framing and [Values](protocol.md#values), nothing but `hello`
+  before `welcome`, one `hello`, nothing after `unsupported`, call and
+  ping ids counting up, and each `input`'s `port`, `buttons` and sticks in
+  their ranges. "Before `welcome`" is decided by where the message starts in
+  the stream: just before it writes `welcome` (after the pause below, when
+  there is one), the fake notes how many bytes it has read plus how many are
+  waiting unread (`FIONREAD` on the socket, `PeekNamedPipe` on Windows), and
+  a message that starts before that point was sent before the launcher had
+  `welcome`. The reader takes bytes off the stream only under the lock that
+  this count holds, so none are missed between the two numbers: it waits
+  with `select` and reads without blocking on Linux and macOS, and on
+  Windows reads only the bytes `PeekNamedPipe` reports, since a waiting
+  `ReadFile` on the same pipe would block the peek. It waits `--timeout`
+  seconds (default 30).
+- **`pollWithin`**: nothing. The reply that follows already matches, so the
+  launcher's first call is the last.
+- **`silence`**: reads nothing and answers nothing. **`wait`**: answers pings
+  and `status` calls only. **`hostExits`**: exits with that code.
+- **The step after which the launcher ends the host** (a host step,
+  `silence` or `wait` followed by `launcherKillsHost`, or the last host step
+  of a session whose outcome is not `clean`): the fake first waits
+  `--kill-pause` seconds (default 0.5), and being ended then is a failure,
+  because the launcher ended the host before the step that should make it.
+  Before a host step the fake keeps checking the launcher's messages during
+  the pause and answers pings; any other message is dropped, as it is while
+  the fake waits to be ended. A `silence` or `wait` goes on as written. When
+  the pause is over, the report is set to `awaitingKill` and then the host
+  step's message is written. The report is set just before the write, not
+  after it: a launcher may end the host the moment it has read the message,
+  before the fake could write a report, and setting it after would fail a
+  correct launcher. A launcher that ends the host early does it during the
+  pause, after the message before.
+- **`launcherKillsHost`**, and the end of a session whose outcome is not
+  `clean`: waits `--kill-within` seconds (default 10) to be ended, and fails
+  after that. End-of-stream is ignored then.
+- **`launcherDraws` and `launcherReports`** check the launcher's own API, so
+  the fake only records that it reached them. To hold it there while the test
+  checks, pass `--hold <seconds>` or `--resume <file>`: the fake then waits
+  until the file holds a step index at least that step's. While it waits, a
+  call to a method it has already answered gets the same reply again.
+- **The end of a `clean` session**: waits for `shutdown` or end-of-stream,
+  then exits with 0.
+
+`--timeout`, `--kill-within`, `--kill-pause`, `--hold` and `--resume` can
+also come from `ANYPS5_FAKE_HOST_TIMEOUT`, `ANYPS5_FAKE_HOST_KILL_WITHIN`,
+`ANYPS5_FAKE_HOST_KILL_PAUSE`, `ANYPS5_FAKE_HOST_HOLD` and
+`ANYPS5_FAKE_HOST_RESUME`. `--kill-pause` must be less than
+`--kill-within`.
+
+The report is written again at every step, so a fake that was killed still
+shows how far it got:
+
+```json
+{"session": "hung-call", "passed": true, "failures": [], "step": 7, "steps": 10, "done": false,
+ "awaitingKill": true, "killed": false, "reached": [], "stepStartedAt": 1794548238.55}
+```
+
+`step` is the index of the step the fake is at, and `stepStartedAt` the Unix
+time it got there. `passed` is true when there are no `failures` and the fake
+either finished (`done`) or is at a point where being ended is the expected
+end (`awaitingKill`): after the pause of the step after which the launcher
+ends the host (see above), or at `launcherKillsHost`. `killed` is true
+when the fake saw the started process end (a shim, on Windows). `reached`
+lists the `launcherDraws` and `launcherReports` steps reached. On a failure
+the fake writes the report and exits with 3. `passed` says the fake saw what
+the session expects; the test still checks the outcome on the launcher side.
