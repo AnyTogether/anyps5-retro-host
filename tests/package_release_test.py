@@ -11,13 +11,16 @@ its folder or over another entry on Windows or macOS, is held twice or is not a 
 SHA256SUMS name that is no release file; that it compares each zip with its .files (a changed byte,
 an extra entry, a missing entry) and each file with SHA256SUMS; that a missing file, a damaged zip
 and an entry over the size cap end in a refusal, not a traceback; and that it holds a release to
-one version and its SOURCE.txt to the source asked. Each case runs in a new git repository in a temporary
-folder, with the user's and the system's git configuration left out."""
+one version and its SOURCE.txt to the source asked. Last, that --mit-notice writes each copyright
+line of the files that grant MIT once, with the grant, and refuses a folder that grants none. Each
+case runs in a new git repository in a temporary folder, with the user's and the system's git
+configuration left out."""
 
 import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 import zipfile
 from pathlib import Path
 
@@ -295,6 +298,32 @@ with tempfile.TemporaryDirectory() as folder:
           refused(checked(folder / 'good', None, FORK, commit), 'no SOURCE.txt'), True)
     check('a commit without a repository is refused',
           refused(checked(sourced_folder, None, None, commit), 'together'), True)
+    grant = ('Permission is hereby granted, free of charge, to any person obtaining a copy of this software, '
+             'subject to the following conditions: The above copyright notice and this permission notice shall be '
+             'included. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE, ARISING FROM THE USE OR OTHER '
+             'DEALINGS IN THE SOFTWARE.')
+    mit = folder / 'mit'
+    (mit / 'sub').mkdir(parents=True)
+    wrapped = '\n'.join(' * ' + line for line in textwrap.wrap(grant, 60))
+    (mit / 'a.c').write_text(f'/* Copyright  (C) 2010-2020 The A team\n *\n{wrapped}\n */\nint a;\n')
+    (mit / 'sub' / 'b.h').write_text(f'/*\n * @copyright Copyright (C) 2010-2020 The A team\n'
+                                     f' * Copyright (c) 2021 B\n{wrapped}\n */\n')
+    (mit / 'c.c').write_text('/* Copyright (c) 2019 Other, under another licence */\n')
+    (mit / 'notes.txt').write_text(f'Copyright (c) 2018 Text\n{grant}\n')
+    notice = p.mit_notice('example-MIT.txt', mit).decode('utf-8')
+    check('an MIT notice names each copyright line of the files that grant MIT once',
+          [line for line in notice.splitlines() if line.startswith('Copyright')],
+          ['Copyright (C) 2010-2020 The A team', 'Copyright (c) 2021 B'])
+    check('an MIT notice carries the grant the files state', ' '.join(notice.split()).endswith(grant), True)
+    check('an MIT notice of one file', [line for line in p.mit_notice('a', mit / 'a.c').decode().splitlines()
+                                        if line.startswith('Copyright')], ['Copyright (C) 2010-2020 The A team'])
+    (folder / 'no-mit').mkdir()
+    (folder / 'no-mit' / 'c.c').write_text('/* Copyright (c) 2019 Other */\n')
+    try:
+        p.mit_notice('none', folder / 'no-mit')
+        check('a folder that grants no MIT is refused', 'written', 'refused')
+    except SystemExit:
+        check('a folder that grants no MIT is refused', 'refused', 'refused')
     try:
         p.write_zip(folder / 'bad.zip', [('../outside', b'x', p.PLAIN)])
         check('the packer refuses an unsafe name', 'written', 'refused')

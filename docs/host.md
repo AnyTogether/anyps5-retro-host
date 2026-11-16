@@ -31,7 +31,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
 | [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio, with the volume, mute and pause |
 | [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
-| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions and a `SOURCE.txt` naming another source ("Result") |
+| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions and a `SOURCE.txt` naming another source ("Result"), and how `--mit-notice` gathers MIT notices ("What a zip holds") |
 
 ## Choices made for version 1
 
@@ -529,10 +529,11 @@ release can be packed and checked by hand the same way.
 
 - **Systems.** `windows-x64` (Windows Server 2022, MSVC, with the static C and
   C++ runtime so no Visual C++ redistributable is needed; the workflow fails
-  if the host or SwanStation imports it), `linux-x64` (Ubuntu 22.04, the oldest
+  if the host or SwanStation imports it, checked with `pefile` installed by
+  its wheel's sha256 under `--require-hashes`), `linux-x64` (Ubuntu 22.04, the oldest
   Linux the launcher supports, so it needs glibc 2.35 or later) and
-  `macos-arm64` (built on `macos-latest`, an arm64 runner, for macOS 11 or
-  later).
+  `macos-arm64` (built on the fixed `macos-15` arm64 image, not
+  `macos-latest`, which GitHub moves, for macOS 11 or later).
 - **What a zip holds.** The host (`anyps5-retro-host.exe` on Windows,
   `anyps5-retro-host` elsewhere), SwanStation
   (`swanstation_libretro.dll`, `.so` or `.dylib`) built from
@@ -542,7 +543,13 @@ release can be packed and checked by hand the same way.
   `licenses/swanstation-dep/<path>`), the Apache-2.0 text for SwanStation's
   Vulkan headers (`licenses/swanstation-vulkan-headers-Apache-2.0.txt`: the
   headers name the licence only by URL, so the workflow fetches SPDX's copy at
-  a fixed tag and checks its sha256), and `SOURCE.txt` naming the repository
+  a fixed tag and checks its sha256), the MIT notices of the code built in
+  whose notice is only in its source files (`--mit-notice`: each distinct MIT
+  grant the files state, after the distinct copyright lines of the files that
+  state it) as `licenses/anyps5-retro-host-libretro-h-MIT.txt` (`libretro.h`,
+  the one libretro-common file the host uses) and
+  `licenses/swanstation-libretro-common-MIT.txt`, `-glad-MIT.txt` (Khronos'
+  `khrplatform.h`) and `-stb-MIT.txt` (stb's MIT choice), and `SOURCE.txt` naming the repository
   and commit the host is built from, the SwanStation commit and the source
   archive. Everything sits at the
   top of the zip except the licences. The zip is the same bytes for the same
@@ -584,8 +591,10 @@ release can be packed and checked by hand the same way.
   `anyps5-retro-host-<version>-source.tar.gz` (sorted, with fixed times and
   owners). It is the complete corresponding source the GPL asks for, and is
   published with the binaries, and carries the same Apache-2.0 text at its
-  top. stb, glad and libretro-common, which are public domain or MIT, keep
-  their notices in their source files, which the archive holds.
+  top. The MIT notices of libretro-common, glad and stb are in the zips
+  themselves (above), so a zip is complete without the archive; miniaudio,
+  which the host builds in, is public domain or MIT No Attribution, which
+  asks for no notice.
 - **Result.** A run for a tag `v<version>` uploads the artifact
   `anyps5-retro-host-<version>-unsigned`; every other run (a branch push, a
   pull request, `workflow_dispatch` on a branch) uploads

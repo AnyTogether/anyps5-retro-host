@@ -30,6 +30,8 @@ env:
   # URL, so its text is shipped too: SPDX's copy at a fixed tag, checked by its sha256.
   APACHE_URL: https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt
   APACHE_SHA256: 074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff
+  # The pefile wheel the Windows job checks imports with, pinned by its PyPI sha256.
+  PEFILE_SHA256: 76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
 jobs:
   version:
     runs-on: ubuntu-24.04
@@ -104,7 +106,7 @@ jobs:
             python: python3
             opengl: --expect-opengl
           - system: macos-arm64
-            os: macos-latest
+            os: macos-15
             host: build/anyps5-retro-host
             core: swanstation/build/swanstation_libretro.dylib
             unpacked-host: anyps5-retro-host
@@ -151,7 +153,8 @@ jobs:
       - if: runner.os == 'Windows'
         name: Check that the Windows files need no Visual C++ runtime
         run: |
-          python -m pip install --disable-pip-version-check -q pefile==2024.8.26
+          echo "pefile==2024.8.26 --hash=sha256:$PEFILE_SHA256" > pefile-requirements.txt
+          python -m pip install --disable-pip-version-check -q --only-binary :all: --require-hashes -r pefile-requirements.txt
           python - "${{ matrix.host }}" "${{ matrix.core }}" <<'EOF'
           import sys
           import pefile
@@ -177,6 +180,10 @@ jobs:
             --system ${{ matrix.system }} --host ${{ matrix.host }} --core ${{ matrix.core }} \
             --core-licence swanstation/LICENSE --core-notices swanstation/dep \
             --notice swanstation-vulkan-headers-Apache-2.0.txt=apache-2.0.txt \
+            --mit-notice anyps5-retro-host-libretro-h-MIT.txt=3rdparty/libretro-common/include/libretro.h \
+            --mit-notice swanstation-libretro-common-MIT.txt=swanstation/dep/libretro-common \
+            --mit-notice swanstation-glad-MIT.txt=swanstation/dep/glad \
+            --mit-notice swanstation-stb-MIT.txt=swanstation/dep/stb \
             --swanstation-commit "$SWANSTATION_COMMIT" --out release
       - name: Unpack the zip, check that SOURCE.txt names this run's source, and boot the real core from it
         run: |

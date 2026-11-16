@@ -10,8 +10,10 @@
 writes anyps5-retro-host-<version>-<system>.zip and anyps5-retro-host-<version>-<system>.files into
 <folder>. The zip holds the host, SwanStation, the two licences, SOURCE.txt and, with --core-notices,
 every licence, copying, copyright or notice file under that folder (the libraries SwanStation
-builds in) as licenses/swanstation-dep/<path with - for />, and each --notice NAME=PATH as
-licenses/NAME; the .files lists
+builds in) as licenses/swanstation-dep/<path with - for />, each --notice NAME=PATH as
+licenses/NAME, and each --mit-notice NAME=PATH (a source file or a folder of them) as licenses/NAME:
+every distinct MIT grant those files state, after the distinct copyright lines of the files that
+state it, for MIT code whose notice is only in its source; the .files lists
 every file in the zip as `shasum -a 256` prints it, `<64 hex digits>  <name>`, with `/` between
 directories. The zip is the same bytes for the same inputs: entries sorted by name, one fixed
 time, and fixed permissions.
@@ -52,6 +54,7 @@ import re
 import stat
 import subprocess
 import sys
+import textwrap
 import zipfile
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -195,6 +198,7 @@ def release_files(args, host_repository, host_commit):
          PLAIN),
         *dependency_notices(args.core_notices),
         *extra_notices(args.notice),
+        *mit_notices(args.mit_notice),
     ]
 
 
@@ -220,6 +224,54 @@ def dependency_notices(folder):
         raise SystemExit(f'--core-notices {folder} holds no licence file')
     return [(f'licenses/swanstation-dep/{"-".join(path.relative_to(root).parts)}', path.read_bytes(), PLAIN)
             for path in found]
+
+
+COPYRIGHT_LINE = re.compile(r'\bCopyright\s+(?:\([Cc]\)\s*)?[0-9][0-9, -]*[0-9]\s+\S.*$')
+COMMENT_MARK = re.compile(r'^\s*(?:/\*+|\*+/|\*+|//+|#+)?\s?')
+MIT_GRANT = re.compile(r'Permission\s+is\s+hereby\s+granted,\s+free\s+of\s+charge,.*?'
+                       r'DEALINGS\s+IN\s+THE\s+(?:SOFTWARE|MATERIALS)\.', re.DOTALL)
+SOURCE_SUFFIXES = {'.c', '.cc', '.cpp', '.h', '.hpp'}
+
+
+def plain_comment(text):
+    return '\n'.join(COMMENT_MARK.sub('', line).rstrip().removesuffix('*/').rstrip() for line in text.splitlines())
+
+
+def mit_notice(name, path):
+    """licenses/NAME for MIT code built into the zip whose notice is only in its source files: each
+    distinct MIT grant those files state, after every distinct copyright line of the files that
+    state it, so the zip carries the notice the licence asks for without the source."""
+    root = Path(path)
+    files = [root] if root.is_file() else sorted(item for item in root.rglob('*')
+                                                if item.is_file() and item.suffix in SOURCE_SUFFIXES)
+    grants = {}
+    for file in files:
+        text = plain_comment(file.read_text('utf-8', errors='replace'))
+        found = MIT_GRANT.search(text)
+        if not found:
+            continue
+        grant = ' '.join(found.group(0).split())
+        lines = grants.setdefault(grant, set())
+        for line in text.splitlines():
+            match = COPYRIGHT_LINE.search(line)
+            if match:
+                lines.add(' '.join(match.group(0).split()))
+    if not grants or not all(grants.values()):
+        raise SystemExit(f'--mit-notice {name}: {path} states no MIT grant with a copyright line')
+    parts = [f'{name.removesuffix(".txt")}: the MIT notices its source files state.\n']
+    for grant, lines in sorted(grants.items()):
+        parts.append('\n'.join(sorted(lines)) + '\n\n' + textwrap.fill(grant, 78) + '\n')
+    return '\n'.join(parts).encode('utf-8')
+
+
+def mit_notices(entries):
+    notices = []
+    for entry in entries or []:
+        name, separator, path = entry.partition('=')
+        if not separator or not name or '/' in name or '\\' in name:
+            raise SystemExit(f'--mit-notice {entry} must be <file name>=<path>')
+        notices.append((f'licenses/{name}', mit_notice(name, path), PLAIN))
+    return notices
 
 
 MEMBER_PART = re.compile(r'[A-Za-z0-9_+-][A-Za-z0-9._+-]*(?<!\.)')
@@ -445,6 +497,7 @@ def main():
     parser.add_argument('--core-licence')
     parser.add_argument('--core-notices', metavar='FOLDER')
     parser.add_argument('--notice', action='append', metavar='NAME=PATH')
+    parser.add_argument('--mit-notice', action='append', metavar='NAME=PATH')
     parser.add_argument('--host-repository', metavar='URL')
     parser.add_argument('--host-commit')
     parser.add_argument('--swanstation-commit')
