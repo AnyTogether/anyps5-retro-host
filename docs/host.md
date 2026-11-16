@@ -595,8 +595,9 @@ release can be packed and checked by hand the same way.
   entry that is not a plain file with the packer's permissions, or whose
   name could unpack outside its folder or over another entry on some system:
   each part of a name must be letters, digits and `._+-`, must not start or
-  end with a dot or be a Windows device name such as `NUL`, and no two names
-  may differ only in case. The packer refuses to write such a name, so a
+  end with a dot or be a Windows device name such as `NUL`, no two names may
+  differ only in case, and no entry may have the name of a folder another
+  entry is in (in any case). The packer refuses to write such a name, so a
   licence file with a space in its name stops the build.
   [`tests/package_release_test.py`](../tests/package_release_test.py) covers
   each case.

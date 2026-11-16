@@ -217,20 +217,25 @@ def dependency_notices(folder):
             for path in found]
 
 
-MEMBER_PART = re.compile(r'^[A-Za-z0-9_+-][A-Za-z0-9._+-]*(?<!\.)$')
-RESERVED = re.compile(r'^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)', re.IGNORECASE)
+MEMBER_PART = re.compile(r'[A-Za-z0-9_+-][A-Za-z0-9._+-]*(?<!\.)')
+RESERVED = re.compile(r'(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?', re.IGNORECASE)
 
 
 def safe_member(name):
-    return all(MEMBER_PART.match(part) and not RESERVED.match(part) for part in name.split('/'))
+    return all(MEMBER_PART.fullmatch(part) and not RESERVED.fullmatch(part) for part in name.split('/'))
 
 
 def unique_members(names):
-    seen = set()
+    files = set()
+    folders = set()
     for name in names:
-        if not safe_member(name) or name.casefold() in seen:
+        key = name.casefold()
+        parts = key.split('/')
+        parents = {'/'.join(parts[:count]) for count in range(1, len(parts))}
+        if not safe_member(name) or key in files or key in folders or parents & files:
             return name
-        seen.add(name.casefold())
+        files.add(key)
+        folders |= parents
     return None
 
 

@@ -199,7 +199,10 @@ with tempfile.TemporaryDirectory() as folder:
                         ('a . part', './LICENSE'), ('a control character', 'licenses/LIC\x07ENSE'),
                         ('a trailing dot', 'anyps5-retro-host.'), ('a character Windows changes', 'licenses/a?'),
                         ('a space', 'licenses/a b'), ('a Windows device name', 'licenses/NUL.txt'),
-                        ('another case of a name', 'ANYPS5-RETRO-HOST')]:
+                        ('another case of a name', 'ANYPS5-RETRO-HOST'), ('a final newline', 'licenses/NOTICE\n'),
+                        ('the name of a folder another entry is in', 'licenses'),
+                        ('a folder that is another entry', 'swanstation_libretro.so/NOTICE'),
+                        ('another case of a folder', 'LICENSES')]:
         check(f'a zip entry with {label} is refused',
               refused(checked(release(folder / label, good + [(name, b'x', p.PLAIN)]))), True)
     twice = good + [('anyps5-retro-host', b'other', p.EXECUTABLE)]
