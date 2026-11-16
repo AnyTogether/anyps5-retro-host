@@ -36,10 +36,7 @@ constexpr int32_t kContextOpenGlCoreProfileBit = 0x00000001;
 constexpr int32_t kContextFlagsKhr = 0x30FC;
 constexpr int32_t kContextOpenGlRobustAccessBitKhr = 0x00000004;
 constexpr int32_t kContextOpenGlResetNotificationStrategyKhr = 0x31BD;
-constexpr int32_t kContextOpenGlRobustAccessExt = 0x30BF;
-constexpr int32_t kContextOpenGlResetNotificationStrategyExt = 0x3138;
 constexpr int32_t kLoseContextOnReset = 0x31BF;
-constexpr int32_t kTrue = 1;
 constexpr uint32_t kPlatformDevice = 0x313F;
 constexpr uint32_t kPlatformSurfacelessMesa = 0x31DD;
 
@@ -82,10 +79,10 @@ bool Has(const char* list, std::string_view name) {
 // A display is only ever taken from EGL_EXT_platform_device or EGL_MESA_platform_surfaceless,
 // never from eglGetDisplay: EGL's default display can be the X server named in DISPLAY, which
 // may be a TCP address (SSH forwarding), and protocol.md "Network" forbids any connection.
-// Neither platform has a window system, so none is reached. A GPU's device comes first, so on a
-// system with the NVIDIA driver and Mesa both installed the NVIDIA GPU draws, not Mesa's CPU
-// renderer; then Mesa's surfaceless platform, which takes a GPU Mesa drives or its CPU renderer;
-// then Mesa's software device. With none of them the core draws in software.
+// Neither platform has a window system, so none is reached. GPU devices come first, in EGL's
+// order, so a GPU only another vendor's driver drives (NVIDIA's, say) is not passed over for
+// Mesa's CPU renderer; then Mesa's surfaceless platform, which takes a GPU Mesa drives or its CPU
+// renderer; then Mesa's software device. With none of them the core draws in software.
 class EglGpu final : public Gpu {
  public:
   ~EglGpu() override {
@@ -186,17 +183,14 @@ class EglGpu final : public Gpu {
       version = {kContextMajorVersion, static_cast<int32_t>(major), kContextMinorVersion, static_cast<int32_t>(minor),
                  kContextOpenGlProfileMask, kContextOpenGlCoreProfileBit};
     }
-    // A robust context with reset notification first, so a GPU reset ends the game (Gpu::Lost):
-    // EGL_KHR_create_context names it for desktop OpenGL, EGL_EXT_create_context_robustness with
-    // attributes of its own. A driver that refuses both still gets a context without it.
+    // A robust context with reset notification first, so a GPU reset ends the game (Gpu::Lost).
+    // EGL_KHR_create_context is the extension that names it for desktop OpenGL;
+    // EGL_EXT_create_context_robustness is for OpenGL ES only. A driver that refuses it still
+    // gets a context without it.
     const char* extensions = egl_.QueryString(display_, kExtensions);
     std::vector<std::vector<int32_t>> tries;
     if (Has(extensions, "EGL_KHR_create_context")) {
       tries.push_back({kContextFlagsKhr, kContextOpenGlRobustAccessBitKhr, kContextOpenGlResetNotificationStrategyKhr,
-                       kLoseContextOnReset});
-    }
-    if (Has(extensions, "EGL_EXT_create_context_robustness")) {
-      tries.push_back({kContextOpenGlRobustAccessExt, kTrue, kContextOpenGlResetNotificationStrategyExt,
                        kLoseContextOnReset});
     }
     tries.emplace_back();

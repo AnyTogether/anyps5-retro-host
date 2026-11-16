@@ -697,6 +697,14 @@ def many_games(program, core, log, require_gpu):
             session.read_frames(5)
             if session.call('status')['ended']:
                 raise c.Failed(f'game {game} ended by itself; the host log says why')
+            if game == 1 and status['hardware']:
+                if session.call('option', {'key': 'swanstation_GPU_ResolutionScale', 'value': '2'}) is not True:
+                    raise c.Failed('2x was not taken')
+                session.wait(lambda s: s['ended'] or (session.ring and session.ring.latest() and
+                                                      session.ring.latest()['width'] == 1280), 30)
+                session.read_frames(5)
+                if session.call('status')['ended']:
+                    raise c.Failed('game 1 ended after its framebuffer grew for 2x; the host log says why')
             for level in range(10):
                 session.send('volume', {'level': level / 10, 'muted': level % 2 == 0})
             session.call('pause', True)
@@ -726,7 +734,13 @@ def gpu_network(program, core, log, require_gpu):
             raise c.Failed('strace is not installed')
         return 'skipped: strace is not installed'
     folder = Path(tempfile.mkdtemp(prefix='retro-host-trace-'))
-    trace = folder / 'gpu.trace'
+    try:
+        return traced_gpu_game(program, core, log, require_gpu, folder / 'gpu.trace')
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def traced_gpu_game(program, core, log, require_gpu, trace):
     saved = {name: os.environ.get(name) for name in ('DISPLAY', 'WAYLAND_DISPLAY')}
     os.environ['DISPLAY'] = '127.0.0.1:9'
     os.environ.pop('WAYLAND_DISPLAY', None)
@@ -760,7 +774,6 @@ def gpu_network(program, core, log, require_gpu):
             raise c.Failed('; '.join(problems))
     finally:
         session.close()
-        shutil.rmtree(folder, ignore_errors=True)
 
 
 def main():

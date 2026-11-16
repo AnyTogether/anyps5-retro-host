@@ -42,9 +42,11 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   `EGL_MESA_platform_surfaceless`, never from `eglGetDisplay`: its default
   display can be the X server named in `DISPLAY`, which can be a TCP address
   (with SSH forwarding), and protocol.md "Network" allows no connection.
-  Neither platform has a window system. A GPU's device is tried first, so with
-  the NVIDIA driver and Mesa both installed the NVIDIA GPU draws, not Mesa's
-  CPU renderer; then Mesa's surfaceless platform (a GPU Mesa drives, or its CPU
+  Neither platform has a window system. GPU devices are tried first, in
+  EGL's order, so a GPU only another vendor's driver drives (with the NVIDIA
+  driver and Mesa both installed, the NVIDIA GPU) is not passed over for Mesa's
+  CPU renderer; which GPU wins on a machine with two is EGL's order, not a
+  choice the host makes. Then Mesa's surfaceless platform (a GPU Mesa drives, or its CPU
   renderer); then Mesa's software device (`EGL_MESA_device_software`). With
   none of them the core draws in software. The core
   draws into the host's framebuffer, which grows with the core's largest
@@ -75,7 +77,8 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   get a bigger one, or when reading a frame back reports an OpenGL error (a lost
   context among them) or the frame is larger than the core said it could be.
   The game never keeps running on stale pictures. The host asks EGL
-  (`EGL_KHR_create_context`, else `EGL_EXT_create_context_robustness`) and
+  (`EGL_KHR_create_context`; `EGL_EXT_create_context_robustness` is for
+  OpenGL ES only) and
   WGL (`WGL_ARB_create_context_robustness`) for a robust context that loses
   itself on a GPU reset, and makes an ordinary one when the driver refuses;
   when OpenGL then reports `GL_LOSE_CONTEXT_ON_RESET`, `glGetGraphicsResetStatus`
@@ -298,7 +301,9 @@ A crash gives none of these, so the tests expect the exact code.
   - Windows: a library the core loads by name is not taken from the host's
     working directory;
   - eight games in a row with `volume`, `pause` and `stop` calls in between,
-    each an OpenGL game (`fake-gpu`) that must draw five frames, so one host
+    each an OpenGL game (`fake-gpu`) that must draw five frames (the first
+    also goes from 1x to 2x, so the framebuffer is made again under the core
+    and its bindings must follow), so one host
     makes and drops eight contexts and loads and unloads the system's OpenGL
     eight times (doing that each game once crashed on Ubuntu 22.04's libglvnd
     1.4); with `--require-gpu` each game must have made a context;

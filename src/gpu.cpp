@@ -135,37 +135,40 @@ bool Gpu::Reserve(uint32_t width, uint32_t height, bool depth, bool stencil) {
   }
   width = std::max(width, width_);
   height = std::max(height, height_);
-  const uint32_t old_framebuffer = framebuffer_;
-  const uint32_t old_color = color_;
-  const uint32_t old_depth = depth_;
   const auto draw = static_cast<uint32_t>(gl_->Integer(kDrawFramebufferBinding));
   const auto read = static_cast<uint32_t>(gl_->Integer(kReadFramebufferBinding));
   const auto renderbuffer = static_cast<uint32_t>(gl_->Integer(kRenderbufferBinding));
-  ReleaseFramebuffer();
-  gl_->GenFramebuffers(1, &framebuffer_);
-  gl_->BindFramebuffer(kFramebuffer, framebuffer_);
-  gl_->GenRenderbuffers(1, &color_);
-  gl_->BindRenderbuffer(kRenderbuffer, color_);
+  // The new framebuffer is made while the old one still exists, so its names differ from the old
+  // ones and a core still bound to the old framebuffer can be moved to the new one.
+  uint32_t framebuffer = 0;
+  uint32_t color = 0;
+  uint32_t depth_buffer = 0;
+  gl_->GenFramebuffers(1, &framebuffer);
+  gl_->BindFramebuffer(kFramebuffer, framebuffer);
+  gl_->GenRenderbuffers(1, &color);
+  gl_->BindRenderbuffer(kRenderbuffer, color);
   gl_->RenderbufferStorage(kRenderbuffer, kRgba8, static_cast<int>(width), static_cast<int>(height));
-  gl_->FramebufferRenderbuffer(kFramebuffer, kColorAttachment0, kRenderbuffer, color_);
+  gl_->FramebufferRenderbuffer(kFramebuffer, kColorAttachment0, kRenderbuffer, color);
   if (depth || stencil) {
-    gl_->GenRenderbuffers(1, &depth_);
-    gl_->BindRenderbuffer(kRenderbuffer, depth_);
+    gl_->GenRenderbuffers(1, &depth_buffer);
+    gl_->BindRenderbuffer(kRenderbuffer, depth_buffer);
     gl_->RenderbufferStorage(kRenderbuffer, stencil ? kDepth24Stencil8 : kDepthComponent24, static_cast<int>(width),
                              static_cast<int>(height));
     gl_->FramebufferRenderbuffer(kFramebuffer, stencil ? kDepthStencilAttachment : kDepthAttachment, kRenderbuffer,
-                                 depth_);
+                                 depth_buffer);
   }
   const bool complete = gl_->CheckFramebufferStatus(kFramebuffer) == kFramebufferComplete;
-  // The names deleted above may be given out again by the Gen calls, so the core's bindings are
-  // compared with the old names, not looked up afterwards.
   const auto kept = [&](uint32_t bound) {
-    return bound != 0 && bound == old_framebuffer ? (complete ? framebuffer_ : 0) : bound;
+    return bound != 0 && bound == framebuffer_ ? (complete ? framebuffer : 0) : bound;
   };
   gl_->BindFramebuffer(kDrawFramebuffer, kept(draw));
   gl_->BindFramebuffer(kReadFramebuffer, kept(read));
-  const bool ours = renderbuffer != 0 && (renderbuffer == old_color || renderbuffer == old_depth);
+  const bool ours = renderbuffer != 0 && (renderbuffer == color_ || renderbuffer == depth_);
   gl_->BindRenderbuffer(kRenderbuffer, ours ? 0 : renderbuffer);
+  ReleaseFramebuffer();
+  framebuffer_ = framebuffer;
+  color_ = color;
+  depth_ = depth_buffer;
   if (!complete) {
     ReleaseFramebuffer();
     return false;
