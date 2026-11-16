@@ -32,6 +32,8 @@ WRITE_LIMIT = 5.0
 EXIT_CLEAN = 0
 EXIT_PROTOCOL_ERROR = 2
 EXIT_MISSED_LIMIT = 3
+# macOS <sys/event.h>: with NOTE_EXIT, the exit status in the event's data. Python has no name for it.
+NOTE_EXITSTATUS = 0x04000000
 
 
 class Failed(Exception):
@@ -95,6 +97,22 @@ def network_problems(trace):
         if call.group(1) in ('bind', 'listen'):
             problems.append(f'a socket bound or listening: {line.strip()}')
     return problems
+
+
+def trace_problems(trace, pid, timeout=5):
+    """network_problems of the trace of the host with process id pid, once strace has finished it.
+    The tracer of strace -D is no child of the test, so this waits for the line strace writes when
+    the host has gone, after every call of the host's."""
+    end = re.compile(rf'{pid}\s+\+\+\+ (?:exited with|killed by) ')
+    deadline = time.monotonic() + timeout
+    while not (trace.is_file() and any(end.match(line) for line in
+                                       trace.read_text(encoding='utf-8', errors='replace').splitlines())):
+        if time.monotonic() > deadline:
+            if not trace.is_file():
+                return network_problems(trace)
+            return [f'{trace.name} has no end for the host {pid}, so strace may not have written all of it']
+        time.sleep(0.05)
+    return network_problems(trace)
 
 
 def close_all(descriptors):
@@ -172,12 +190,22 @@ def compare(expected, actual, loose, where=''):
 class Grandchild:
     """A host that a relay started (see relay): its exit is watched without being its parent. On
     Linux the test process is made a child subreaper, so the host becomes its child once the relay
-    has gone and its exit code can be read; on macOS the code is not known (None)."""
+    has gone and its exit code can be read. macOS has no subreaper: the host passes to launchd,
+    which reaps it, so waitpid cannot give its code. A kqueue NOTE_EXIT filter with
+    NOTE_EXITSTATUS does, for a process the test may signal, as the host's own."""
 
     def __init__(self, pid):
         self.pid = pid
         self.code = None
         self.done = False
+        if SYSTEM == 'macos':
+            self.queue = select.kqueue()
+            try:
+                self.queue.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD,
+                                                  select.KQ_NOTE_EXIT | NOTE_EXITSTATUS)], 0)
+            except OSError as problem:
+                self.queue.close()
+                raise Failed(f'the host {pid} cannot be watched: {problem}')
         if WINDOWS:
             import ctypes.wintypes
             self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -212,11 +240,12 @@ class Grandchild:
                 return None
             self.code, self.done = os.waitstatus_to_exitcode(status), True
             return self.code
-        state = subprocess.run(['ps', '-o', 'stat=', '-p', str(self.pid)], capture_output=True, text=True).stdout
-        if state.strip() and not state.strip().startswith('Z'):
+        events = self.queue.control(None, 1, 0)
+        if not events:
             return None
-        self.done = True
-        return None
+        self.queue.close()
+        self.code, self.done = os.waitstatus_to_exitcode(events[0].data), True
+        return self.code
 
     def wait(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -251,16 +280,27 @@ def spawn(command, relay, log, **options):
     if not line.strip().isdigit():
         launcher.kill()
         raise Failed('the relay did not start the host')
-    return Grandchild(int(line)), launcher
+    try:
+        return Grandchild(int(line)), launcher
+    except Failed:
+        if not WINDOWS:
+            try:
+                os.kill(int(line), 9)
+            except ProcessLookupError:
+                pass
+        launcher.kill()
+        launcher.wait()
+        raise
 
 
 def relay(command):
     """The launcher between the test and the host for the tests of the host noticing that its
-    launcher has gone. It starts the host with its own process id as --parent-pid, handing on the
-    control stream it was given (descriptor 3, or the two pipe handles), writes the host's process
-    id, and exits at the first line on its standard input, leaving the host and the stream open."""
-    at = command.index('--parent-pid')
-    command[at + 1] = str(os.getpid())
+    launcher has gone. It starts the host with its own process id as --parent-pid (a traced host's
+    shell gives it the same, as $PPID), handing on the control stream it was given (descriptor 3,
+    or the two pipe handles), writes the host's process id, and exits at the first line on its
+    standard input, leaving the host and the stream open."""
+    if '--parent-pid' in command:
+        command[command.index('--parent-pid') + 1] = str(os.getpid())
     if WINDOWS:
         handles = [int(command[command.index('--ipc-read') + 1]), int(command[command.index('--ipc-write') + 1])]
         startup = subprocess.STARTUPINFO(lpAttributeList={'handle_list': handles})
@@ -290,9 +330,11 @@ class PosixHost:
 
         command = [str(program), '--ipc-fd', '3', '--parent-pid', str(parent or os.getpid())]
         if trace:
-            # strace takes the shell's process id with exec, so the host's parent is the pid it is given.
-            command = ['sh', '-c', 'exec strace -f -qq -o "$1" -e trace=%network -- "$0" --ipc-fd 3 --parent-pid $$',
-                       str(program), str(trace)]
+            # With -D, strace traces from a process of its own and runs the host in the shell's
+            # process, so the host's parent is the shell's: this process, or a relay. -q keeps the
+            # "+++ exited with" line that trace_problems waits for.
+            command = ['sh', '-c', 'exec strace -D -f -q -o "$1" -e trace=%network -- "$0" --ipc-fd 3 '
+                       '--parent-pid "${2:-$PPID}"', str(program), str(trace), *([str(parent)] if parent else [])]
         self.process, self.relay = spawn(command, relay, log, pass_fds=tuple(sorted({child, 3})),
                                          preexec_fn=to_three, cwd=cwd)
         theirs.close()
@@ -690,7 +732,7 @@ def play(session, program, core, log, trace=None):
         host.close()
         shutil.rmtree(work, ignore_errors=True)
     if trace:
-        problems = network_problems(trace)
+        problems = trace_problems(trace, host.process.pid)
         if problems:
             raise Failed('; '.join(problems))
 

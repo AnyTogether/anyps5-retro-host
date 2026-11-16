@@ -26,12 +26,22 @@ LEAVE_LIMIT = 10
 class Session:
     """A fake launcher that checks every ring and frame as it reads: a ring's size, the growth rule
     of protocol.md "Checks the launcher makes", and that the newest slot's epoch is the one start
-    returned."""
+    returned. With --strace, each session's host is traced as conformance.py traces it."""
+
+    # With --strace: the path each session's trace is named after, and the traces of the test that
+    # runs, each with its host, which main checks once the test has ended.
+    trace_prefix = None
+    traces = []
 
     def __init__(self, program, core, log, **options):
         self.work = Path(tempfile.mkdtemp(prefix='retro-host-test-'))
         self.paths = c.place(self.work, core)
+        traced = bool(Session.trace_prefix) and 'trace' not in options
+        if traced:
+            options['trace'] = Session.trace_prefix.with_name(f'{Session.trace_prefix.name}.{len(Session.traces) + 1}')
         self.host = (c.WindowsHost if c.WINDOWS else c.PosixHost)(program, log, **options)
+        if traced:
+            Session.traces.append((options['trace'], self.host))
         self.next_id = 0
         self.ring = None
         self.rings = []
@@ -139,7 +149,7 @@ class Session:
     def leaves(self, how, began, timeout=LEAVE_LIMIT):
         """The host's exit code once it has exited, within timeout seconds of began."""
         code = self.host.exits(max(0.0, began + timeout - time.monotonic()))
-        if code not in (c.EXIT_CLEAN, None):
+        if code != c.EXIT_CLEAN:
             raise c.Failed(f'after {how} the host exited with {code}, not 0')
         return code
 
@@ -618,6 +628,32 @@ def core_data_bounds(program, core, log):
         session.close()
 
 
+def option_keys_not_utf8(program, core, log):
+    """Two option keys that differ only in a byte that is not UTF-8 are the same key once status
+    cleans them, so status lists it once, with the first definition, and option and start.options
+    set that one by the key status sends."""
+    session = Session(program, core, log)
+    try:
+        session.start()
+        status = session.wait(lambda s: s and s['ready'], 10)
+        key = 'fake_bytes\ufffd'
+        names = [name for name in status['options'] if name.startswith('fake_bytes')]
+        if names != [key] or status['options'][key]['values'] != ['one', 'two']:
+            raise c.Failed(f'keys that are one key once cleaned gave {names}: {status["options"].get(key)}')
+        if session.call('option', {'key': key, 'value': 'two'}) is not True:
+            raise c.Failed('the option was not taken by the key status sends')
+        session.wait(lambda s: s['options'][key]['activeValue'] == 'two', 3)
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
+        session.call('release')
+        session.start(options={key: 'two'})
+        status = session.wait(lambda s: s and s['ready'], 10)
+        if status['options'][key]['activeValue'] != 'two':
+            raise c.Failed(f'start.options by the key status sends gave {status["options"][key]}')
+    finally:
+        session.close()
+
+
 def log_lines_with_paths(program, core, log):
     """A disc whose path holds the words the host looks for in SwanStation's log does not fool it:
     they count only at the start of a message. A disc that cannot be read still ends the game
@@ -769,7 +805,7 @@ def traced_gpu_game(program, core, log, require_gpu, trace):
         session.host.send_message({'type': 'shutdown'})
         if session.host.exits(10) != 0:
             raise c.Failed('the host did not exit cleanly')
-        problems = c.network_problems(trace)
+        problems = c.trace_problems(trace, session.host.process.pid)
         if problems:
             raise c.Failed('; '.join(problems))
     finally:
@@ -782,6 +818,10 @@ def main():
     parser.add_argument('--core', required=True, type=Path)
     parser.add_argument('--log', type=Path)
     parser.add_argument('--require-gpu', action='store_true', help='fail, not skip, when the host makes no OpenGL context or, on Linux, strace is missing')
+    parser.add_argument('--strace', type=Path,
+                        help='Linux: trace the network calls of each session\'s host into this file, with the '
+                             'test\'s name and a count added, and fail a test whose sessions break protocol.md '
+                             '"Network" or have no trace, as conformance.py --strace does')
     parser.add_argument('names', nargs='*')
     options = parser.parse_args()
     log = open(options.log, 'ab') if options.log else c.subprocess.DEVNULL
@@ -789,14 +829,21 @@ def main():
     failures = 0
     tests = {test.__name__: test for test in (
         stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
-        launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, rumble_and_ports, discs,
-        wrong_parent, no_dll_from_working_directory)}
+        launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, option_keys_not_utf8,
+        rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory)}
     for test in (many_games, gpu_limits, gpu_network):
         tests[test.__name__] = lambda program, core, log, test=test: test(program, core, log, options.require_gpu)
     chosen = [(name, test) for name, test in tests.items() if not options.names or name in options.names]
     for name, test in chosen:
+        if options.strace:
+            Session.trace_prefix = options.strace.with_name(f'{options.strace.name}.{name}')
+            Session.traces = []
         try:
             skipped = test(options.host.resolve(), options.core.resolve(), log)
+            problems = [problem for trace, host in Session.traces
+                        for problem in c.trace_problems(trace, host.process.pid)]
+            if problems:
+                raise c.Failed('; '.join(problems))
             print(f'ok    {name}' + (f' ({skipped})' if skipped else ''))
         except c.Failed as problem:
             failures += 1

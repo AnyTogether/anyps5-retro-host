@@ -31,8 +31,8 @@ jobs:
       - run: python3 tests/package_release_test.py
       - name: Conformance sessions; each fails on a socket that is not AF_UNIX, a bind or listen, or no trace (protocol.md, "Network")
         run: python3 tests/conformance.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --strace build/network.trace
-      - name: Host tests, with Mesa's OpenGL for the resolution limits, eight OpenGL games in one host, and an OpenGL game under strace
-        run: python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --require-gpu
+      - name: Host tests, with Mesa's OpenGL for the resolution limits, eight OpenGL games in one host, and an OpenGL game under strace; each fails on what the conformance sessions fail on
+        run: python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --require-gpu --strace build/host-test.trace
       - run: python3 -I tests/fake_host_selftest.py
       - if: failure()
         run: tail -200 build/host.log || true
