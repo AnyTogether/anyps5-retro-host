@@ -4,6 +4,7 @@
 #ifndef ANYPS5_RETRO_HOST_PATHS_H_
 #define ANYPS5_RETRO_HOST_PATHS_H_
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -18,6 +19,16 @@ bool IsProtocolPath(std::string_view path, bool windows);
 // that starts with /. This is SwanStation's FileSystem::IsAbsolutePath at the commit the host
 // is tested with (protocol.md "Paths").
 bool IsCoreAbsolute(std::string_view name, bool windows);
+
+// The file SwanStation opens for entry index of the .m3u at m3u_path, whose contents are text, or
+// nothing when the playlist has no such entry. The entries are counted as cd_image_m3u.cpp counts
+// them at that commit: each line (split at \n) loses its leading and trailing C-locale whitespace
+// (space, \t, \n, \v, \f, \r); a line left empty, starting with #, or of one character is no
+// entry; a byte order mark is not removed, so it is part of the first line. A name IsCoreAbsolute
+// takes is returned as written; any other is joined to m3u_path's directory, as BuildRelativePath
+// joins it.
+std::optional<std::string> PlaylistEntry(std::string_view m3u_path, std::string_view text, unsigned index,
+                                         bool windows);
 
 // Whether path ends with extension (".cue"), ignoring ASCII case.
 bool HasExtension(std::string_view path, std::string_view extension);

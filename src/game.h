@@ -153,7 +153,6 @@ class Game {
   std::optional<std::pair<uint32_t, uint32_t>> LimitResolution(uint32_t max_width, uint32_t max_height);
   std::string CardPath() const;
   void RefreshDiscs();
-  std::optional<std::string> PlaylistEntry(unsigned index) const;
   template <typename T>
   T Get(const char* name) const {
     return reinterpret_cast<T>(library_.Symbol(name));

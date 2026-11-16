@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #include "json.h"
 #include "paths.h"
@@ -120,6 +121,50 @@ int main() {
   Expect(!IsCoreAbsolute(R"(C:\a.bin)", false), "a Windows drive path on POSIX is joined");
   Expect(!IsCoreAbsolute("b.bin", false), "a relative name is joined");
   Expect(!IsCoreAbsolute("", true) && !IsCoreAbsolute("", false), "an empty name is joined");
+  using retro_host::PlaylistEntry;
+  const auto entry_is = [](std::string_view m3u, std::string_view text, unsigned index, bool windows,
+                           const char* path) {
+    const auto entry = PlaylistEntry(m3u, text, index, windows);
+    return entry && *entry == path;
+  };
+  const char* windows_list = "disc1.cue\r\nD:\\Other\\disc2.cue\r\n\\\\nas\\share\\disc3.cue\r\nd:/x/disc4.cue\r\n";
+  Expect(entry_is(R"(C:\Games\FF7\FF7.m3u)", windows_list, 0, true, R"(C:\Games\FF7\disc1.cue)"),
+         "a relative entry is joined to the playlist's folder on Windows");
+  Expect(entry_is(R"(C:\Games\FF7\FF7.m3u)", windows_list, 1, true, R"(D:\Other\disc2.cue)"),
+         "a drive entry is kept as written on Windows");
+  Expect(entry_is(R"(C:\Games\FF7\FF7.m3u)", windows_list, 2, true, R"(C:\Games\FF7\\\nas\share\disc3.cue)"),
+         "a UNC entry is joined to the playlist's folder on Windows");
+  Expect(entry_is(R"(C:\Games\FF7\FF7.m3u)", windows_list, 3, true, "d:/x/disc4.cue"),
+         "a drive entry with slashes is kept as written on Windows");
+  Expect(!PlaylistEntry(R"(C:\Games\FF7\FF7.m3u)", windows_list, 4, true), "no entry past the last");
+  Expect(entry_is("C:/Games/FF7.m3u", "a.cue", 0, true, "C:/Games/a.cue"),
+         "a playlist path with slashes on Windows");
+  Expect(entry_is(R"(C:\Games/sub\FF7.m3u)", "a.cue", 0, true, R"(C:\Games/sub\a.cue)"),
+         "the last separator of either kind ends the folder on Windows");
+  const char* posix_list = "disc1.cue\n/mnt/other/disc2.cue\nsub/disc3.cue\nC:\\disc4.cue";
+  Expect(entry_is("/games/ff7/ff7.m3u", posix_list, 0, false, "/games/ff7/disc1.cue"),
+         "a relative entry is joined to the playlist's folder on POSIX");
+  Expect(entry_is("/games/ff7/ff7.m3u", posix_list, 1, false, "/mnt/other/disc2.cue"),
+         "an absolute entry is kept as written on POSIX");
+  Expect(entry_is("/games/ff7/ff7.m3u", posix_list, 2, false, "/games/ff7/sub/disc3.cue"),
+         "a relative entry in a subfolder on POSIX");
+  Expect(entry_is("/games/ff7/ff7.m3u", posix_list, 3, false, "/games/ff7/C:\\disc4.cue"),
+         "a Windows drive entry is joined on POSIX, the last line needing no newline");
+  Expect(entry_is(R"(a\b.m3u)", "c.cue", 0, false, "c.cue"),
+         "a backslash does not end the folder on POSIX");
+  Expect(entry_is("b.m3u", "c.cue", 0, true, "c.cue"), "a playlist with no folder joins nothing");
+  Expect(entry_is("/p.m3u", "a\nb\n  c \t\nxy\n", 0, false, "/xy"),
+         "an entry of one character, also with spaces around it, is no entry");
+  Expect(entry_is("/p.m3u", "\xEF\xBB\xBF#a\nb.cue\n", 0, false, "/\xEF\xBB\xBF#a"),
+         "a byte order mark is kept, so a comment after it is an entry");
+  Expect(entry_is("/p.m3u", "\xEF\xBB\xBF" "a.cue\nb.cue\n", 1, false, "/b.cue"),
+         "a byte order mark before the first entry still leaves one entry there");
+  Expect(entry_is("/p.m3u", "\v\f a.cue\f\v\r\n", 0, false, "/a.cue"), "every C whitespace is trimmed");
+  Expect(entry_is("/p.m3u", "\xA0\na.cue\xA0\n", 0, false, "/a.cue\xA0"), "a byte above 127 is not whitespace");
+  Expect(entry_is("/p.m3u", "  # note\n\n \t \r\n#\na.cue", 0, false, "/a.cue"),
+         "comments after spaces, empty and blank lines are no entries");
+  Expect(entry_is("/p.m3u", "a b.cue", 0, false, "/a b.cue"), "a space inside an entry is kept");
+  Expect(!PlaylistEntry("/p.m3u", "", 0, false), "an empty playlist has no entry");
   Expect(retro_host::HasExtension("/a/Game.CUE", ".cue"), "extensions ignore case");
 
   if (failures == 0) std::printf("All JSON and path checks passed.\n");

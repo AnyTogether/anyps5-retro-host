@@ -128,11 +128,6 @@ std::string Stem(const std::string& path) {
   return dot == std::string::npos || dot == 0 ? name : name.substr(0, dot);
 }
 
-std::string Directory(const std::string& path) {
-  const size_t slash = path.find_last_of(kSeparators);
-  return slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
-}
-
 bool StartsWith(std::string_view text, std::string_view start) {
   return text.size() >= start.size() && text.compare(0, start.size(), start) == 0;
 }
@@ -225,7 +220,8 @@ void Game::RunGame() {
   Get<void (*)()>("retro_init")();
 
   if (config_.initial_disc) {
-    const auto entry = PlaylistEntry(*config_.initial_disc);
+    const auto text = ReadWholeFile(config_.disc);
+    const auto entry = text ? PlaylistEntry(config_.disc, *text, *config_.initial_disc, kWindows) : std::nullopt;
     if (!entry || !disc_control_->extended || !disc_control_->callbacks.set_initial_image ||
         !disc_control_->callbacks.set_initial_image(*config_.initial_disc, entry->c_str())) {
       Get<void (*)()>("retro_deinit")();
@@ -448,28 +444,6 @@ void Game::RefreshDiscs() {
   }
   std::lock_guard<std::mutex> lock(mutex_);
   disc_ = next;
-}
-
-std::optional<std::string> Game::PlaylistEntry(unsigned index) const {
-  const auto text = ReadWholeFile(config_.disc);
-  if (!text) return std::nullopt;
-  unsigned at = 0;
-  size_t start = 0;
-  while (start <= text->size()) {
-    size_t end = text->find('\n', start);
-    if (end == std::string::npos) end = text->size();
-    std::string line = text->substr(start, end - start);
-    start = end + 1;
-    if (at == 0 && line.size() >= 3 && line.compare(0, 3, "\xEF\xBB\xBF") == 0) line.erase(0, 3);
-    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
-    size_t first = 0;
-    while (first < line.size() && (line[first] == ' ' || line[first] == '\t')) ++first;
-    line.erase(0, first);
-    if (line.empty() || line[0] == '#') continue;
-    if (at == index) return IsCoreAbsolute(line, kWindows) ? line : Directory(config_.disc) + line;
-    ++at;
-  }
-  return std::nullopt;
 }
 
 std::string Game::CardPath() const {

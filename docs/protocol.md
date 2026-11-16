@@ -344,7 +344,11 @@ SwanStation treats a name as absolute only when it is a drive path on
 Windows (`C:\Games\a.bin` or `C:/Games/a.bin`) or starts with `/` on Linux
 and macOS, and the core opens such a name as written. It joins any other
 name to the directory of the file that names it. The host's own reading of
-an `.m3u` entry, for `initialDisc`, follows the same rule.
+an `.m3u` entry, for `initialDisc`, follows the same rule, and counts the
+entries as SwanStation does: it trims spaces, tabs, CR, LF, vertical tabs and
+form feeds from both ends of each line, and skips a line left empty, one
+starting with `#`, and one of a single character. A byte order mark is not
+removed, so it is part of the first line.
 
 **UNC names.** On Windows, a `.cue` or `.m3u` can name a UNC path
 (`\\server\share\track.bin`). The core does not open it as a UNC path: it
