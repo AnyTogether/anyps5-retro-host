@@ -164,6 +164,8 @@ def status_result(value, name=None, report=False):
     for field in ('hardware', 'graphicsPending'):
         boolean(value.get(field), f'status.{field}')
     string(value.get('resolutionError'), 'status.resolutionError')
+    if 'cardUnreadable' in value:
+        boolean(value['cardUnreadable'], 'status.cardUnreadable')
     need('progressPercent' in value and 'progressLabel' in value, 'status needs progressLabel and progressPercent')
     need(value['progressLabel'] is None or isinstance(value['progressLabel'], str), 'status.progressLabel')
     if value['progressPercent'] is not None:
