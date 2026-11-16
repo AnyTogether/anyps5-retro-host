@@ -19,12 +19,18 @@ add_library(retro_host_core STATIC
   src/host.cpp
   src/json.cpp
   src/paths.cpp
+  src/resolution.cpp
   src/ring.cpp
 )
+target_sources(retro_host_core PRIVATE src/gpu.cpp)
 if(WIN32)
-  target_sources(retro_host_core PRIVATE src/platform_windows.cpp)
+  target_sources(retro_host_core PRIVATE src/platform_windows.cpp src/gpu_wgl.cpp)
+  target_link_libraries(retro_host_core PUBLIC opengl32 gdi32 user32)
+elseif(APPLE)
+  target_sources(retro_host_core PRIVATE src/platform_posix.cpp src/gpu_cgl.cpp)
+  target_link_libraries(retro_host_core PUBLIC "-framework OpenGL")
 else()
-  target_sources(retro_host_core PRIVATE src/platform_posix.cpp)
+  target_sources(retro_host_core PRIVATE src/platform_posix.cpp src/gpu_egl.cpp)
 endif()
 target_include_directories(retro_host_core PUBLIC src
   PRIVATE 3rdparty/libretro-common/include 3rdparty/miniaudio)
@@ -64,4 +70,11 @@ if(ANYPS5_RETRO_HOST_TESTS)
   target_link_libraries(json_test PRIVATE retro_host_core)
   enable_testing()
   add_test(NAME json COMMAND json_test)
+  add_executable(resolution_test tests/resolution_test.cpp)
+  target_link_libraries(resolution_test PRIVATE retro_host_core)
+  add_test(NAME resolution COMMAND resolution_test)
+  add_executable(gpu_thread_test tests/gpu_thread_test.cpp)
+  target_link_libraries(gpu_thread_test PRIVATE retro_host_core)
+  add_test(NAME gpu_thread COMMAND gpu_thread_test)
+  set_tests_properties(gpu_thread PROPERTIES SKIP_RETURN_CODE 77)
 endif()

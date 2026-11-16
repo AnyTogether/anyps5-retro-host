@@ -13,6 +13,10 @@
 #include <cstring>
 #include <iterator>
 #include <new>
+#include <tuple>
+#include <utility>
+
+#include "resolution.h"
 
 #include "paths.h"
 
@@ -61,6 +65,14 @@ void OnLog(enum retro_log_level level, const char* format, ...) {
   va_end(arguments);
   if (Game* game = g_game) game->Log(static_cast<int>(level), text.c_str());
 }
+uintptr_t OnCurrentFramebuffer() {
+  Game* game = g_game;
+  return game ? game->CurrentFramebuffer() : 0;
+}
+retro_proc_address_t OnProcAddress(const char* name) {
+  Game* game = g_game;
+  return game ? reinterpret_cast<retro_proc_address_t>(game->ProcAddress(name)) : nullptr;
+}
 bool OnRumble(unsigned port, enum retro_rumble_effect effect, uint16_t strength) {
   Game* game = g_game;
   return game && game->Rumble(port, static_cast<int>(effect), strength);
@@ -90,7 +102,8 @@ constexpr const char* kStartOnlyOptions[] = {"swanstation_Console_Region", "swan
 // - the log level, since the host finds a missing BIOS in SwanStation's information messages.
 constexpr const char* kFixedOptions[] = {"swanstation_MemoryCards_Card1Type", "swanstation_MemoryCards_Card2Type",
                                          "swanstation_MemoryCards_UsePlaylistTitle",
-                                         "swanstation_ControllerPorts_MultitapMode", "swanstation_Logging_LogLevel"};
+                                         "swanstation_ControllerPorts_MultitapMode", "swanstation_Logging_LogLevel",
+                                         "swanstation_GPU_Renderer"};
 
 bool Listed(const char* const* list, size_t count, const std::string& key) {
   return std::find(list, list + count, key) != list + count;
@@ -223,12 +236,14 @@ void Game::RunGame() {
 
   retro_game_info game{config_.disc.c_str(), nullptr, 0, nullptr};
   if (!Get<bool (*)(const retro_game_info*)>("retro_load_game")(&game)) {
+    DropGpu();
     Get<void (*)()>("retro_deinit")();
     if (!UsesBios()) Finish("No PS1 BIOS was found.", "bios");
     else Finish("The disc could not be read.", "disc");
     return;
   }
   if (disc_missing_ || !UsesBios()) {
+    DropGpu();
     Get<void (*)()>("retro_unload_game")();
     Get<void (*)()>("retro_deinit")();
     if (disc_missing_) Finish("The disc could not be read.", "disc");
@@ -259,6 +274,26 @@ void Game::RunGame() {
     std::lock_guard<std::mutex> lock(mutex_);
     SetAspect(info.geometry);
   }
+  std::string end_error;
+  std::string end_code;
+  uint32_t reserve_width = info.geometry.max_width;
+  uint32_t reserve_height = info.geometry.max_height;
+  if (gpu_) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (const auto geometry = LimitResolution(info.geometry.max_width, info.geometry.max_height)) {
+      std::tie(reserve_width, reserve_height) = *geometry;
+    }
+  } else {
+    std::lock_guard<std::mutex> lock(mutex_);
+    software_ = true;
+  }
+  if (gpu_ && gpu_->Reserve(reserve_width, reserve_height, hw_depth_, hw_stencil_)) {
+    hardware_ = true;
+    if (hw_context_reset_) hw_context_reset_();
+  } else if (gpu_) {
+    end_error = "The host could not make a framebuffer on the GPU for the game.";
+    end_code = "other";
+  }
   RefreshDiscs();
   fps_ = info.timing.fps;
   sample_rate_ = info.timing.sample_rate;
@@ -268,9 +303,7 @@ void Game::RunGame() {
   const auto run = Get<void (*)()>("retro_run");
   auto next = std::chrono::steady_clock::now();
   int64_t last_card_check = NowMs();
-  std::string end_error;
-  std::string end_code;
-  while (!stop_) {
+  while (end_code.empty() && !stop_) {
     if (NowMs() - last_card_check >= kCardSaveMs) {
       SaveCard();
       last_card_check = NowMs();
@@ -302,6 +335,16 @@ void Game::RunGame() {
       end_code = "other";
       break;
     }
+    if (frame_failure_ == FrameResult::kGpuFailed) {
+      end_error = "The GPU stopped handing over the game's picture.";
+      end_code = "other";
+      break;
+    }
+    if (hardware_ && gpu_->Lost()) {
+      end_error = "The GPU was reset, and the game's OpenGL context with it.";
+      end_code = "other";
+      break;
+    }
     next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(frame_time);
     const auto now = std::chrono::steady_clock::now();
     if (next < now - std::chrono::milliseconds(250)) next = now;
@@ -311,6 +354,7 @@ void Game::RunGame() {
     end_error = "The memory card could not be saved.";
     end_code = "other";
   }
+  DropGpu();
   Get<void (*)()>("retro_unload_game")();
   Get<void (*)()>("retro_deinit")();
   audio_.Close();
@@ -575,6 +619,9 @@ bool Game::Environment(unsigned command, void* data) {
       fps_ = info->timing.fps;
       sample_rate_ = info->timing.sample_rate;
       timing_changed_ = true;
+      if (hardware_ && !gpu_->Reserve(info->geometry.max_width, info->geometry.max_height, hw_depth_, hw_stencil_)) {
+        frame_failure_ = FrameResult::kGpuFailed;
+      }
       std::lock_guard<std::mutex> lock(mutex_);
       SetAspect(info->geometry);
       return true;
@@ -589,6 +636,31 @@ bool Game::Environment(unsigned command, void* data) {
     case RETRO_ENVIRONMENT_SHUTDOWN:
       stop_ = true;
       return true;
+    case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
+      if (!data) return false;
+      *static_cast<unsigned*>(data) = RETRO_HW_CONTEXT_OPENGL_CORE;
+      return true;
+    case RETRO_ENVIRONMENT_SET_HW_RENDER: {
+      if (!data) return false;
+      auto* request = static_cast<retro_hw_render_callback*>(data);
+      const bool core = request->context_type == RETRO_HW_CONTEXT_OPENGL_CORE;
+      if (!core && request->context_type != RETRO_HW_CONTEXT_OPENGL) return false;
+      gpu_.reset();
+      gpu_ = Gpu::Create(core ? request->version_major : 0, core ? request->version_minor : 0, core);
+      if (!gpu_) {
+        std::fprintf(stderr, "[host] No OpenGL context could be made; the core draws in software.\n");
+        return false;
+      }
+      std::fprintf(stderr, "[host] OpenGL: %s\n", gpu_->Description().c_str());
+      request->get_current_framebuffer = OnCurrentFramebuffer;
+      request->get_proc_address = OnProcAddress;
+      hw_context_reset_ = request->context_reset;
+      hw_context_destroy_ = request->context_destroy;
+      hw_depth_ = request->depth;
+      hw_stencil_ = request->stencil;
+      hw_bottom_left_ = request->bottom_left_origin;
+      return true;
+    }
     default:
       return false;
   }
@@ -598,6 +670,25 @@ void Game::Video(const void* data, unsigned width, unsigned height, size_t pitch
   if (published_) quiet_since_ = NowMs();
   if (!data) return;
   if (width == 0 || height == 0) return;
+  if (data == RETRO_HW_FRAME_BUFFER_VALID) {
+    if (!hardware_) return;
+    if (width > kMaxFrameSide || height > kMaxFrameSide) {
+      frame_failure_ = FrameResult::kTooLarge;
+      return;
+    }
+    try {
+      converted_.resize(static_cast<size_t>(width) * height * 4);
+    } catch (const std::bad_alloc&) {
+      frame_failure_ = FrameResult::kNoMemory;
+      return;
+    }
+    if (!gpu_->Read(width, height, format_ == PixelFormat::kBgra8, hw_bottom_left_, converted_.data())) {
+      frame_failure_ = FrameResult::kGpuFailed;
+      return;
+    }
+    Publish(width, height);
+    return;
+  }
   if (width > kMaxFrameSide || height > kMaxFrameSide) {
     frame_failure_ = FrameResult::kTooLarge;
     return;
@@ -638,6 +729,10 @@ void Game::Video(const void* data, unsigned width, unsigned height, size_t pitch
       out[3] = 0xFF;
     }
   }
+  Publish(width, height);
+}
+
+void Game::Publish(uint32_t width, uint32_t height) {
   const FrameResult shown = events_.OnFrame(converted_.data(), width, height, config_.epoch);
   if (shown != FrameResult::kShown) {
     frame_failure_ = shown;
@@ -728,7 +823,7 @@ Json Game::Status() const {
                     {"error", ClipUtf8(error_, kErrorBytes)},
                     {"errorCode", error_code_},
                     {"aspect", aspect},
-                    {"hardware", false},
+                    {"hardware", hardware_.load()},
                     {"resolutionError", ResolutionError()},
                     {"graphicsPending", pending},
                     {"progressLabel", nullptr},
@@ -802,6 +897,7 @@ bool Game::SetOption(const std::string& key, const std::string& value) {
       options_changed_ = true;
       display_refresh_ = true;
     }
+    if (option.key == kResolutionOption) resolution_refused_.clear();
     return true;
   }
   return false;
@@ -883,10 +979,63 @@ bool Game::UsesBios() const {
   return image && std::find(std::begin(kBiosSizes), std::end(kBiosSizes), image->size()) != std::end(kBiosSizes);
 }
 
+uintptr_t Game::CurrentFramebuffer() const { return gpu_ ? gpu_->Framebuffer() : 0; }
+
+void* Game::ProcAddress(const char* name) const { return gpu_ ? gpu_->Proc(name) : nullptr; }
+
+// As RetroArch does in core_unload_game: the core is told its context goes away before
+// retro_unload_game, while the game is still loaded (SwanStation switches back to its software
+// renderer then).
+void Game::DropGpu() {
+  if (hardware_ && hw_context_destroy_) hw_context_destroy_();
+  hardware_ = false;
+  gpu_.reset();
+}
+
+std::optional<std::pair<uint32_t, uint32_t>> Game::LimitResolution(uint32_t max_width, uint32_t max_height) {
+  const uint32_t width_limit = std::min(kMaxFrameSide, gpu_->MaxWidth());
+  const uint32_t height_limit = std::min(kMaxFrameSide, gpu_->MaxHeight());
+  for (auto& option : options_) {
+    if (option.key != kResolutionOption || option.fixed || option.restart || !option.read) continue;
+    const auto active = std::find(option.values.begin(), option.values.end(), option.active);
+    if (active == option.values.end()) return std::nullopt;
+    const auto limit = retro_host::LimitResolution(option.values, option.selected,
+                                                   static_cast<size_t>(active - option.values.begin()), max_width,
+                                                   max_height, width_limit, height_limit);
+    if (!limit) return std::nullopt;
+    const std::string asked = option.labels[option.selected];
+    const bool moved = limit->selected != option.selected;
+    std::vector<std::string> values;
+    std::vector<std::string> labels;
+    for (const size_t i : limit->offered) {
+      if (i == limit->selected) option.selected = values.size();
+      values.push_back(option.values[i]);
+      labels.push_back(option.labels[i]);
+    }
+    option.values = std::move(values);
+    option.labels = std::move(labels);
+    if (moved) {
+      options_changed_ = true;
+      resolution_refused_ = asked + " would make the game's picture up to " +
+                            std::to_string(limit->refused_width) + " x " + std::to_string(limit->refused_height) +
+                            ", more than the " + std::to_string(width_limit) + " x " + std::to_string(height_limit) +
+                            " the host can pass on with this OpenGL renderer, so the game uses " +
+                            option.labels[option.selected] + ".";
+    }
+    if (limit->active_offered) return std::nullopt;
+    option.active = option.values[option.selected];
+    options_changed_ = true;
+    return std::make_pair(limit->width, limit->height);
+  }
+  return std::nullopt;
+}
+
 std::string Game::ResolutionError() const {
+  if (!resolution_refused_.empty()) return resolution_refused_;
+  if (!software_) return "";
   for (const auto& option : options_) {
     if (option.key == kResolutionOption && option.values[option.selected] != "1") {
-      return "This host draws with the software renderer, which has no internal resolution above 1x.";
+      return "No OpenGL context could be made, so the game draws in software, which has no internal resolution above 1x.";
     }
   }
   return "";

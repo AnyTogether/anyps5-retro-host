@@ -13,9 +13,11 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "audio.h"
+#include "gpu.h"
 #include "json.h"
 #include "platform.h"
 #include "ring.h"
@@ -41,7 +43,7 @@ struct PortInput {
 
 // What a running game hands back to the host: frames to publish and rumble to forward. Called
 // on the game's thread.
-enum class FrameResult { kShown, kTooLarge, kNoMemory };
+enum class FrameResult { kShown, kTooLarge, kNoMemory, kGpuFailed };
 
 class GameEvents {
  public:
@@ -96,6 +98,8 @@ class Game {
   int16_t InputState(unsigned port, unsigned device, unsigned index, unsigned id);
   void Log(int level, const char* text);
   bool Rumble(unsigned port, int effect, uint16_t strength);
+  uintptr_t CurrentFramebuffer() const;
+  void* ProcAddress(const char* name) const;
 
  private:
   struct Option {
@@ -129,6 +133,10 @@ class Game {
   void Run();
   void RunGame();
   bool LoadCore(std::string& error);
+  // Hands the frame in converted_ to the host.
+  void Publish(uint32_t width, uint32_t height);
+  // Tells the core its OpenGL context is going away, then releases it.
+  void DropGpu();
   // Takes the core's aspect ratio, or base_width / base_height when it gives none (libretro).
   void SetAspect(const ::retro_game_geometry& geometry);
   void Finish(const std::string& error, const std::string& code);
@@ -137,6 +145,12 @@ class Game {
   // not be written. A card file the host could not read is never written over.
   bool SaveCard(bool always = false);
   std::string ResolutionError() const;
+  // Offers only the internal resolutions whose frames fit the ring and the GPU's framebuffer, given
+  // the core's largest geometry now, and moves a value that does not fit to the largest one that
+  // does. When the value the core drew at is not offered, the core is given the selected one
+  // instead, and the largest geometry at it is returned; otherwise std::nullopt, as the core's
+  // geometry fits. Called with mutex_ held, on the game's thread, with gpu_ made.
+  std::optional<std::pair<uint32_t, uint32_t>> LimitResolution(uint32_t max_width, uint32_t max_height);
   std::string CardPath() const;
   void RefreshDiscs();
   std::optional<std::string> PlaylistEntry(unsigned index) const;
@@ -163,6 +177,10 @@ class Game {
   double aspect_ = 4.0 / 3.0;
   std::vector<Option> options_;
   bool options_changed_ = false;
+  // Why the internal resolution asked for is not used, while the game uses another.
+  std::string resolution_refused_;
+  // The game runs without an OpenGL context, so the core draws in software.
+  bool software_ = false;
   Disc disc_;
   unsigned connected_ports_ = 1;
   bool ports_changed_ = false;
@@ -181,6 +199,14 @@ class Game {
   bool timing_changed_ = false;
   std::vector<uint8_t> converted_;
   FrameResult frame_failure_ = FrameResult::kShown;
+  // The core's OpenGL context (RETRO_ENVIRONMENT_SET_HW_RENDER), used on the game's thread.
+  std::unique_ptr<Gpu> gpu_;
+  std::atomic<bool> hardware_{false};
+  void (*hw_context_reset_)() = nullptr;
+  void (*hw_context_destroy_)() = nullptr;
+  bool hw_depth_ = false;
+  bool hw_stencil_ = false;
+  bool hw_bottom_left_ = false;
   bool published_ = false;
   // Memory card 1's file is there but could not be read as a card, so it is never written over
   // (status.cardUnreadable).

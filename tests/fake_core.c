@@ -7,7 +7,24 @@
  * memory card whose first byte turns 1 after 30 frames, and rumbles a port's large motor while
  * Cross is held on it and the port has a controller (retro_set_controller_port_device). It logs SwanStation's messages for a BIOS it uses (fake-bios.bin in the system
  * directory) or for none. Setting fake_hang to "yes" makes retro_run never return, as a stuck core
- * would. */
+ * would.
+ *
+ * When the system directory holds fake-gpu, it also offers SwanStation's internal resolution
+ * option (swanstation_GPU_ResolutionScale, 1x to 16x) and asks for an OpenGL 3.3 core context.
+ * With one, it draws as SwanStation draws a 640-pixel-wide screen: frames of 640 x 480 times the
+ * scale, and a largest geometry of PS1 VRAM, 1024 x 512, times the scale
+ * (libretro_host_interface.cpp, GetSystemAVInfo). A new scale reaches the host through
+ * RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO before the next frame is drawn. While the system directory
+ * holds fake-hold-load, retro_load_game waits after reading the scale, and while it holds
+ * fake-hold-reset, context_reset waits, each writing fake-held-load or fake-held-reset there
+ * first, so a test can act, and look at the host, between those steps.
+ *
+ * Its context_reset also binds a pixel pack buffer and a renderbuffer of its own and sets
+ * GL_PACK_ALIGNMENT to 2, and every frame it checks that those, and the draw and read
+ * framebuffer bindings it left, are as it left them; after SET_SYSTEM_AV_INFO it checks that a
+ * binding of the host's old framebuffer moved to the new one. The host must not change a core's
+ * OpenGL state (docs/host.md, "GPU rendering"). When it has, the core logs what changed and asks
+ * the host to shut the game down (RETRO_ENVIRONMENT_SHUTDOWN). */
 
 #include <libretro.h>
 
@@ -26,6 +43,24 @@
 #define HEIGHT 480
 #define MAX_WIDTH 1920
 #define MAX_HEIGHT 1080
+#define VRAM_WIDTH 1024
+#define VRAM_HEIGHT 512
+#define GL_FRAMEBUFFER 0x8D40
+#define GL_RENDERBUFFER 0x8D41
+#define GL_PIXEL_PACK_BUFFER 0x88EB
+#define GL_COLOR_BUFFER_BIT 0x4000
+#define GL_PACK_ALIGNMENT 0x0D05
+#define GL_PIXEL_PACK_BUFFER_BINDING 0x88ED
+#define GL_RENDERBUFFER_BINDING 0x8CA7
+#define GL_DRAW_FRAMEBUFFER_BINDING 0x8CA6
+#define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
+#define CORE_PACK_ALIGNMENT 2
+
+#ifdef _WIN32
+#define GL_CALL __stdcall
+#else
+#define GL_CALL
+#endif
 #define CARD_BYTES (128 * 1024)
 #define MAX_DISCS 130
 
@@ -47,6 +82,26 @@ static unsigned disc_count;
 static unsigned disc_index;
 static unsigned initial_disc;
 static bool tray_open;
+static bool gpu_wanted;
+static bool gpu_ready;
+static unsigned scale = 1;
+static struct retro_hw_render_callback hw;
+static void(GL_CALL* gl_bind_framebuffer)(unsigned, unsigned);
+static void(GL_CALL* gl_viewport)(int, int, int, int);
+static void(GL_CALL* gl_clear_color)(float, float, float, float);
+static void(GL_CALL* gl_clear)(unsigned);
+static void(GL_CALL* gl_get_integerv)(unsigned, int*);
+static void(GL_CALL* gl_pixel_storei)(unsigned, int);
+static void(GL_CALL* gl_gen_buffers)(int, unsigned*);
+static void(GL_CALL* gl_delete_buffers)(int, const unsigned*);
+static void(GL_CALL* gl_bind_buffer)(unsigned, unsigned);
+static void(GL_CALL* gl_gen_renderbuffers)(int, unsigned*);
+static void(GL_CALL* gl_delete_renderbuffers)(int, const unsigned*);
+static void(GL_CALL* gl_bind_renderbuffer)(unsigned, unsigned);
+static unsigned core_pack_buffer;
+static unsigned core_renderbuffer;
+static unsigned drawn_framebuffer;
+static bool state_changed;
 
 #ifndef _WIN32
 static void join_logger(void);
@@ -151,7 +206,19 @@ static struct retro_core_option_v2_definition definitions[] = {
     {NULL, NULL, NULL, NULL, NULL, NULL, {{NULL, NULL}}, NULL},
 };
 static char many_values[RETRO_NUM_CORE_OPTION_VALUES_MAX][8];
-static struct retro_core_options_v2 options = {NULL, definitions};
+static struct retro_core_option_v2_definition resolution = {
+    "swanstation_GPU_ResolutionScale",
+    "Internal Resolution Scale",
+    NULL,
+    "Scales the picture for the hardware renderer.",
+    NULL,
+    NULL,
+    {{"1", "1x"}, {"2", "2x"}, {"3", "3x"}, {"4", "4x"}, {"5", "5x"}, {"6", "6x"}, {"7", "7x"}, {"8", "8x"},
+     {"9", "9x"}, {"10", "10x"}, {"11", "11x"}, {"12", "12x"}, {"13", "13x"}, {"14", "14x"}, {"15", "15x"},
+     {"16", "16x"}, {NULL, NULL}},
+    "1"};
+static struct retro_core_option_v2_definition offered[sizeof definitions / sizeof definitions[0] + 1];
+static struct retro_core_options_v2 options = {NULL, offered};
 
 RETRO_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
@@ -162,16 +229,56 @@ RETRO_API void retro_set_audio_sample_batch(retro_audio_sample_batch_t callback)
 RETRO_API void retro_set_input_poll(retro_input_poll_t callback) { input_poll = callback; }
 RETRO_API void retro_set_input_state(retro_input_state_t callback) { input_state = callback; }
 
+static bool in_system_directory(const char* name) {
+  const char* system = NULL;
+  char path[1100];
+  FILE* file;
+  if (!environment(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system) || !system) return false;
+  snprintf(path, sizeof path, "%s/%s", system, name);
+  file = fopen(path, "rb");
+  if (!file) return false;
+  fclose(file);
+  return true;
+}
+
+static void hold_while_asked(const char* step) {
+  const char* system = NULL;
+  char name[64];
+  char path[1100];
+  FILE* file;
+  unsigned waited;
+  snprintf(name, sizeof name, "fake-hold-%s", step);
+  if (!in_system_directory(name) || !environment(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system)) return;
+  snprintf(path, sizeof path, "%s/fake-held-%s", system, step);
+  file = fopen(path, "wb");
+  if (file) fclose(file);
+  for (waited = 0; waited < 1000 && in_system_directory(name); ++waited) {
+#ifdef _WIN32
+    Sleep(10);
+#else
+    usleep(10000);
+#endif
+  }
+}
+
 RETRO_API void retro_init(void) {
   struct retro_log_callback log;
   unsigned version = 0;
   unsigned i;
+  const size_t count = sizeof definitions / sizeof definitions[0] - 1;
   log_printf = environment(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log) ? log.log : NULL;
   for (i = 0; i < RETRO_NUM_CORE_OPTION_VALUES_MAX; ++i) {
     snprintf(many_values[i], sizeof many_values[i], "v%u", i);
     definitions[4].values[i].value = many_values[i];
     definitions[4].values[i].label = many_values[i];
   }
+  gpu_wanted = in_system_directory("fake-gpu");
+  gpu_ready = false;
+  scale = 1;
+  memset(&hw, 0, sizeof hw);
+  memset(offered, 0, sizeof offered);
+  memcpy(offered, definitions, count * sizeof definitions[0]);
+  if (gpu_wanted) offered[count] = resolution;
   if (environment(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) && version >= 2) {
     environment(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &options);
   }
@@ -202,11 +309,12 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info) {
 }
 
 RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info) {
+  const unsigned drawn = hw.context_type ? scale : 1;
   memset(info, 0, sizeof *info);
-  info->geometry.base_width = WIDTH;
-  info->geometry.base_height = HEIGHT;
-  info->geometry.max_width = MAX_WIDTH;
-  info->geometry.max_height = MAX_HEIGHT;
+  info->geometry.base_width = WIDTH * drawn;
+  info->geometry.base_height = HEIGHT * drawn;
+  info->geometry.max_width = hw.context_type ? VRAM_WIDTH * scale : MAX_WIDTH;
+  info->geometry.max_height = hw.context_type ? VRAM_HEIGHT * scale : MAX_HEIGHT;
   info->geometry.aspect_ratio = 4.0f / 3.0f;
   info->timing.fps = 60.0;
   info->timing.sample_rate = 44100.0;
@@ -218,16 +326,80 @@ RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device) 
 
 RETRO_API void retro_reset(void) { frame_count = 0; }
 
-static bool has_bios(void) {
-  const char* system = NULL;
-  char path[1100];
-  FILE* file;
-  if (!environment(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system) || !system) return false;
-  snprintf(path, sizeof path, "%s/fake-bios.bin", system);
-  file = fopen(path, "rb");
-  if (!file) return false;
-  fclose(file);
+static bool read_scale(void) {
+  struct retro_variable variable = {"swanstation_GPU_ResolutionScale", NULL};
+  unsigned wanted = 1;
+  if (environment(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) && variable.value) wanted = (unsigned)atoi(variable.value);
+  if (wanted < 1 || wanted > 16) wanted = 1;
+  if (wanted == scale) return false;
+  scale = wanted;
   return true;
+}
+
+static void context_reset(void) {
+  hold_while_asked("reset");
+  gl_bind_framebuffer = (void(GL_CALL*)(unsigned, unsigned))hw.get_proc_address("glBindFramebuffer");
+  gl_viewport = (void(GL_CALL*)(int, int, int, int))hw.get_proc_address("glViewport");
+  gl_clear_color = (void(GL_CALL*)(float, float, float, float))hw.get_proc_address("glClearColor");
+  gl_clear = (void(GL_CALL*)(unsigned))hw.get_proc_address("glClear");
+  gl_get_integerv = (void(GL_CALL*)(unsigned, int*))hw.get_proc_address("glGetIntegerv");
+  gl_pixel_storei = (void(GL_CALL*)(unsigned, int))hw.get_proc_address("glPixelStorei");
+  gl_gen_buffers = (void(GL_CALL*)(int, unsigned*))hw.get_proc_address("glGenBuffers");
+  gl_delete_buffers = (void(GL_CALL*)(int, const unsigned*))hw.get_proc_address("glDeleteBuffers");
+  gl_bind_buffer = (void(GL_CALL*)(unsigned, unsigned))hw.get_proc_address("glBindBuffer");
+  gl_gen_renderbuffers = (void(GL_CALL*)(int, unsigned*))hw.get_proc_address("glGenRenderbuffers");
+  gl_delete_renderbuffers = (void(GL_CALL*)(int, const unsigned*))hw.get_proc_address("glDeleteRenderbuffers");
+  gl_bind_renderbuffer = (void(GL_CALL*)(unsigned, unsigned))hw.get_proc_address("glBindRenderbuffer");
+  gpu_ready = gl_bind_framebuffer && gl_viewport && gl_clear_color && gl_clear && gl_get_integerv &&
+              gl_pixel_storei && gl_gen_buffers && gl_delete_buffers && gl_bind_buffer && gl_gen_renderbuffers &&
+              gl_delete_renderbuffers && gl_bind_renderbuffer;
+  drawn_framebuffer = 0;
+  state_changed = false;
+  if (!gpu_ready) return;
+  gl_gen_buffers(1, &core_pack_buffer);
+  gl_bind_buffer(GL_PIXEL_PACK_BUFFER, core_pack_buffer);
+  gl_gen_renderbuffers(1, &core_renderbuffer);
+  gl_bind_renderbuffer(GL_RENDERBUFFER, core_renderbuffer);
+  gl_pixel_storei(GL_PACK_ALIGNMENT, CORE_PACK_ALIGNMENT);
+}
+
+static void context_destroy(void) {
+  if (gpu_ready) {
+    gl_delete_buffers(1, &core_pack_buffer);
+    gl_delete_renderbuffers(1, &core_renderbuffer);
+  }
+  core_pack_buffer = core_renderbuffer = 0;
+  gpu_ready = false;
+}
+
+static unsigned gl_integer(unsigned name) {
+  int value = 0;
+  gl_get_integerv(name, &value);
+  return (unsigned)value;
+}
+
+/* Whether the core's OpenGL state is as it left it, with framebuffer bound for drawing and
+ * reading; when not, the core logs what changed and asks the host to end the game. */
+static bool state_kept(unsigned framebuffer, const char* when) {
+  const unsigned draw = gl_integer(GL_DRAW_FRAMEBUFFER_BINDING);
+  const unsigned read = gl_integer(GL_READ_FRAMEBUFFER_BINDING);
+  const unsigned pack = gl_integer(GL_PIXEL_PACK_BUFFER_BINDING);
+  const unsigned renderbuffer = gl_integer(GL_RENDERBUFFER_BINDING);
+  const unsigned alignment = gl_integer(GL_PACK_ALIGNMENT);
+  if (draw == framebuffer && read == framebuffer && pack == core_pack_buffer && renderbuffer == core_renderbuffer &&
+      alignment == CORE_PACK_ALIGNMENT) {
+    return true;
+  }
+  if (log_printf) {
+    log_printf(RETRO_LOG_ERROR,
+               "[fake] The host changed the core's OpenGL state %s: draw %u read %u (want %u), pack buffer %u "
+               "(want %u), renderbuffer %u (want %u), pack alignment %u (want %u)\n",
+               when, draw, read, framebuffer, pack, core_pack_buffer, renderbuffer, core_renderbuffer, alignment,
+               CORE_PACK_ALIGNMENT);
+  }
+  state_changed = true;
+  environment(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
+  return false;
 }
 
 static bool ends_with(const char* text, const char* suffix) {
@@ -252,7 +424,7 @@ static int logged;
 
 static void* log_bios(void* unused) {
   (void)unused;
-  if (has_bios()) log_printf(RETRO_LOG_INFO, "[HostInterface] Using BIOS 'fake-bios.bin': fake BIOS\n");
+  if (in_system_directory("fake-bios.bin")) log_printf(RETRO_LOG_INFO, "[HostInterface] Using BIOS 'fake-bios.bin': fake BIOS\n");
   else log_printf(RETRO_LOG_INFO, "[HostInterface] No BIOS image found for NTSC-U/C region\n");
   __atomic_store_n(&logged, 1, __ATOMIC_RELAXED);
   return NULL;
@@ -309,6 +481,9 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game) {
   enum retro_pixel_format format = RETRO_PIXEL_FORMAT_XRGB8888;
   if (!game || !game->path) return false;
   if (!environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format)) return false;
+  if (environment(RETRO_ENVIRONMENT_SET_HW_RENDER, NULL) || environment(RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER, NULL)) {
+    return false;
+  }
 #ifdef _WIN32
   /* A library loaded by name, as a core or miniaudio may load one, must not come from the host's
    * working directory. host_test.py puts one there; finding it fails the game. */
@@ -320,12 +495,23 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game) {
     }
   }
 #endif
+  if (gpu_wanted) {
+    read_scale();
+    hold_while_asked("load");
+    hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
+    hw.version_major = 3;
+    hw.version_minor = 3;
+    hw.context_reset = context_reset;
+    hw.context_destroy = context_destroy;
+    hw.bottom_left_origin = true;
+    if (!environment(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw)) memset(&hw, 0, sizeof hw);
+  }
   /* SwanStation's lines, as its libretro log callback writes them: "[<channel or function>]
    * <message>". The disc's path comes first, so a path that holds the host's words must not count. */
   if (log_printf) {
     log_printf(RETRO_LOG_INFO, "[System] Loading CD image '%s'...\n", game->path);
 #ifdef _WIN32
-    if (has_bios()) log_printf(RETRO_LOG_INFO, "[HostInterface] Using BIOS 'fake-bios.bin': fake BIOS\n");
+    if (in_system_directory("fake-bios.bin")) log_printf(RETRO_LOG_INFO, "[HostInterface] Using BIOS 'fake-bios.bin': fake BIOS\n");
     else log_printf(RETRO_LOG_INFO, "[HostInterface] No BIOS image found for NTSC-U/C region\n");
 #else
     log_bios_from_thread();
@@ -394,8 +580,29 @@ RETRO_API void retro_run(void) {
     height = HEIGHT;
   }
   fill = color.value && strcmp(color.value, "green") == 0 ? 0x0000C000u : 0x000000C0u;
-  for (i = 0; i < width * height; ++i) pixels[i] = fill + (frame_count & 0xFF) * 0x10000u;
-  video(pixels, width, height, width * sizeof(uint32_t));
+  if (gpu_ready && state_changed) {
+    return;
+  }
+  if (gpu_ready) {
+    bool changed = false;
+    if (drawn_framebuffer && !state_kept(drawn_framebuffer, "between frames")) return;
+    if (environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &changed) && changed && read_scale()) {
+      struct retro_system_av_info info;
+      retro_get_system_av_info(&info);
+      environment(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &info);
+      if (drawn_framebuffer && !state_kept((unsigned)hw.get_current_framebuffer(), "in SET_SYSTEM_AV_INFO")) return;
+    }
+    drawn_framebuffer = (unsigned)hw.get_current_framebuffer();
+    gl_bind_framebuffer(GL_FRAMEBUFFER, drawn_framebuffer);
+    gl_viewport(0, 0, (int)(WIDTH * scale), (int)(HEIGHT * scale));
+    gl_clear_color((float)(frame_count & 0xFF) / 255.0f, (float)((fill >> 8) & 0xFF) / 255.0f,
+                   (float)(fill & 0xFF) / 255.0f, 1.0f);
+    gl_clear(GL_COLOR_BUFFER_BIT);
+    video(RETRO_HW_FRAME_BUFFER_VALID, WIDTH * scale, HEIGHT * scale, 0);
+  } else {
+    for (i = 0; i < width * height; ++i) pixels[i] = fill + (frame_count & 0xFF) * 0x10000u;
+    video(pixels, width, height, width * sizeof(uint32_t));
+  }
   audio_batch(silence, 735);
   for (port = 0; port < 2; ++port) {
     const bool cross = port_devices[port] != RETRO_DEVICE_NONE &&
