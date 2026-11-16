@@ -17,7 +17,14 @@
  * RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO before the next frame is drawn. While the system directory
  * holds fake-hold-load, retro_load_game waits after reading the scale, and while it holds
  * fake-hold-reset, context_reset waits, each writing fake-held-load or fake-held-reset there
- * first, so a test can act, and look at the host, between those steps. */
+ * first, so a test can act, and look at the host, between those steps.
+ *
+ * Its context_reset also binds a pixel pack buffer and a renderbuffer of its own and sets
+ * GL_PACK_ALIGNMENT to 2, and every frame it checks that those, and the draw and read
+ * framebuffer bindings it left, are as it left them; after SET_SYSTEM_AV_INFO it checks that a
+ * binding of the host's old framebuffer moved to the new one. The host must not change a core's
+ * OpenGL state (docs/host.md, "GPU rendering"). When it has, the core logs what changed and asks
+ * the host to shut the game down (RETRO_ENVIRONMENT_SHUTDOWN). */
 
 #include <libretro.h>
 
@@ -39,7 +46,15 @@
 #define VRAM_WIDTH 1024
 #define VRAM_HEIGHT 512
 #define GL_FRAMEBUFFER 0x8D40
+#define GL_RENDERBUFFER 0x8D41
+#define GL_PIXEL_PACK_BUFFER 0x88EB
 #define GL_COLOR_BUFFER_BIT 0x4000
+#define GL_PACK_ALIGNMENT 0x0D05
+#define GL_PIXEL_PACK_BUFFER_BINDING 0x88ED
+#define GL_RENDERBUFFER_BINDING 0x8CA7
+#define GL_DRAW_FRAMEBUFFER_BINDING 0x8CA6
+#define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
+#define CORE_PACK_ALIGNMENT 2
 
 #ifdef _WIN32
 #define GL_CALL __stdcall
@@ -75,6 +90,18 @@ static void(GL_CALL* gl_bind_framebuffer)(unsigned, unsigned);
 static void(GL_CALL* gl_viewport)(int, int, int, int);
 static void(GL_CALL* gl_clear_color)(float, float, float, float);
 static void(GL_CALL* gl_clear)(unsigned);
+static void(GL_CALL* gl_get_integerv)(unsigned, int*);
+static void(GL_CALL* gl_pixel_storei)(unsigned, int);
+static void(GL_CALL* gl_gen_buffers)(int, unsigned*);
+static void(GL_CALL* gl_delete_buffers)(int, const unsigned*);
+static void(GL_CALL* gl_bind_buffer)(unsigned, unsigned);
+static void(GL_CALL* gl_gen_renderbuffers)(int, unsigned*);
+static void(GL_CALL* gl_delete_renderbuffers)(int, const unsigned*);
+static void(GL_CALL* gl_bind_renderbuffer)(unsigned, unsigned);
+static unsigned core_pack_buffer;
+static unsigned core_renderbuffer;
+static unsigned drawn_framebuffer;
+static bool state_changed;
 
 #ifndef _WIN32
 static void join_logger(void);
@@ -309,10 +336,65 @@ static void context_reset(void) {
   gl_viewport = (void(GL_CALL*)(int, int, int, int))hw.get_proc_address("glViewport");
   gl_clear_color = (void(GL_CALL*)(float, float, float, float))hw.get_proc_address("glClearColor");
   gl_clear = (void(GL_CALL*)(unsigned))hw.get_proc_address("glClear");
-  gpu_ready = gl_bind_framebuffer && gl_viewport && gl_clear_color && gl_clear;
+  gl_get_integerv = (void(GL_CALL*)(unsigned, int*))hw.get_proc_address("glGetIntegerv");
+  gl_pixel_storei = (void(GL_CALL*)(unsigned, int))hw.get_proc_address("glPixelStorei");
+  gl_gen_buffers = (void(GL_CALL*)(int, unsigned*))hw.get_proc_address("glGenBuffers");
+  gl_delete_buffers = (void(GL_CALL*)(int, const unsigned*))hw.get_proc_address("glDeleteBuffers");
+  gl_bind_buffer = (void(GL_CALL*)(unsigned, unsigned))hw.get_proc_address("glBindBuffer");
+  gl_gen_renderbuffers = (void(GL_CALL*)(int, unsigned*))hw.get_proc_address("glGenRenderbuffers");
+  gl_delete_renderbuffers = (void(GL_CALL*)(int, const unsigned*))hw.get_proc_address("glDeleteRenderbuffers");
+  gl_bind_renderbuffer = (void(GL_CALL*)(unsigned, unsigned))hw.get_proc_address("glBindRenderbuffer");
+  gpu_ready = gl_bind_framebuffer && gl_viewport && gl_clear_color && gl_clear && gl_get_integerv &&
+              gl_pixel_storei && gl_gen_buffers && gl_delete_buffers && gl_bind_buffer && gl_gen_renderbuffers &&
+              gl_delete_renderbuffers && gl_bind_renderbuffer;
+  drawn_framebuffer = 0;
+  state_changed = false;
+  if (!gpu_ready) return;
+  gl_gen_buffers(1, &core_pack_buffer);
+  gl_bind_buffer(GL_PIXEL_PACK_BUFFER, core_pack_buffer);
+  gl_gen_renderbuffers(1, &core_renderbuffer);
+  gl_bind_renderbuffer(GL_RENDERBUFFER, core_renderbuffer);
+  gl_pixel_storei(GL_PACK_ALIGNMENT, CORE_PACK_ALIGNMENT);
 }
 
-static void context_destroy(void) { gpu_ready = false; }
+static void context_destroy(void) {
+  if (gpu_ready) {
+    gl_delete_buffers(1, &core_pack_buffer);
+    gl_delete_renderbuffers(1, &core_renderbuffer);
+  }
+  core_pack_buffer = core_renderbuffer = 0;
+  gpu_ready = false;
+}
+
+static unsigned gl_integer(unsigned name) {
+  int value = 0;
+  gl_get_integerv(name, &value);
+  return (unsigned)value;
+}
+
+/* Whether the core's OpenGL state is as it left it, with framebuffer bound for drawing and
+ * reading; when not, the core logs what changed and asks the host to end the game. */
+static bool state_kept(unsigned framebuffer, const char* when) {
+  const unsigned draw = gl_integer(GL_DRAW_FRAMEBUFFER_BINDING);
+  const unsigned read = gl_integer(GL_READ_FRAMEBUFFER_BINDING);
+  const unsigned pack = gl_integer(GL_PIXEL_PACK_BUFFER_BINDING);
+  const unsigned renderbuffer = gl_integer(GL_RENDERBUFFER_BINDING);
+  const unsigned alignment = gl_integer(GL_PACK_ALIGNMENT);
+  if (draw == framebuffer && read == framebuffer && pack == core_pack_buffer && renderbuffer == core_renderbuffer &&
+      alignment == CORE_PACK_ALIGNMENT) {
+    return true;
+  }
+  if (log_printf) {
+    log_printf(RETRO_LOG_ERROR,
+               "[fake] The host changed the core's OpenGL state %s: draw %u read %u (want %u), pack buffer %u "
+               "(want %u), renderbuffer %u (want %u), pack alignment %u (want %u)\n",
+               when, draw, read, framebuffer, pack, core_pack_buffer, renderbuffer, core_renderbuffer, alignment,
+               CORE_PACK_ALIGNMENT);
+  }
+  state_changed = true;
+  environment(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
+  return false;
+}
 
 static bool ends_with(const char* text, const char* suffix) {
   size_t a = strlen(text), b = strlen(suffix), i;
@@ -490,14 +572,20 @@ RETRO_API void retro_run(void) {
     height = HEIGHT;
   }
   fill = color.value && strcmp(color.value, "green") == 0 ? 0x0000C000u : 0x000000C0u;
+  if (gpu_ready && state_changed) {
+    return;
+  }
   if (gpu_ready) {
     bool changed = false;
+    if (drawn_framebuffer && !state_kept(drawn_framebuffer, "between frames")) return;
     if (environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &changed) && changed && read_scale()) {
       struct retro_system_av_info info;
       retro_get_system_av_info(&info);
       environment(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &info);
+      if (drawn_framebuffer && !state_kept((unsigned)hw.get_current_framebuffer(), "in SET_SYSTEM_AV_INFO")) return;
     }
-    gl_bind_framebuffer(GL_FRAMEBUFFER, (unsigned)hw.get_current_framebuffer());
+    drawn_framebuffer = (unsigned)hw.get_current_framebuffer();
+    gl_bind_framebuffer(GL_FRAMEBUFFER, drawn_framebuffer);
     gl_viewport(0, 0, (int)(WIDTH * scale), (int)(HEIGHT * scale));
     gl_clear_color((float)(frame_count & 0xFF) / 255.0f, (float)((fill >> 8) & 0xFF) / 255.0f,
                    (float)(fill & 0xFF) / 255.0f, 1.0f);

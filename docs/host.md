@@ -37,7 +37,16 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   3.3 core context (`RETRO_ENVIRONMENT_SET_HW_RENDER`; `GET_PREFERRED_HW_RENDER`
   says OpenGL core) with an offscreen context on the game's thread: EGL on
   Linux (loaded at run time), WGL with a hidden window on Windows, and CGL on
-  macOS ([`src/gpu.cpp`](../src/gpu.cpp) and one file per system). The core
+  macOS ([`src/gpu.cpp`](../src/gpu.cpp) and one file per system). EGL's
+  display comes only from `EGL_EXT_platform_device` or
+  `EGL_MESA_platform_surfaceless`, never from `eglGetDisplay`: its default
+  display can be the X server named in `DISPLAY`, which can be a TCP address
+  (with SSH forwarding), and protocol.md "Network" allows no connection.
+  Neither platform has a window system. A GPU's device is tried first, so with
+  the NVIDIA driver and Mesa both installed the NVIDIA GPU draws, not Mesa's
+  CPU renderer; then Mesa's surfaceless platform (a GPU Mesa drives, or its CPU
+  renderer); then Mesa's software device (`EGL_MESA_device_software`). With
+  none of them the core draws in software. The core
   draws into the host's framebuffer, which grows with the core's largest
   geometry; each frame is read back with `glReadPixels`, turned the right way
   up, and published to the ring like a software frame. `status.hardware` is
@@ -65,22 +74,46 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   can be made for the core's largest size, when a later geometry change cannot
   get a bigger one, or when reading a frame back reports an OpenGL error (a lost
   context among them) or the frame is larger than the core said it could be.
-  The game never keeps running on stale pictures. The renderer
+  The game never keeps running on stale pictures. The host asks EGL
+  (`EGL_KHR_create_context`, else `EGL_EXT_create_context_robustness`) and
+  WGL (`WGL_ARB_create_context_robustness`) for a robust context that loses
+  itself on a GPU reset, and makes an ordinary one when the driver refuses;
+  when OpenGL then reports `GL_LOSE_CONTEXT_ON_RESET`, `glGetGraphicsResetStatus`
+  is checked after every `retro_run`, and a reset ends the game with `other`.
+  CGL has no robust contexts, so on macOS, and with a driver that refuses one,
+  a lost context ends the game only when it shows as an OpenGL error. Each
+  context made is logged (`[host] OpenGL: ...`) with the way it was made (`EGL
+  device`, `EGL surfaceless`, `EGL software device`, `WGL`, `CGL`, `CGL
+  software renderer`), `GL_VENDOR`, `GL_RENDERER`, `GL_VERSION` and whether a
+  reset is reported, and a request no context could be made for is logged too.
+  The host keeps the core's OpenGL state: reading a frame back puts the read
+  framebuffer, the pixel pack buffer and the pack settings back as the core
+  left them, and growing the framebuffer (at `SET_SYSTEM_AV_INFO`) puts the
+  draw and read framebuffers and the renderbuffer back, a binding of the old
+  framebuffer moving to the new one. One change stays: the readback first
+  clears the OpenGL errors the core left pending (up to 16), so an error it
+  sees is its own. The renderer
   option stays at `Auto` and is not listed, so the host decides. As RetroArch
   does, the core's `context_destroy` runs before `retro_unload_game`. The
   hidden WGL window is a top-level window, so Windows and other programs send
   it messages (a `SendMessage` to `HWND_BROADCAST` waits for every top-level
-  window); the game's thread answers them between frames (`Gpu::Pump`), so it
-  never shows as hung, and the window ignores `WM_CLOSE`, which `taskkill`
-  without `/f` sends and which would otherwise destroy the window under the
-  context. On Linux the context is dropped on the game's thread, which ends
+  window). It belongs to a thread of its own that only answers its messages,
+  so it never shows as hung, even while the core compiles shaders in
+  `retro_load_game` or `context_reset` on the game's thread, which draws into
+  it through its device context (`CS_OWNDC`). The window ignores `WM_CLOSE`,
+  which `taskkill` without `/f` sends and which would otherwise destroy the
+  window under the context. On macOS the accelerated pixel format also has
+  `kCGLPFAAllowOfflineRenderers`, so a Mac with two GPUs keeps the one it runs
+  on rather than switching to the discrete GPU for a game. On Linux the context is dropped on the game's thread, which ends
   with `eglReleaseThread` before libEGL is unloaded: libglvnd before 1.5
   (Ubuntu 22.04 has 1.4) keeps the thread's EGL state under a pthread key
   whose destructor is in libEGL and leaves it set when unloaded, so the thread
   would crash as it ended, right after SwanStation switched to software at
   `stop`. [`tests/gpu_thread_test.cpp`](../tests/gpu_thread_test.cpp) makes
-  and drops a context on two threads that end in turn, and is skipped where
-  no OpenGL 3.3 core context can be made.
+  and drops a context on two threads that end in turn, prints how each was
+  made, checks on Windows that the hidden window answers a message while the
+  game's thread waits without reading any, and is skipped where no OpenGL 3.3
+  core context can be made.
 - **Resolution limits.** SwanStation's internal resolution goes up to 16x, and
   its largest geometry is PS1 VRAM, 1024 × 512, times the scale
   (`GetSystemAVInfo` in `src/libretro/libretro_host_interface.cpp`): 16384 ×
@@ -223,6 +256,13 @@ A crash gives none of these, so the tests expect the exact code.
   scale through `SET_SYSTEM_AV_INFO` before the next frame. `fake-hold-load`
   and `fake-hold-reset` files make it wait after reading the scale in
   `retro_load_game` and in `context_reset`, so a test can act between them.
+  Its `context_reset` binds a pixel pack buffer and a renderbuffer of its own
+  and sets `GL_PACK_ALIGNMENT` to 2; every frame, and after
+  `SET_SYSTEM_AV_INFO`, it checks those and the framebuffer bindings it left
+  (a binding of the old framebuffer must have moved to the new one), and when
+  the host changed any it logs `[fake] The host changed the core's OpenGL
+  state ...` and asks the host to shut the game down, which every OpenGL test
+  then sees as a game that ended by itself.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
   not. Its fake launcher checks every `ring` (its size and the growth rule)
   and every `frame` (the newest slot's epoch is the one `start` returned, and
@@ -257,15 +297,26 @@ A crash gives none of these, so the tests expect the exact code.
     with 0;
   - Windows: a library the core loads by name is not taken from the host's
     working directory;
-  - eight games in a row with `volume`, `pause` and `stop` calls in between;
+  - eight games in a row with `volume`, `pause` and `stop` calls in between,
+    each an OpenGL game (`fake-gpu`) that must draw five frames, so one host
+    makes and drops eight contexts and loads and unloads the system's OpenGL
+    eight times (doing that each game once crashed on Ubuntu 22.04's libglvnd
+    1.4); with `--require-gpu` each game must have made a context;
   - the resolution limits (`gpu_limits`): the fake core started at 16x must
     start at 8x, offer 1x to 8x, explain itself in `resolutionError`, draw
     5120-wide frames, refuse 16x through `option`, take 2x and clear
     `resolutionError`; then, with 2x chosen after the core read a saved 16x
     but before the host saw its geometry, the core must be given 2x by
     `context_reset`, with no 16x offered and nothing refused. Without an
-    OpenGL context that test is skipped, unless `--require-gpu` is given, as
-    the Linux CI job does with Mesa installed.
+    OpenGL context that test is skipped, unless `--require-gpu` is given;
+  - Linux: an OpenGL game run under `strace -f -e trace=%network`
+    (`gpu_network`) with `DISPLAY` set to an X server over TCP
+    (`127.0.0.1:9`) must make no call protocol.md "Network" forbids, so a host
+    that let EGL reach a window system fails it. It is skipped without strace
+    or a context, unless `--require-gpu` is given.
+
+  CI passes `--require-gpu` on Linux (with Mesa installed), macOS (Apple's
+  software renderer) and Windows (Mesa's `opengl32.dll`, below).
 
   Run it like `conformance.py`.
 - [`tests/ring_access.c`](../tests/ring_access.c) gives the fake launcher the
@@ -298,7 +349,13 @@ A crash gives none of these, so the tests expect the exact code.
   Sony BIOS or game is used.
 - CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
   supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
-  under ThreadSanitizer (on 24.04). On Linux and macOS the fake core logs its BIOS
+  under ThreadSanitizer (on 24.04). The Windows runner's own `opengl32.dll`
+  makes no OpenGL 3.3 context, so the Windows job puts Mesa's (llvmpipe, with
+  `GALLIUM_DRIVER=llvmpipe`) next to the host and the tests, which load it
+  from their own folder: `mesa3d-26.2.4-release-msvc.7z` from
+  [mesa-dist-win](https://github.com/pal1000/mesa-dist-win) (MIT), a fixed
+  release checked against its SHA-256 before use. That covers WGL, the
+  readback and the hidden window there; nothing the host ships includes it. On Linux and macOS the fake core logs its BIOS
   line from a thread of its own and waits for it with a relaxed load, as
   SwanStation may log from its threads, so ThreadSanitizer fails if the BIOS
   flag the log callback sets is not atomic. `g_game`, the missing-disc flag

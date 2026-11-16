@@ -3,9 +3,10 @@
 
 """Host behaviour the fixtures do not cover: a stuck core, the memory card, ring growth, epochs
 across games, how the host leaves when the launcher goes, many start, volume and stop calls in a
-row, and the internal resolutions a GPU game is offered."""
+row, the internal resolutions a GPU game is offered, and an OpenGL game's network calls."""
 
 import argparse
+import os
 import shutil
 import signal
 import sys
@@ -679,12 +680,23 @@ def no_dll_from_working_directory(program, core, log):
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def many_games(program, core, log):
+def many_games(program, core, log, require_gpu):
+    """Eight games in a row in one host, each an OpenGL game where a context can be made, so the
+    host makes and drops eight contexts and loads and unloads the system's OpenGL eight times."""
     session = Session(program, core, log)
     try:
+        (Path(session.paths['system']) / 'fake-gpu').write_bytes(b'')
         for game in range(1, 9):
             if session.start() != game:
                 raise c.Failed('epochs do not count up')
+            status = session.wait(lambda s: s and (s['ready'] or s['ended']), 30)
+            if status['ended']:
+                raise c.Failed(f'game {game} ended at start: {status["errorCode"]!r} {status["error"]!r}')
+            if require_gpu and not status['hardware']:
+                raise c.Failed(f'game {game} made no OpenGL context')
+            session.read_frames(5)
+            if session.call('status')['ended']:
+                raise c.Failed(f'game {game} ended by itself; the host log says why')
             for level in range(10):
                 session.send('volume', {'level': level / 10, 'muted': level % 2 == 0})
             session.call('pause', True)
@@ -702,12 +714,61 @@ def many_games(program, core, log):
         session.close()
 
 
+def gpu_network(program, core, log, require_gpu):
+    """Linux: an OpenGL game run under strace makes no network call that protocol.md "Network"
+    forbids. DISPLAY names an X server over TCP, as SSH forwarding sets it, so a host that let EGL
+    reach a window system (eglGetDisplay's default display) would show a socket that is not
+    AF_UNIX in the trace."""
+    if c.SYSTEM != 'linux':
+        return 'skipped: strace runs on Linux only'
+    if not shutil.which('strace'):
+        if require_gpu:
+            raise c.Failed('strace is not installed')
+        return 'skipped: strace is not installed'
+    folder = Path(tempfile.mkdtemp(prefix='retro-host-trace-'))
+    trace = folder / 'gpu.trace'
+    saved = {name: os.environ.get(name) for name in ('DISPLAY', 'WAYLAND_DISPLAY')}
+    os.environ['DISPLAY'] = '127.0.0.1:9'
+    os.environ.pop('WAYLAND_DISPLAY', None)
+    try:
+        session = Session(program, core, log, trace=trace)
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    try:
+        (Path(session.paths['system']) / 'fake-gpu').write_bytes(b'')
+        session.start()
+        status = session.wait(lambda s: s and (s['ready'] or s['ended']), 30)
+        if status['ended']:
+            raise c.Failed(f'the game ended at start: {status["errorCode"]!r} {status["error"]!r}')
+        if not status['hardware']:
+            if require_gpu:
+                raise c.Failed('the host made no OpenGL context')
+            return 'skipped: the host made no OpenGL context here'
+        session.read_frames(10)
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 10)
+        session.call('release')
+        session.host.send_message({'type': 'shutdown'})
+        if session.host.exits(10) != 0:
+            raise c.Failed('the host did not exit cleanly')
+        problems = c.network_problems(trace)
+        if problems:
+            raise c.Failed('; '.join(problems))
+    finally:
+        session.close()
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', required=True, type=Path)
     parser.add_argument('--core', required=True, type=Path)
     parser.add_argument('--log', type=Path)
-    parser.add_argument('--require-gpu', action='store_true', help='fail, not skip, when the host makes no OpenGL context')
+    parser.add_argument('--require-gpu', action='store_true', help='fail, not skip, when the host makes no OpenGL context or, on Linux, strace is missing')
     parser.add_argument('names', nargs='*')
     options = parser.parse_args()
     log = open(options.log, 'ab') if options.log else c.subprocess.DEVNULL
@@ -716,8 +777,9 @@ def main():
     tests = {test.__name__: test for test in (
         stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
         launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, rumble_and_ports, discs,
-        wrong_parent, no_dll_from_working_directory, many_games)}
-    tests['gpu_limits'] = lambda program, core, log: gpu_limits(program, core, log, options.require_gpu)
+        wrong_parent, no_dll_from_working_directory)}
+    for test in (many_games, gpu_limits, gpu_network):
+        tests[test.__name__] = lambda program, core, log, test=test: test(program, core, log, options.require_gpu)
     chosen = [(name, test) for name, test in tests.items() if not options.names or name in options.names]
     for name, test in chosen:
         try:
