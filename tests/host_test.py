@@ -147,7 +147,7 @@ class Session:
     def leaves(self, how, began, timeout=LEAVE_LIMIT):
         """The host's exit code once it has exited, within timeout seconds of began."""
         code = self.host.exits(max(0.0, began + timeout - time.monotonic()))
-        if code not in (c.EXIT_CLEAN, None):
+        if code != c.EXIT_CLEAN:
             raise c.Failed(f'after {how} the host exited with {code}, not 0')
         return code
 

@@ -32,6 +32,8 @@ WRITE_LIMIT = 5.0
 EXIT_CLEAN = 0
 EXIT_PROTOCOL_ERROR = 2
 EXIT_MISSED_LIMIT = 3
+# macOS <sys/event.h>: with NOTE_EXIT, the exit status in the event's data. Python has no name for it.
+NOTE_EXITSTATUS = 0x04000000
 
 
 class Failed(Exception):
@@ -188,12 +190,22 @@ def compare(expected, actual, loose, where=''):
 class Grandchild:
     """A host that a relay started (see relay): its exit is watched without being its parent. On
     Linux the test process is made a child subreaper, so the host becomes its child once the relay
-    has gone and its exit code can be read; on macOS the code is not known (None)."""
+    has gone and its exit code can be read. macOS has no subreaper: the host passes to launchd,
+    which reaps it, so waitpid cannot give its code. A kqueue NOTE_EXIT filter with
+    NOTE_EXITSTATUS does, for a process the test may signal, as the host's own."""
 
     def __init__(self, pid):
         self.pid = pid
         self.code = None
         self.done = False
+        if SYSTEM == 'macos':
+            self.queue = select.kqueue()
+            try:
+                self.queue.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD,
+                                                  select.KQ_NOTE_EXIT | NOTE_EXITSTATUS)], 0)
+            except OSError as problem:
+                self.queue.close()
+                raise Failed(f'the host {pid} cannot be watched: {problem}')
         if WINDOWS:
             import ctypes.wintypes
             self.kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -228,11 +240,12 @@ class Grandchild:
                 return None
             self.code, self.done = os.waitstatus_to_exitcode(status), True
             return self.code
-        state = subprocess.run(['ps', '-o', 'stat=', '-p', str(self.pid)], capture_output=True, text=True).stdout
-        if state.strip() and not state.strip().startswith('Z'):
+        events = self.queue.control(None, 1, 0)
+        if not events:
             return None
-        self.done = True
-        return None
+        self.queue.close()
+        self.code, self.done = os.waitstatus_to_exitcode(events[0].data), True
+        return self.code
 
     def wait(self, timeout=None):
         deadline = None if timeout is None else time.monotonic() + timeout

@@ -161,9 +161,12 @@ A crash gives none of these, so the tests expect the exact code.
   - ring growth: 800 × 600 frames bring slots of twice the first ring's,
     1920 × 1080 slots of what the frame needs, and smaller frames no ring;
   - epochs through two games;
-  - leaving: within 10 s of end-of-stream, `SIGTERM` or the launcher's exit
-    (a relay process starts the host and exits, leaving the stream open), and
-    with 3 after the 5-second write limit when the launcher stops reading;
+  - leaving: with 0 within 10 s of end-of-stream, `SIGTERM` or the launcher's
+    exit (a relay process starts the host and exits, leaving the stream open;
+    the test reads the host's exit code as a child subreaper on Linux, and on
+    macOS, where the host passes to launchd, through kqueue's
+    `NOTE_EXITSTATUS`), and with 3 after the 5-second write limit when the
+    launcher stops reading;
   - an option of 128 values with no end marker, a key given twice and a
     playlist of 130 discs;
   - two option keys that differ only in a byte that is not UTF-8: listed once,
