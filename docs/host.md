@@ -123,7 +123,9 @@ A crash gives none of these, so the tests expect the exact code.
   the session on what protocol.md "Network" forbids, or when its trace is
   missing or has none of the host's reads;
   [`tests/trace_test.py`](../tests/trace_test.py) checks that rule on sample
-  strace lines. A read's timeout is for a message to begin: once its first byte has
+  strace lines. strace runs with `-D`, so the host's parent is the launcher's
+  process, as without strace, and a trace is checked once strace has written
+  the host's exit. A read's timeout is for a message to begin: once its first byte has
   come, the reader waits the 5-second write limit of protocol.md "Framing",
   counted from that byte, for the rest of the length and the body, because
   giving up in the middle of a message would read the next body as a length.
@@ -178,7 +180,9 @@ A crash gives none of these, so the tests expect the exact code.
     working directory;
   - eight games in a row with `volume`, `pause` and `stop` calls in between.
 
-  Run it like `conformance.py`.
+  Run it like `conformance.py`; with `--strace` (Linux) it traces every
+  session's host and checks each trace the same way. The one host
+  `wrong_parent` starts is not traced: it exits before it reads anything.
 - [`tests/ring_access.c`](../tests/ring_access.c) gives the fake launcher the
   sequentially consistent loads and stores of `latest` and `reading` that
   protocol.md asks for; Python cannot make them on shared memory itself. It

@@ -25,12 +25,21 @@ LEAVE_LIMIT = 10
 class Session:
     """A fake launcher that checks every ring and frame as it reads: a ring's size, the growth rule
     of protocol.md "Checks the launcher makes", and that the newest slot's epoch is the one start
-    returned."""
+    returned. With --strace, each session's host is traced as conformance.py traces it."""
+
+    # With --strace: the path each session's trace is named after, and the traces of the test that
+    # runs, each with its host, which main checks once the test has ended.
+    trace_prefix = None
+    traces = []
 
     def __init__(self, program, core, log, **options):
         self.work = Path(tempfile.mkdtemp(prefix='retro-host-test-'))
         self.paths = c.place(self.work, core)
+        if Session.trace_prefix:
+            options['trace'] = Session.trace_prefix.with_name(f'{Session.trace_prefix.name}.{len(Session.traces) + 1}')
         self.host = (c.WindowsHost if c.WINDOWS else c.PosixHost)(program, log, **options)
+        if Session.trace_prefix:
+            Session.traces.append((options['trace'], self.host))
         self.next_id = 0
         self.ring = None
         self.rings = []
@@ -647,6 +656,10 @@ def main():
     parser.add_argument('--host', required=True, type=Path)
     parser.add_argument('--core', required=True, type=Path)
     parser.add_argument('--log', type=Path)
+    parser.add_argument('--strace', type=Path,
+                        help='Linux: trace the network calls of each session\'s host into this file, with the '
+                             'test\'s name and a count added, and fail a test whose sessions break protocol.md '
+                             '"Network" or have no trace, as conformance.py --strace does')
     parser.add_argument('names', nargs='*')
     options = parser.parse_args()
     log = open(options.log, 'ab') if options.log else c.subprocess.DEVNULL
@@ -658,8 +671,15 @@ def main():
                                  discs, wrong_parent, no_dll_from_working_directory, many_games)
              if not options.names or test.__name__ in options.names]
     for test in tests:
+        if options.strace:
+            Session.trace_prefix = options.strace.with_name(f'{options.strace.name}.{test.__name__}')
+            Session.traces = []
         try:
             test(options.host.resolve(), options.core.resolve(), log)
+            problems = [problem for trace, host in Session.traces
+                        for problem in c.trace_problems(trace, host.process.pid)]
+            if problems:
+                raise c.Failed('; '.join(problems))
             print(f'ok    {test.__name__}')
         except c.Failed as problem:
             failures += 1

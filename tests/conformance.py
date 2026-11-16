@@ -97,6 +97,22 @@ def network_problems(trace):
     return problems
 
 
+def trace_problems(trace, pid, timeout=5):
+    """network_problems of the trace of the host with process id pid, once strace has finished it.
+    The tracer of strace -D is no child of the test, so this waits for the line strace writes when
+    the host has gone, after every call of the host's."""
+    end = re.compile(rf'{pid}\s+\+\+\+ (?:exited with|killed by) ')
+    deadline = time.monotonic() + timeout
+    while not (trace.is_file() and any(end.match(line) for line in
+                                       trace.read_text(encoding='utf-8', errors='replace').splitlines())):
+        if time.monotonic() > deadline:
+            if not trace.is_file():
+                return network_problems(trace)
+            return [f'{trace.name} has no end for the host {pid}, so strace may not have written all of it']
+        time.sleep(0.05)
+    return network_problems(trace)
+
+
 def close_all(descriptors):
     for fd in descriptors:
         try:
@@ -256,11 +272,12 @@ def spawn(command, relay, log, **options):
 
 def relay(command):
     """The launcher between the test and the host for the tests of the host noticing that its
-    launcher has gone. It starts the host with its own process id as --parent-pid, handing on the
-    control stream it was given (descriptor 3, or the two pipe handles), writes the host's process
-    id, and exits at the first line on its standard input, leaving the host and the stream open."""
-    at = command.index('--parent-pid')
-    command[at + 1] = str(os.getpid())
+    launcher has gone. It starts the host with its own process id as --parent-pid (a traced host's
+    shell gives it the same, as $PPID), handing on the control stream it was given (descriptor 3,
+    or the two pipe handles), writes the host's process id, and exits at the first line on its
+    standard input, leaving the host and the stream open."""
+    if '--parent-pid' in command:
+        command[command.index('--parent-pid') + 1] = str(os.getpid())
     if WINDOWS:
         handles = [int(command[command.index('--ipc-read') + 1]), int(command[command.index('--ipc-write') + 1])]
         startup = subprocess.STARTUPINFO(lpAttributeList={'handle_list': handles})
@@ -290,9 +307,11 @@ class PosixHost:
 
         command = [str(program), '--ipc-fd', '3', '--parent-pid', str(parent or os.getpid())]
         if trace:
-            # strace takes the shell's process id with exec, so the host's parent is the pid it is given.
-            command = ['sh', '-c', 'exec strace -f -qq -o "$1" -e trace=%network -- "$0" --ipc-fd 3 --parent-pid $$',
-                       str(program), str(trace)]
+            # With -D, strace traces from a process of its own and runs the host in the shell's
+            # process, so the host's parent is the shell's: this process, or a relay. -q keeps the
+            # "+++ exited with" line that trace_problems waits for.
+            command = ['sh', '-c', 'exec strace -D -f -q -o "$1" -e trace=%network -- "$0" --ipc-fd 3 '
+                       '--parent-pid "${2:-$PPID}"', str(program), str(trace), *([str(parent)] if parent else [])]
         self.process, self.relay = spawn(command, relay, log, pass_fds=tuple(sorted({child, 3})),
                                          preexec_fn=to_three, cwd=cwd)
         theirs.close()
@@ -690,7 +709,7 @@ def play(session, program, core, log, trace=None):
         host.close()
         shutil.rmtree(work, ignore_errors=True)
     if trace:
-        problems = network_problems(trace)
+        problems = trace_problems(trace, host.process.pid)
         if problems:
             raise Failed('; '.join(problems))
 
