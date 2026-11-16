@@ -36,7 +36,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
       - id: version
@@ -74,7 +74,7 @@ jobs:
           test "$(stat -c %s out/openbios.bin)" -le 524288
           truncate -s 524288 out/openbios.bin
           cp nugget/psyqo/examples/hello/hello.ps-exe out/hello.exe
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: ps1-files-for-release
           path: out
@@ -121,11 +121,11 @@ jobs:
         -DCMAKE_OSX_ARCHITECTURES=arm64
         -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           submodules: true
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: ps1-files-for-release
           path: ps1-files
@@ -191,7 +191,7 @@ jobs:
             --program ps1-files/hello.exe --log real-core.log --picture real-core.png
       - if: failure()
         run: tail -200 real-core.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: release-${{ matrix.system }}
           path: release
@@ -203,7 +203,7 @@ jobs:
     needs: version
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           submodules: recursive
           persist-credentials: false
@@ -222,7 +222,7 @@ jobs:
           echo "$APACHE_SHA256  $stem/swanstation-vulkan-headers-Apache-2.0.txt" | sha256sum -c -
           mv host swanstation "$stem/"
           tar --exclude=.git --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - "$stem"             | gzip -9n > "release/$stem.tar.gz"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: release-source
           path: release
@@ -232,10 +232,10 @@ jobs:
     needs: [version, package, source]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           pattern: release-*
           path: release
@@ -248,7 +248,7 @@ jobs:
           (cd release && sha256sum -c SHA256SUMS)
       # The maintainers sign SHA256SUMS here, with AnyPS5-ARM's tools/release/sign.sh and the
       # release key, which writes SHA256SUMS.sig beside it (docs/host.md "Releases").
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: anyps5-retro-host-${{ needs.version.outputs.version }}-unsigned
           path: release
