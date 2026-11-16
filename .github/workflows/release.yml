@@ -93,6 +93,7 @@ jobs:
             unpacked-core: swanstation_libretro.dll
             ring-access: build/Release/ring_access.dll
             python: python
+            opengl: ''
           - system: linux-x64
             os: ubuntu-22.04
             host: build/anyps5-retro-host
@@ -101,6 +102,7 @@ jobs:
             unpacked-core: swanstation_libretro.so
             ring-access: build/ring_access.so
             python: python3
+            opengl: --expect-opengl
           - system: macos-arm64
             os: macos-latest
             host: build/anyps5-retro-host
@@ -109,6 +111,7 @@ jobs:
             unpacked-core: swanstation_libretro.dylib
             ring-access: build/ring_access.so
             python: python3
+            opengl: --expect-opengl
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -188,7 +191,7 @@ jobs:
           cp "${{ matrix.ring-access }}" unpacked/
           ${{ matrix.python }} tests/real_core.py --host "unpacked/${{ matrix.unpacked-host }}" \
             --core "unpacked/${{ matrix.unpacked-core }}" --bios ps1-files/openbios.bin \
-            --program ps1-files/hello.exe --log real-core.log --picture real-core.png
+            --program ps1-files/hello.exe --log real-core.log --picture real-core.png ${{ matrix.opengl }}
       - if: failure()
         run: tail -200 real-core.log || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -221,7 +224,7 @@ jobs:
           curl -fsSL "$APACHE_URL" -o "$stem/swanstation-vulkan-headers-Apache-2.0.txt"
           echo "$APACHE_SHA256  $stem/swanstation-vulkan-headers-Apache-2.0.txt" | sha256sum -c -
           mv host swanstation "$stem/"
-          tar --exclude=.git --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - "$stem"             | gzip -9n > "release/$stem.tar.gz"
+          tar --exclude=.git --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - "$stem" | gzip -9n > "release/$stem.tar.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: release-source

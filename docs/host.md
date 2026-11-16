@@ -570,7 +570,10 @@ release can be packed and checked by hand the same way.
   `real-core.yml` tests, and the workflow fails otherwise. Each system's zip
   is unpacked again on its own runner and boots OpenBIOS and the `hello`
   program through [`tests/real_core.py`](../tests/real_core.py), so the
-  files that are released are the files that were tested.
+  files that are released are the files that were tested. On Linux and macOS
+  it must also get an OpenGL context (`--expect-opengl`), as in
+  `real-core.yml`; the Windows runner has no OpenGL 3.3 driver, so Windows
+  boots in software there.
 - **Version.** `<version>` is `project(... VERSION)` in `CMakeLists.txt`,
   which is also `hostVersion` in `welcome`. A tag `v<version>` runs the
   workflow for a release and must match it. Pushes and pull requests that
