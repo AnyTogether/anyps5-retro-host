@@ -183,7 +183,14 @@ A crash gives none of these, so the tests expect the exact code.
   [`tests/fake_host_selftest.py`](../tests/fake_host_selftest.py) tests it
   by playing the launcher side of every launcher session, started as a
   launcher starts the host, directly, from environment variables and through
-  a shim. Run it with `python3 tests/fake_host_selftest.py`.
+  a shim. It also plays wrong launchers, and each must get a failed report
+  for its own reason: a wrong first call, a call before `welcome`, a call id
+  that does not count up, a second `hello`, an `input` for port 2, a
+  descriptor from the launcher (Linux and macOS), an extra call during a
+  `wait`, a launcher that never ends the host, and a launcher that ends it
+  one step early (before the breaking message of a protocol error session,
+  and at the start of a `wait`). Run it with
+  `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux, macOS (arm64) and Windows, and the Linux tests
   again under ThreadSanitizer. On Linux and macOS the fake core logs its BIOS
   line from a thread of its own and waits for it with a relaxed load, as
@@ -248,12 +255,26 @@ What the fake does with each step:
   `anyValueFor`. It answers `ping` with `pong`, and skips `pong` and
   `input`, unless the step names them. It also checks the launcher's own
   rules: framing and [Values](protocol.md#values), nothing but `hello`
-  before `welcome`, one `hello`, nothing after `unsupported`, and call and
-  ping ids counting up. It waits `--timeout` seconds (default 30).
+  before `welcome`, one `hello`, nothing after `unsupported`, call and
+  ping ids counting up, and each `input`'s `port`, `buttons` and sticks in
+  their ranges. "Before `welcome`" is decided when the message's length
+  arrives: one that arrived before the fake began to send `welcome` was sent
+  before the launcher had it. It waits `--timeout` seconds (default 30).
 - **`pollWithin`**: nothing. The reply that follows already matches, so the
   launcher's first call is the last.
 - **`silence`**: reads nothing and answers nothing. **`wait`**: answers pings
   and `status` calls only. **`hostExits`**: exits with that code.
+- **The step after which the launcher ends the host** (a host step,
+  `silence` or `wait` followed by `launcherKillsHost`, or the last host step
+  of a session whose outcome is not `clean`): the fake first waits
+  `--kill-pause` seconds (default 0.5; before a host step it answers pings
+  meanwhile, and a `silence` or `wait` goes on as written), and being ended
+  then is a failure, because the launcher ended the host before the step
+  that should make it. A host step's message is then sent: all but its last
+  bytes, then the report is set to `awaitingKill`, then the rest. A launcher
+  cannot act on a message before its last bytes arrive, so a launcher that
+  ends the host as soon as it reads the message always finds the report
+  set. A `silence` or `wait` sets it once the pause is over.
 - **`launcherKillsHost`**, and the end of a session whose outcome is not
   `clean`: waits `--kill-within` seconds (default 10) to be ended, and fails
   after that. End-of-stream is ignored then.
@@ -265,9 +286,11 @@ What the fake does with each step:
 - **The end of a `clean` session**: waits for `shutdown` or end-of-stream,
   then exits with 0.
 
-`--timeout`, `--kill-within`, `--hold` and `--resume` can also come from
-`ANYPS5_FAKE_HOST_TIMEOUT`, `ANYPS5_FAKE_HOST_KILL_WITHIN`,
-`ANYPS5_FAKE_HOST_HOLD` and `ANYPS5_FAKE_HOST_RESUME`.
+`--timeout`, `--kill-within`, `--kill-pause`, `--hold` and `--resume` can
+also come from `ANYPS5_FAKE_HOST_TIMEOUT`, `ANYPS5_FAKE_HOST_KILL_WITHIN`,
+`ANYPS5_FAKE_HOST_KILL_PAUSE`, `ANYPS5_FAKE_HOST_HOLD` and
+`ANYPS5_FAKE_HOST_RESUME`. `--kill-pause` must be less than
+`--kill-within`.
 
 The report is written again at every step, so a fake that was killed still
 shows how far it got:
@@ -280,8 +303,8 @@ shows how far it got:
 `step` is the index of the step the fake is at, and `stepStartedAt` the Unix
 time it got there. `passed` is true when there are no `failures` and the fake
 either finished (`done`) or is at a point where being ended is the expected
-end (`awaitingKill`): a `silence` or `wait` before `launcherKillsHost`, or a
-last host step in a session whose outcome is not `clean`. `killed` is true
+end (`awaitingKill`): after the pause of the step after which the launcher
+ends the host (see above), or at `launcherKillsHost`. `killed` is true
 when the fake saw the started process end (a shim, on Windows). `reached`
 lists the `launcherDraws` and `launcherReports` steps reached. On a failure
 the fake writes the report and exits with 3. `passed` says the fake saw what

@@ -32,7 +32,10 @@ FAILED_EXIT = 3
 ENVIRONMENT = {'session': 'ANYPS5_FAKE_HOST_SESSION', 'report': 'ANYPS5_FAKE_HOST_REPORT',
                'paths': 'ANYPS5_FAKE_HOST_PATHS', 'timeout': 'ANYPS5_FAKE_HOST_TIMEOUT',
                'kill_within': 'ANYPS5_FAKE_HOST_KILL_WITHIN', 'hold': 'ANYPS5_FAKE_HOST_HOLD',
-               'resume': 'ANYPS5_FAKE_HOST_RESUME'}
+               'resume': 'ANYPS5_FAKE_HOST_RESUME', 'kill_pause': 'ANYPS5_FAKE_HOST_KILL_PAUSE'}
+INPUT_FIELDS = (('port', 0, 1), ('buttons', 0, 65535), ('leftX', -32768, 32767), ('leftY', -32768, 32767),
+                ('rightX', -32768, 32767), ('rightY', -32768, 32767))
+HELD_BACK = 3
 
 
 class Failed(Exception):
@@ -168,6 +171,10 @@ class Report:
         self.data['awaitingKill'] = False
         self.write()
 
+    def arm(self):
+        self.data['awaitingKill'] = True
+        self.write()
+
     def write(self):
         data = self.data
         data['passed'] = not data['failures'] and (data['done'] or data['awaitingKill'])
@@ -189,6 +196,7 @@ class Report:
 class Link:
     def __init__(self):
         self.events = queue.Queue()
+        self.welcome_sent = threading.Event()
 
     def start(self):
         threading.Thread(target=self.pump, daemon=True).start()
@@ -200,13 +208,14 @@ class Link:
                 if header is None:
                     self.events.put(('eof',))
                     return
+                early = not self.welcome_sent.is_set()
                 size = struct.unpack('<I', header)[0]
                 if not 2 <= size <= 1 << 20:
                     raise Failed(f'a length of {size} is outside 2 to 1 MiB')
                 body = self.read_exact(size, False)
                 if body is None:
                     raise Failed('the stream ended inside a message')
-                self.events.put(('message', decode(body)))
+                self.events.put(('message', decode(body), early))
         except Failed as problem:
             self.events.put(('bad', str(problem)))
 
@@ -485,8 +494,34 @@ class Ring:
         self.memory.u32(24, publish['latest'])
 
 
+class Watcher:
+    def __init__(self, parent_pid, windows, started_handle):
+        self.windows = windows
+        self.started_handle = started_handle
+        self.launcher = windows.open_process(parent_pid, Windows.SYNCHRONIZE) if windows else None
+        self.parent = os.getppid()
+
+    def ended(self):
+        if self.windows:
+            if self.started_handle is not None and self.windows.exited(self.started_handle):
+                return 'killed'
+            if self.launcher is not None and self.windows.exited(self.launcher):
+                return 'launcher-gone'
+        elif os.getppid() != self.parent:
+            return 'launcher-gone'
+        return None
+
+    def watch(self, events):
+        while True:
+            time.sleep(0.1)
+            kind = self.ended()
+            if kind:
+                events.put((kind,))
+                return
+
+
 class Fake:
-    def __init__(self, session, link, report, paths, options, pid, windows, started_handle):
+    def __init__(self, session, link, report, paths, options, pid, windows, started_handle, watcher):
         self.session = session
         self.steps = session['steps']
         self.link = link
@@ -497,13 +532,13 @@ class Fake:
         self.pid = pid
         self.windows = windows
         self.started_handle = started_handle
+        self.watcher = watcher
         self.backlog = collections.deque()
         self.calls = {}
         self.pings = {}
         self.last_call = 0
         self.last_ping = 0
         self.hello = False
-        self.welcomed = False
         self.unsupported = False
         self.waiting = collections.deque()
         self.replies = {}
@@ -517,19 +552,23 @@ class Fake:
         self.report.data['steps'] = len(self.steps)
         for index, step in enumerate(self.steps):
             self.index = index
-            self.awaiting_kill = self.kill_follows(index)
+            armed = self.kill_follows(index)
+            if 'from' in step or 'silence' in step or 'wait' in step:
+                self.awaiting_kill = False
+            elif 'launcherKillsHost' in step:
+                self.awaiting_kill = True
             self.report.at(index, self.awaiting_kill)
             if 'from' in step:
                 if step['from'] == 'host':
-                    self.host_step(step)
+                    self.host_step(step, armed)
                 else:
                     self.launcher_step(step)
             elif 'hostExits' in step:
                 self.exit(step['hostExits'])
             elif 'silence' in step:
-                self.quiet(time.monotonic() + step['silence'])
+                self.quiet(time.monotonic() + step['silence'], armed)
             elif 'wait' in step:
-                self.wait(time.monotonic() + step['wait'], step['status'])
+                self.wait(time.monotonic() + step['wait'], step['status'], armed)
             elif 'launcherKillsHost' in step:
                 self.await_kill()
             elif 'launcherDraws' in step or 'launcherReports' in step:
@@ -584,6 +623,21 @@ class Fake:
         except queue.Empty:
             return None
 
+    def arm_at(self, deadline, armed):
+        return min(deadline, time.monotonic() + self.options.kill_pause) if armed else None
+
+    def arm(self):
+        event = self.watcher.ended()
+        if event:
+            self.control((event,))
+        self.awaiting_kill = True
+        self.report.arm()
+
+    def pause(self):
+        deadline = time.monotonic() + self.options.kill_pause
+        while self.take(deadline) is not None:
+            pass
+
     def control(self, event):
         kind = event[0]
         if kind in ('killed', 'launcher-gone'):
@@ -610,7 +664,7 @@ class Fake:
                 self.control(event)
                 continue
             message = event[1]
-            self.check_order(message)
+            self.check_order(message, event[2])
             kind = message['type']
             if kind == wanted:
                 return message
@@ -621,7 +675,7 @@ class Fake:
                 continue
             return message
 
-    def check_order(self, message):
+    def check_order(self, message, early):
         kind = message['type']
         if self.unsupported:
             raise Failed(f'the launcher sent {kind} after unsupported')
@@ -632,8 +686,14 @@ class Fake:
             return
         if not self.hello:
             raise Failed(f'the launcher sent {kind} before hello')
-        if not self.welcomed:
+        if early:
             raise Failed(f'the launcher sent {kind} before welcome')
+        if kind == 'input':
+            for field, low, high in INPUT_FIELDS:
+                value = integer(message.get(field))
+                if value is None or not low <= value <= high:
+                    raise Failed(f'the launcher sent an input whose {field} is {message.get(field)!r}, not an '
+                                 f'integer from {low} to {high}')
         if kind in ('call', 'ping'):
             number = integer(message.get('id'))
             last = self.last_call if kind == 'call' else self.last_ping
@@ -651,20 +711,34 @@ class Fake:
     def send(self, message, descriptors=()):
         self.link.send_message(message, descriptors)
 
+    def deliver(self, data, descriptors, armed):
+        if not armed:
+            self.link.send(data, descriptors)
+            return
+        self.pause()
+        split = min(HELD_BACK, len(data) - 1)
+        if split > 0:
+            self.link.send(data[:split], descriptors)
+            descriptors = ()
+        self.arm()
+        self.link.send(data[split:], descriptors)
+
     def spare_descriptors(self, count):
         if count and WINDOWS:
             raise Failed('descriptors are not sent on Windows')
         return [os.open(os.devnull, os.O_RDONLY) for _ in range(count)]
 
-    def host_step(self, step):
+    def host_step(self, step, armed):
         count = step.get('descriptors', 1 if 'ring' in step else 0)
         if WINDOWS and 'ring' in step:
             count = 0
         if 'bytes' in step:
             spare = self.spare_descriptors(count)
-            self.link.send(bytes.fromhex(step['bytes']), spare)
-            for descriptor in spare:
-                os.close(descriptor)
+            try:
+                self.deliver(bytes.fromhex(step['bytes']), spare, armed)
+            finally:
+                for descriptor in spare:
+                    os.close(descriptor)
             return
         message = fill(copy.deepcopy(step['message']), self.paths)
         loose = set(step.get('anyValueFor', []))
@@ -675,7 +749,7 @@ class Fake:
             if step.get('wrongPid'):
                 written = step['message'].get('pid')
                 message['pid'] = written if isinstance(written, int) and written != self.pid else self.pid + 1
-            self.welcomed = True
+            self.link.welcome_sent.set()
         elif kind == 'unsupported':
             self.unsupported = True
         elif kind == 'reply':
@@ -701,7 +775,7 @@ class Fake:
             self.ring.publish(step['publish'])
         spare = self.spare_descriptors(count)
         try:
-            self.send(message, attach + spare)
+            self.deliver(encode(message), attach + spare, armed)
         finally:
             for descriptor in spare:
                 os.close(descriptor)
@@ -725,22 +799,33 @@ class Fake:
         elif kind == 'ping':
             self.pings[expected.get('id')] = message['id']
 
-    def quiet(self, deadline):
+    def quiet(self, deadline, armed):
+        arm_at = self.arm_at(deadline, armed)
         while True:
+            until = deadline if arm_at is None else arm_at
             try:
-                event = self.events.get(timeout=max(0.0, deadline - time.monotonic()))
+                event = self.events.get(timeout=max(0.0, until - time.monotonic()))
             except queue.Empty:
-                return
+                if arm_at is None:
+                    return
+                arm_at = None
+                self.arm()
+                continue
             if event[0] in ('killed', 'launcher-gone'):
                 self.control(event)
             else:
                 self.backlog.append(event)
 
-    def wait(self, deadline, status):
+    def wait(self, deadline, status, armed):
+        arm_at = self.arm_at(deadline, armed)
         while True:
-            message = self.take(deadline)
+            message = self.take(deadline if arm_at is None else arm_at)
             if message is None:
-                return
+                if arm_at is None:
+                    return
+                arm_at = None
+                self.arm()
+                continue
             if message['type'] == 'call' and message.get('method') == 'status':
                 self.send({'type': 'reply', 'id': message['id'], 'result': status})
                 self.replies['status'] = {'type': 'reply', 'result': status}
@@ -789,23 +874,6 @@ class Fake:
         raise Failed(f'the launcher sent {json.dumps(message)}, which the session does not expect here')
 
 
-def watch(events, parent_pid, windows, started_handle):
-    launcher = windows.open_process(parent_pid, Windows.SYNCHRONIZE) if windows else None
-    parent = os.getppid()
-    while True:
-        time.sleep(0.1)
-        if windows:
-            if started_handle is not None and windows.exited(started_handle):
-                events.put(('killed',))
-                return
-            if launcher is not None and windows.exited(launcher):
-                events.put(('launcher-gone',))
-                return
-        elif os.getppid() != parent:
-            events.put(('launcher-gone',))
-            return
-
-
 class Arguments(argparse.ArgumentParser):
     def error(self, message):
         raise Failed(f'the command line is wrong: {message}')
@@ -820,6 +888,9 @@ def parse(argv):
     parser.add_argument('--kill-within', type=float, help='seconds to wait to be ended by the launcher (default 10)')
     parser.add_argument('--hold', type=float, help='seconds to pause at each launcherDraws and launcherReports step')
     parser.add_argument('--resume', help='at those steps, wait until this file holds a step index at least theirs')
+    parser.add_argument('--kill-pause', type=float,
+                        help='seconds to wait before the step after which the launcher ends the host; being ended '
+                             'then is a failure (default 0.5)')
     parser.add_argument('--ipc-fd')
     parser.add_argument('--ipc-read')
     parser.add_argument('--ipc-write')
@@ -855,6 +926,9 @@ def main(argv):
         options.kill_within = float(values['kill_within'] or 10)
         options.hold = float(values['hold'] or 0)
         options.resume = values['resume']
+        options.kill_pause = 0.5 if values['kill_pause'] is None else float(values['kill_pause'])
+        if not 0 <= options.kill_pause < options.kill_within:
+            raise Failed(f'--kill-pause {options.kill_pause} is not from 0 to less than --kill-within')
         if not values['session']:
             raise Failed('no --session or ANYPS5_FAKE_HOST_SESSION')
         session = json.loads(Path(values['session']).read_text(encoding='utf-8'))
@@ -882,8 +956,9 @@ def main(argv):
             if started_handle is None:
                 raise Failed(f'the started process {started} cannot be opened')
         link = WindowsLink(read_handle, write_handle) if WINDOWS else PosixLink(3)
-        threading.Thread(target=watch, args=(link.events, parent_pid, windows, started_handle), daemon=True).start()
-        Fake(session, link, report, paths, options, started, windows, started_handle).run()
+        watcher = Watcher(parent_pid, windows, started_handle)
+        threading.Thread(target=watcher.watch, args=(link.events,), daemon=True).start()
+        Fake(session, link, report, paths, options, started, windows, started_handle, watcher).run()
     except Failed as problem:
         report.fail(str(problem))
     except Exception:

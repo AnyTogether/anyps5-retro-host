@@ -28,10 +28,28 @@ WINDOWS = os.name == 'nt'
 SYSTEM = 'windows' if WINDOWS else ('macos' if sys.platform == 'darwin' else 'linux')
 NONE = 0xFFFFFFFF
 INPUT = {'type': 'input', 'port': 0, 'buttons': 0, 'leftX': 0, 'leftY': 0, 'rightX': 0, 'rightY': 0}
+MISTAKES = {
+    'wrong-first-call': "expected call 'volume'",
+    'call-before-welcome': 'the launcher sent call before welcome',
+    'id-not-counting': 'does not count up',
+    'second-hello': 'the launcher sent a second hello',
+    'descriptor': 'the launcher sent a descriptor',
+    'call-during-wait': 'during a wait',
+    'bad-input': 'an input whose port is 2',
+}
 
 
 class Failed(Exception):
     pass
+
+
+class Made(Exception):
+    pass
+
+
+def encode(message):
+    body = json.dumps(message, separators=(',', ':')).encode('utf-8')
+    return struct.pack('<I', len(body)) + body
 
 
 def runs_here(session):
@@ -136,8 +154,7 @@ class Stream:
         return self.received == start
 
     def send_message(self, message):
-        body = json.dumps(message, separators=(',', ':')).encode('utf-8')
-        self.send(struct.pack('<I', len(body)) + body)
+        self.send(encode(message))
 
 
 class PosixStarted(Stream):
@@ -171,6 +188,13 @@ class PosixStarted(Stream):
             self.socket.sendall(data)
         except OSError:
             pass
+
+    def send_with_descriptor(self, data):
+        descriptor = os.open(os.devnull, os.O_RDONLY)
+        try:
+            self.socket.sendmsg([data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [descriptor]))])
+        finally:
+            os.close(descriptor)
 
     def close(self):
         self.socket.close()
@@ -359,15 +383,33 @@ class Launcher:
                 continue
             return message, descriptors
 
-    def play(self, stop_at=None, wrong_first_call=False, never_kill=False):
+    def play(self, stop_at=None, mistake=None, never_kill=False):
+        self.mistake = mistake
+        try:
+            self.play_steps(stop_at, never_kill)
+        except Made:
+            pass
+
+    def wait_for_step(self, index):
+        deadline = time.monotonic() + 10
+        while self.report()['step'] < index:
+            if time.monotonic() > deadline:
+                raise Failed(f'the fake did not reach step {index}')
+            time.sleep(0.005)
+
+    def play_steps(self, stop_at, never_kill):
         for index, step in enumerate(self.steps):
             if index == stop_at:
+                self.wait_for_step(index)
+                time.sleep(0.15)
                 return
             if step.get('from') == 'launcher':
-                self.launcher_step(step, wrong_first_call)
-                wrong_first_call = wrong_first_call and step['message']['type'] != 'call'
+                self.launcher_step(step)
             elif step.get('from') == 'host':
                 self.host_step(step)
+                if self.mistake == 'second-hello' and self.welcomed:
+                    self.send(fill(self.steps[0]['message'], self.paths))
+                    raise Made()
             elif 'hostExits' in step:
                 code = self.started.process.wait(15)
                 if code != step['hostExits']:
@@ -387,8 +429,12 @@ class Launcher:
                 message, _ = self.next_message()
                 self.drain()
                 compare({'type': 'reply', 'id': self.call_id, 'result': step['status']}, message, set())
-                if 'launcherKillsHost' not in self.following(index):
-                    time.sleep(max(0.0, step['wait'] - (time.monotonic() - started)))
+                if self.mistake == 'call-during-wait':
+                    self.call_id += 1
+                    self.send({'type': 'call', 'id': self.call_id, 'method': 'pause', 'args': True})
+                    raise Made()
+                kill = 'launcherKillsHost' in self.following(index)
+                time.sleep(max(0.0, (min(step['wait'], 1.0) if kill else step['wait']) - (time.monotonic() - started)))
             elif 'launcherKillsHost' in step:
                 if never_kill:
                     return
@@ -422,20 +468,32 @@ class Launcher:
         self.started.process.kill()
         self.started.process.wait(10)
 
-    def launcher_step(self, step, wrong):
+    def launcher_step(self, step):
         message = fill(json.loads(json.dumps(step['message'])), self.paths)
         kind = message['type']
+        mistake = self.mistake
+        if kind == 'hello' and mistake == 'call-before-welcome':
+            self.started.send(encode(message) + encode({'type': 'call', 'id': 1, 'method': 'status'}))
+            raise Made()
         if kind == 'call':
             if self.welcomed and not self.shut:
                 self.extra_ping()
-                self.send(INPUT)
-            self.call_id += 1
+                self.send(dict(INPUT, port=2) if mistake == 'bad-input' else INPUT)
+            first = self.call_id == 0
+            if not (mistake == 'id-not-counting' and not first):
+                self.call_id += 1
             self.calls[message['id']] = self.call_id
             message['id'] = self.call_id
             self.methods.append(message['method'])
-            if wrong:
+            if mistake == 'wrong-first-call':
                 message['method'] = 'pause'
                 message['args'] = True
+            if mistake == 'descriptor':
+                self.started.send_with_descriptor(encode(message))
+                raise Made()
+            if mistake in ('wrong-first-call', 'bad-input') or (mistake == 'id-not-counting' and not first):
+                self.send(message)
+                raise Made()
         elif kind == 'ping':
             self.ping_id += 1
             self.pings[message['id']] = self.ping_id
@@ -518,16 +576,14 @@ class Launcher:
         self.log.close()
 
 
-def settle(launcher, killed_shim):
-    if not killed_shim:
-        return launcher.report()
+def settle(launcher, field):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         report = launcher.report()
-        if report['killed']:
+        if report[field]:
             return report
         time.sleep(0.05)
-    raise Failed('the fake did not notice that its shim was ended')
+    raise Failed(f'the fake did not notice that its shim was ended (no {field} in its report)')
 
 
 def run(path, mode='args', **variant):
@@ -537,19 +593,23 @@ def run(path, mode='args', **variant):
         extra = ['--kill-within', '1'] if variant.get('never_kill') else []
         launcher = Launcher(path, mode, work, extra)
         launcher.play(**variant)
-        if variant.get('never_kill') or variant.get('wrong_first_call'):
+        if variant.get('never_kill') or variant.get('mistake'):
             code = launcher.started.process.wait(15)
             report = launcher.report()
             if code != 3 or report['passed'] or not report['failures']:
                 raise Failed(f'the fake exited with {code} and reported {report} for a wrong launcher')
+            wanted = 'did not end the host' if variant.get('never_kill') else MISTAKES[variant['mistake']]
+            if wanted not in report['failures'][0]:
+                raise Failed(f'the fake failed with {report["failures"][0]!r}, not for {wanted!r}')
             return report['failures'][0]
         if variant.get('stop_at') is not None:
             launcher.kill()
-            report = launcher.report()
-            if report['passed']:
+            report = settle(launcher, 'failures') if mode == 'shim' and WINDOWS else launcher.report()
+            if report['passed'] or report['awaitingKill']:
                 raise Failed(f'the fake reported a pass when it was ended early: {report}')
-            return f'ended at step {report["step"]}, not passed'
-        report = settle(launcher, mode == 'shim' and WINDOWS and launcher.killed)
+            return f'ended at step {report["step"]}, not passed' + (f' ({report["failures"][0]})'
+                                                                     if report['failures'] else '')
+        report = settle(launcher, 'killed') if mode == 'shim' and WINDOWS and launcher.killed else launcher.report()
         if not report['passed'] or report['failures']:
             raise Failed(f'the fake reported {report}')
         return 'passed'
@@ -581,11 +641,25 @@ def main():
             ('play-and-quit, from environment variables', SESSIONS / 'play-and-quit.json', {'mode': 'env'}),
             ('ring-grows, through a shim', SESSIONS / 'ring-grows.json', {'mode': 'shim'}),
             ('missed-pong, through a shim', SESSIONS / 'missed-pong.json', {'mode': 'shim'}),
-            ('play-and-quit, a wrong first call', SESSIONS / 'play-and-quit.json',
-             {'wrong_first_call': True, 'stop_at': 3}),
+            ('play-and-quit, a wrong first call', SESSIONS / 'play-and-quit.json', {'mistake': 'wrong-first-call'}),
+            ('play-and-quit, a call before welcome', SESSIONS / 'play-and-quit.json',
+             {'mistake': 'call-before-welcome'}),
+            ('play-and-quit, a call id that does not count up', SESSIONS / 'play-and-quit.json',
+             {'mistake': 'id-not-counting'}),
+            ('play-and-quit, a second hello', SESSIONS / 'play-and-quit.json', {'mistake': 'second-hello'}),
+            ('play-and-quit, an input for port 2', SESSIONS / 'play-and-quit.json', {'mistake': 'bad-input'}),
+            ('stop-deadline, an extra call during the wait', SESSIONS / 'stop-deadline.json',
+             {'mistake': 'call-during-wait'}),
             ('play-and-quit, ended early', SESSIONS / 'play-and-quit.json', {'stop_at': 4}),
+            ('body-not-json, ended one step early', SESSIONS / 'body-not-json.json', {'stop_at': 4}),
+            ('body-not-json, ended one step early through a shim', SESSIONS / 'body-not-json.json',
+             {'mode': 'shim', 'stop_at': 4}),
+            ('stop-deadline, ended one step early', SESSIONS / 'stop-deadline.json', {'stop_at': 10}),
             ('welcome-wrong-pid, never ended', SESSIONS / 'welcome-wrong-pid.json', {'never_kill': True}),
         ]
+        if not WINDOWS:
+            cases.append(('play-and-quit, a descriptor from the launcher', SESSIONS / 'play-and-quit.json',
+                          {'mistake': 'descriptor'}))
     for name, path, variant in cases:
         played += 1
         try:
