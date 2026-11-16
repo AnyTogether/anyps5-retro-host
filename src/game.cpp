@@ -493,10 +493,12 @@ bool Game::Environment(unsigned command, void* data) {
       options_.clear();
       for (const retro_core_option_v2_definition* definition = options ? options->definitions : nullptr;
            definition && definition->key; ++definition) {
-        const auto same_key = [&](const Option& known) { return known.key == definition->key; };
-        if (std::any_of(options_.begin(), options_.end(), same_key)) continue;
+        std::string name = ValidUtf8(definition->key);
+        const auto same_name = [&](const Option& known) { return known.name == name; };
+        if (std::any_of(options_.begin(), options_.end(), same_name)) continue;
         Option option;
         option.key = definition->key;
+        option.name = std::move(name);
         const std::string text = definition->desc ? definition->desc : definition->key;
         option.title = ClipUtf8(text, kTextBytes);
         option.restart = (text.size() >= 9 && text.compare(text.size() - 9, 9, "(Restart)") == 0) ||
@@ -514,7 +516,7 @@ bool Game::Environment(unsigned command, void* data) {
         };
         option.selected = chosen(definition->default_value ? definition->default_value : "").value_or(0);
         for (const auto& [key, value] : config_.options) {
-          if (key == option.key && !option.fixed) option.selected = chosen(value).value_or(option.selected);
+          if (key == option.name && !option.fixed) option.selected = chosen(value).value_or(option.selected);
         }
         option.active = option.values[option.selected];
         options_.push_back(std::move(option));
@@ -714,12 +716,12 @@ Json Game::Status() const {
     if (!option.visible || option.fixed) continue;
     JsonArray values(option.values.begin(), option.values.end());
     JsonArray labels(option.labels.begin(), option.labels.end());
-    options.emplace_back(option.key, JsonObject{{"title", option.title},
-                                                {"values", std::move(values)},
-                                                {"labels", std::move(labels)},
-                                                {"selected", static_cast<uint64_t>(option.selected)},
-                                                {"activeValue", option.active},
-                                                {"restart", option.restart}});
+    options.emplace_back(option.name, JsonObject{{"title", option.title},
+                                                 {"values", std::move(values)},
+                                                 {"labels", std::move(labels)},
+                                                 {"selected", static_cast<uint64_t>(option.selected)},
+                                                 {"activeValue", option.active},
+                                                 {"restart", option.restart}});
   }
   const double aspect = aspect_ > 0 && aspect_ <= 10 ? aspect_ : 4.0 / 3.0;
   bool pending = false;
@@ -796,7 +798,7 @@ bool Game::SetOption(const std::string& key, const std::string& value) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (ended_) return false;
   for (auto& option : options_) {
-    if (option.key != key || !option.visible || option.fixed) continue;
+    if (option.name != key || !option.visible || option.fixed) continue;
     const auto found = std::find(option.values.begin(), option.values.end(), value);
     if (found == option.values.end()) return false;
     const auto selected = static_cast<size_t>(found - option.values.begin());

@@ -538,6 +538,25 @@ def core_data_bounds(program, core, log):
         session.close()
 
 
+def option_keys_not_utf8(program, core, log):
+    """Two option keys that differ only in a byte that is not UTF-8 are the same key once status
+    cleans them, so status lists it once, with the first definition, and option sets that one by
+    the key status sends."""
+    session = Session(program, core, log)
+    try:
+        session.start()
+        status = session.wait(lambda s: s and s['ready'], 10)
+        key = 'fake_bytes\ufffd'
+        names = [name for name in status['options'] if name.startswith('fake_bytes')]
+        if names != [key] or status['options'][key]['values'] != ['one', 'two']:
+            raise c.Failed(f'keys that are one key once cleaned gave {names}: {status["options"].get(key)}')
+        if session.call('option', {'key': key, 'value': 'two'}) is not True:
+            raise c.Failed('the option was not taken by the key status sends')
+        session.wait(lambda s: s['options'][key]['activeValue'] == 'two', 3)
+    finally:
+        session.close()
+
+
 def log_lines_with_paths(program, core, log):
     """A disc whose path holds the words the host looks for in SwanStation's log does not fool it:
     they count only at the start of a message. A disc that cannot be read still ends the game
@@ -635,8 +654,9 @@ def main():
     failures = 0
     tests = [test for test in (stuck_core, unloadable, restart_option, labels_not_utf8, memory_card, card_wrong_size,
                                  ring_growth, epochs, launcher_stops_reading, launcher_exits,
-                                 log_lines_with_paths, core_data_bounds, rumble_and_ports, discs, wrong_parent,
-                                 no_dll_from_working_directory, many_games) if not options.names or test.__name__ in options.names]
+                                 log_lines_with_paths, core_data_bounds, option_keys_not_utf8, rumble_and_ports,
+                                 discs, wrong_parent, no_dll_from_working_directory, many_games)
+             if not options.names or test.__name__ in options.names]
     for test in tests:
         try:
             test(options.host.resolve(), options.core.resolve(), log)

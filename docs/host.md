@@ -91,9 +91,12 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 - **Bounds on what the core gives.** An option's values stop at
   `RETRO_NUM_CORE_OPTION_VALUES_MAX` (128) even without a `NULL` entry, as
   libretro allows; an option key the core defines again is skipped, so status
-  never has a key twice; and `discs` lists at most 128 discs, the ones
-  `changeDisc` and `initialDisc` can reach. A disc past the 128th that the
-  core has inserted shows as `inserted: null`.
+  never has a key twice. Keys are compared as status sends them, with U+FFFD
+  for bytes that are not UTF-8, so two keys that differ only in such bytes are
+  one key, and `option` and `start.options` name an option by that key; and
+  `discs` lists at most 128 discs, the ones `changeDisc` and `initialDisc` can
+  reach. A disc past the 128th that the core has inserted shows as
+  `inserted: null`.
 - **A stuck core.** A game limit marks the game ended at once. If the core
   never returns from `retro_run`, `release` replies and then the host exits,
   as protocol.md "release" says.
@@ -161,6 +164,8 @@ A crash gives none of these, so the tests expect the exact code.
     with 3 after the 5-second write limit when the launcher stops reading;
   - an option of 128 values with no end marker, a key given twice and a
     playlist of 130 discs;
+  - two option keys that differ only in a byte that is not UTF-8: listed once,
+    with the first definition, and set by the key status sends;
   - rumble on Cross for ports 1 and 2, and `connectedPorts` giving port 2 a
     controller and taking it away;
   - `initialDisc` (and its errors) and `changeDisc` (a swap, and the indexes

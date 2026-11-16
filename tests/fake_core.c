@@ -142,6 +142,12 @@ static struct retro_core_option_v2_definition definitions[] = {
     /* A key given twice; the host keeps the first. */
     {"fake_color", "Color again", NULL, "A second definition of fake_color.", NULL, NULL,
      {{"red", "Red"}, {NULL, NULL}}, "red"},
+    /* Two keys that differ only in a byte that is not UTF-8, which status sends as the same key;
+     * the host keeps the first. retro_run reads the first. */
+    {"fake_bytes\xff", "Bytes", NULL, "A key that is not UTF-8.", NULL, NULL,
+     {{"one", "One"}, {"two", "Two"}, {NULL, NULL}}, "one"},
+    {"fake_bytes\xfe", "Bytes again", NULL, "The same key once cleaned to UTF-8.", NULL, NULL,
+     {{"three", "Three"}, {NULL, NULL}}, "three"},
     {NULL, NULL, NULL, NULL, NULL, NULL, {{NULL, NULL}}, NULL},
 };
 static char many_values[RETRO_NUM_CORE_OPTION_VALUES_MAX][8];
@@ -361,6 +367,7 @@ RETRO_API void retro_run(void) {
   struct retro_variable hang = {"fake_hang", NULL};
   struct retro_variable region = {"fake_region", NULL};
   struct retro_variable size = {"fake_size", NULL};
+  struct retro_variable bytes = {"fake_bytes\xff", NULL};
   unsigned width = WIDTH, height = HEIGHT;
   uint32_t fill;
   unsigned i;
@@ -380,6 +387,7 @@ RETRO_API void retro_run(void) {
   }
   environment(RETRO_ENVIRONMENT_GET_VARIABLE, &color);
   environment(RETRO_ENVIRONMENT_GET_VARIABLE, &region);
+  environment(RETRO_ENVIRONMENT_GET_VARIABLE, &bytes);
   if (!environment(RETRO_ENVIRONMENT_GET_VARIABLE, &size) || !size.value ||
       sscanf(size.value, "%ux%u", &width, &height) != 2 || width > MAX_WIDTH || height > MAX_HEIGHT) {
     width = WIDTH;
