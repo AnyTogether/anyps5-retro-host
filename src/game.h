@@ -103,7 +103,10 @@ class Game {
 
  private:
   struct Option {
+    // The key as the core gives it, byte for byte, for the core's own calls.
     std::string key;
+    // The key as status sends it (ValidUtf8 of key), by which the launcher names the option.
+    std::string name;
     std::string title;
     std::vector<std::string> values;
     std::vector<std::string> labels;

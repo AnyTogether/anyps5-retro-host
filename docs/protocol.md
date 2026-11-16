@@ -57,8 +57,8 @@ network connection under this rule, and neither is playing sound through the
 system's sound service over its local socket (PulseAudio or PipeWire on
 Linux). The host repository's CI traces the host's network calls with
 `strace -f -e trace=%network` on Linux while it runs the conformance
-sessions, and while it runs an OpenGL game with `DISPLAY` naming an X server
-over TCP (`host_test.py`, `gpu_network`). A session fails on any socket that is not `AF_UNIX`, on any `bind`
+sessions and its own host tests, among them an OpenGL game with `DISPLAY`
+naming an X server over TCP (`host_test.py`, `gpu_network`). A session fails on any socket that is not `AF_UNIX`, on any `bind`
 or `listen`, and when its trace is missing or holds none of the host's reads
 of the control stream, which every session has, so a trace that recorded
 nothing cannot pass. The host makes its OpenGL contexts without a window
@@ -700,12 +700,15 @@ open or when the core has inserted a disc past the 128th), `insertedDiscPath`
 run with it, otherwise `""`), `busy` (a disc change is in progress) and
 `failed` (the last change failed).
 
-Text the host takes from the core (option titles and labels, disc labels and
-paths, `error`) can hold bytes that are not UTF-8: SwanStation labels a
+Text the host takes from the core (option keys, titles and labels, disc labels
+and paths, `error`) can hold bytes that are not UTF-8: SwanStation labels a
 playlist's discs with the file names in the `.m3u`, which may be saved in
 Latin-1. The host sends each such byte sequence as U+FFFD, one for each
 maximal subpart as Unicode describes, so a status reply is always valid UTF-8.
-A disc path cleaned this way is for showing; it may not name a file.
+A disc path cleaned this way is for showing; it may not name a file. Option
+keys are compared after this cleaning: `options` lists two keys that become
+the same once, with the core's first definition, and `option` and
+`start.options` take the key as `status` sends it.
 
 ### pause
 
