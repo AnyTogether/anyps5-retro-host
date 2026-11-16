@@ -8,7 +8,10 @@ checkout, and that it refuses a checkout with changes that are not committed, a 
 read, a local remote and a build it cannot name, and does not take another repository's HEAD for an
 unpacked source inside it. It also checks that --check refuses a zip entry that could unpack outside
 its folder or over another entry on Windows or macOS, is held twice or is not a plain file, and a
-SHA256SUMS name that is no release file. Each case runs in a new git repository in a temporary
+SHA256SUMS name that is no release file; that it compares each zip with its .files (a changed byte,
+an extra entry, a missing entry) and each file with SHA256SUMS; that a missing file, a damaged zip
+and an entry over the size cap end in a refusal, not a traceback; and that it holds a release to
+one version and its SOURCE.txt to the source asked. Each case runs in a new git repository in a temporary
 folder, with the user's and the system's git configuration left out."""
 
 import os
@@ -164,9 +167,9 @@ with tempfile.TemporaryDirectory() as folder:
           ('https://git.example.org/example-ci/anyps5-retro-host', CI['GITHUB_SHA']))
 
 
-def checked(folder):
+def checked(folder, *arguments):
     try:
-        p.check(folder)
+        p.check(folder, *arguments)
         return 'accepted'
     except SystemExit as refusal:
         return f'refused: {refusal}'
@@ -184,9 +187,20 @@ def release(folder, entries, files_text=None, extra_sums=()):
     if files_text is None:
         files_text = p.sums_text([(name, p.sha256(data)) for name, data, _ in entries])
     (folder / f'{stem}.files').write_bytes(files_text.encode('utf-8'))
-    sums = [(name, p.sha256((folder / name).read_bytes())) for name in (f'{stem}.zip', f'{stem}.files')]
-    (folder / 'SHA256SUMS').write_bytes(p.sums_text(sums + list(extra_sums)).encode('utf-8'))
+    resum(folder, extra_sums)
     return folder
+
+
+def resum(folder, extra_sums=()):
+    names = sorted(path.name for path in folder.iterdir() if path.name != 'SHA256SUMS')
+    sums = [(name, p.sha256((folder / name).read_bytes())) for name in names]
+    (folder / 'SHA256SUMS').write_bytes(p.sums_text(sums + list(extra_sums)).encode('utf-8'))
+
+
+def flip(path, offset):
+    data = bytearray(path.read_bytes())
+    data[offset] ^= 0x01
+    path.write_bytes(bytes(data))
 
 
 with tempfile.TemporaryDirectory() as folder:
@@ -218,6 +232,69 @@ with tempfile.TemporaryDirectory() as folder:
     check('a SHA256SUMS name that is no release file is refused before it is read',
           refused(checked(release(folder / 'other', good, extra_sums=[('missing.bin', '0' * 64)])),
                   'not a host release file'), True)
+    stem = 'anyps5-retro-host-1.0.0-linux-x64'
+    changed = [(name, data.replace(b'core', b'cord'), mode) for name, data, mode in good]
+    check('a changed byte in a zip entry is refused',
+          refused(checked(release(folder / 'changed', changed, listed)), "different ['swanstation_libretro.so']"), True)
+    check('an extra entry with a good name is refused',
+          refused(checked(release(folder / 'extra', good + [('licenses/EXTRA', b'x', p.PLAIN)], listed)),
+                  "not listed ['licenses/EXTRA']"), True)
+    check('an entry the .files lists but the zip lacks is refused',
+          refused(checked(release(folder / 'lacks', good[:2], listed)), "missing ['licenses/LICENSE']"), True)
+    moved = release(folder / 'moved-zip', good)
+    flip(moved / f'{stem}.zip', 0)
+    check('a zip that no longer matches SHA256SUMS is refused',
+          refused(checked(moved), f'{stem}.zip does not match SHA256SUMS'), True)
+    moved = release(folder / 'moved-files', good)
+    flip(moved / f'{stem}.files', 0)
+    check('a .files that no longer matches SHA256SUMS is refused',
+          refused(checked(moved), f'{stem}.files does not match SHA256SUMS'), True)
+    gone = release(folder / 'gone', good)
+    (gone / f'{stem}.zip').unlink()
+    check('a file SHA256SUMS lists but the folder lacks is refused, not a traceback',
+          refused(checked(gone), f'{stem}.zip, which the folder does not hold'), True)
+    gone = release(folder / 'no-sums', good)
+    (gone / 'SHA256SUMS').unlink()
+    check('a folder without SHA256SUMS is refused, not a traceback',
+          refused(checked(gone), 'does not hold SHA256SUMS'), True)
+    broken = release(folder / 'not-a-zip', good)
+    (broken / f'{stem}.zip').write_bytes(b'not a zip')
+    resum(broken)
+    check('a zip that is no zip is refused, not a traceback', refused(checked(broken), 'not a zip'), True)
+    broken = release(folder / 'crc', good)
+    with zipfile.ZipFile(broken / f'{stem}.zip') as archive:
+        offset = archive.getinfo('anyps5-retro-host').header_offset + 30 + len('anyps5-retro-host')
+    flip(broken / f'{stem}.zip', offset)
+    resum(broken)
+    check('an entry whose bytes fail their CRC is refused, not a traceback',
+          refused(checked(broken), 'cannot be read'), True)
+    mixed = release(folder / 'mixed', good)
+    (mixed / 'anyps5-retro-host-1.0.1-source.tar.gz').write_bytes(b'source')
+    resum(mixed)
+    check('names of more than one version are refused', refused(checked(mixed), 'more than one version'), True)
+    check('a release of another version than asked is refused',
+          refused(checked(release(folder / 'version', good), '2.0.0'), 'not 2.0.0'), True)
+    check('a release of the version asked', checked(folder / 'version', '1.0.0'), 'accepted')
+    limit = p.MAX_ENTRY
+    p.MAX_ENTRY = len(b'licence') - 1
+    check('an entry larger than the cap is refused before it is read',
+          refused(checked(release(folder / 'large', good)), "'licenses/LICENSE', which is larger than"), True)
+    p.MAX_ENTRY = limit
+    commit = 'c' * 40
+    NL = chr(10)
+    sourced = good + [('SOURCE.txt', (f'host{NL}{FORK} at commit {commit}.{NL}').encode(), p.PLAIN)]
+    sourced_folder = release(folder / 'sourced', sourced)
+    check('a SOURCE.txt that names the source asked', checked(sourced_folder, None, FORK + '.git', commit),
+          'accepted')
+    check('a SOURCE.txt that names another commit is refused',
+          refused(checked(sourced_folder, None, FORK, 'd' * 40), 'does not name'), True)
+    check('a SOURCE.txt that names another repository is refused',
+          refused(checked(sourced_folder, None, 'https://github.com/example-other/anyps5-retro-host', commit),
+                  'does not name'), True)
+    check('a zip without SOURCE.txt is refused when a source is asked',
+          refused(checked(folder / 'good', None, FORK, commit), 'no SOURCE.txt'), True)
+    check('a commit without a repository is refused',
+          refused(checked(sourced_folder, None, None, commit), 'together'), True)
     try:
         p.write_zip(folder / 'bad.zip', [('../outside', b'x', p.PLAIN)])
         check('the packer refuses an unsafe name', 'written', 'refused')

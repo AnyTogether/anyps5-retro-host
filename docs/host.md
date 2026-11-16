@@ -31,7 +31,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
 | [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio, with the volume, mute and pause |
 | [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
-| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries ("Result") |
+| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions and a `SOURCE.txt` naming another source ("Result") |
 
 ## Choices made for version 1
 
@@ -586,33 +586,66 @@ release can be packed and checked by hand the same way.
   published with the binaries, and carries the same Apache-2.0 text at its
   top. stb, glad and libretro-common, which are public domain or MIT, keep
   their notices in their source files, which the archive holds.
-- **Result.** The artifact `anyps5-retro-host-<version>-unsigned` holds the
+- **Result.** A run for a tag `v<version>` uploads the artifact
+  `anyps5-retro-host-<version>-unsigned`; every other run (a branch push, a
+  pull request, `workflow_dispatch` on a branch) uploads
+  `anyps5-retro-host-<version>-not-a-release-<first 12 digits of the commit>`
+  instead, so only a tag's files can be taken for the release. Either holds the
   three zips, the three `.files`, the source archive and `SHA256SUMS`, written as `shasum -a 256`
   writes it and sorted by name as AnyPS5-ARM's `tools/release/sign.sh` sorts
   it. `python3 tools/package_release.py --check <folder>` checks a folder of
-  them as a launcher checks a download, without the signature. It refuses a
-  `SHA256SUMS` name that is not a release file before reading it, and a zip
+  them as a launcher checks a download, without the signature, and the `sums`
+  job runs it on every run. Every file `SHA256SUMS` lists must be in the
+  folder with that digest, and every zip must hold exactly what its `.files`
+  lists (no entry changed, missing or added); all names must carry one
+  version, and with `--version` that one; with `--host-repository` and
+  `--host-commit`, every zip's `SOURCE.txt` must name that repository at that
+  commit (the `sums` job passes this run's). It refuses a
+  `SHA256SUMS` name that is not a release file before reading it, an entry
+  that states more than 256 MiB before reading it, and a zip
   entry that is not a plain file with the packer's permissions, or whose
   name could unpack outside its folder or over another entry on some system:
   each part of a name must be letters, digits and `._+-`, must not start or
   end with a dot or be a Windows device name such as `NUL`, no two names may
   differ only in case, and no entry may have the name of a folder another
-  entry is in (in any case). The packer refuses to write such a name, so a
-  licence file with a space in its name stops the build.
+  entry is in (in any case). A missing file, a damaged zip or a failed CRC is
+  refused with a message, not a traceback. The packer refuses to write such a
+  name, so a licence file with a space in its name stops the build.
   [`tests/package_release_test.py`](../tests/package_release_test.py) covers
   each case.
 
 **Where the maintainers sign.** The workflow holds no key, so `SHA256SUMS` is
 unsigned and nothing is published. A maintainer with the release key:
 
-1. Downloads the `unsigned` artifact.
-2. Runs `tools/release/sign.sh -o <folder> <folder>/*.zip <folder>/*.files <folder>/*.tar.gz`
+1. Takes the files from one run only: the `release` run for the push of the
+   tag `v<version>` in AnyTogether/anyps5-retro-host, whose head SHA is the
+   commit the tag points at, with every job green. Runs in a fork, for a
+   branch or for a pull request are never signed, and their artifact is not
+   named `unsigned`:
+
+   ```sh
+   commit="$(git rev-parse "v<version>^{commit}")"
+   gh run list -R AnyTogether/anyps5-retro-host --workflow release --event push      --branch "v<version>" --json databaseId,headSha,conclusion
+   gh run download <databaseId whose headSha is $commit> -R AnyTogether/anyps5-retro-host      -n "anyps5-retro-host-<version>-unsigned" -D <folder>
+   ```
+
+2. Checks the downloaded folder from a checkout of the tag, before signing
+   anything:
+
+   ```sh
+   python3 tools/package_release.py --check <folder> --version <version>      --host-repository https://github.com/AnyTogether/anyps5-retro-host --host-commit "$commit"
+   ```
+
+   It stops unless every file matches `SHA256SUMS`, every zip matches its
+   `.files`, every name carries `<version>` and every `SOURCE.txt` names the
+   tag's commit in AnyTogether/anyps5-retro-host.
+3. Runs `tools/release/sign.sh -o <folder> <folder>/*.zip <folder>/*.files <folder>/*.tar.gz`
    from AnyPS5-ARM. It writes the same `SHA256SUMS` again (same lines, same
    order) and `SHA256SUMS.sig`, `ed25519 <key id> <base64 signature>` a line,
    with the keys listed in its `tools/release/release-signing.pub`, which are
    the keys built into the launchers (`lib/core/release_keys.dart` in the
    Flutter launcher).
-3. Publishes a GitHub release `v<version>` with the zips, the `.files`, the
+4. Publishes a GitHub release `v<version>` with the zips, the `.files`, the
    source archive, `SHA256SUMS` and `SHA256SUMS.sig`. The source archive must
    be published with every release that carries the binaries.
 

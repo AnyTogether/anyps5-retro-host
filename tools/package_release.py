@@ -30,14 +30,19 @@ names the commit when there is no checkout; with a checkout it must be HEAD.
 writes <folder>/SHA256SUMS for the files, sorted by name as tools/release/sign.sh in AnyPS5-ARM
 sorts them (LC_ALL=C sort -k2), so signing it there gives the same SHA256SUMS.
 
-    python3 tools/package_release.py --check <folder>
+    python3 tools/package_release.py --check <folder> [--version <version>]
+        [--host-repository <url> --host-commit <sha>]
 
 checks a release folder as a launcher checks a download, without the signature: SHA256SUMS lists
-each zip and .files with their digests (and at most one source archive), and every zip holds
+each zip and .files with their digests (and at most one source archive), all of one version (with
+--version, that one), and every file it lists is in the folder with that digest; every zip holds
 exactly the files its .files lists, with those digests, each once, as a plain file with the
-packer's permissions. Each name is relative, and each part of it is letters, digits and ._+-,
-does not start or end with a dot and is no Windows device name, and no two names differ only in
-case, so no entry can unpack outside its folder or over another entry on any system.
+packer's permissions and no larger than 256 MiB, which is checked before it is read. Each name is relative, and
+each part of it is letters, digits and ._+-, does not start or end with a dot and is no Windows
+device name, and no two names differ only in case, so no entry can unpack outside its folder or
+over another entry on any system. With --host-repository and --host-commit, every zip's
+SOURCE.txt must name the host as built from that repository at that commit. A folder that fails
+any of this is refused with a message, never with a traceback.
 """
 
 import argparse
@@ -290,8 +295,11 @@ def write_sums(folder, paths):
     sys.stdout.write(sums_text(entries))
 
 
-SOURCE_NAME = re.compile(r'^anyps5-retro-host-[0-9]+\.[0-9]+\.[0-9]+-source\.tar\.gz$')
+SOURCE_NAME = re.compile(r'^anyps5-retro-host-([0-9]+\.[0-9]+\.[0-9]+)-source\.tar\.gz$')
 RELEASE_NAME = re.compile(r'^anyps5-retro-host-([0-9]+\.[0-9]+\.[0-9]+)-([a-z]+-[a-z0-9]+)\.(zip|files)$')
+MAX_LIST = 1 << 20
+MAX_ENTRY = 256 << 20
+CHUNK = 1 << 20
 
 
 def parse_sums(text, allow_slash):
@@ -307,17 +315,75 @@ def parse_sums(text, allow_slash):
     return entries
 
 
-def check(folder):
+def read_list(path, what):
+    """The text of SHA256SUMS or a .files, refused when it is missing, larger than MAX_LIST or not
+    UTF-8, so a damaged folder ends in a refusal and not in a traceback."""
+    try:
+        with open(path, 'rb') as file:
+            data = file.read(MAX_LIST + 1)
+    except OSError:
+        raise SystemExit(f'the folder does not hold {what}')
+    if len(data) > MAX_LIST:
+        raise SystemExit(f'{what} is larger than {MAX_LIST} bytes')
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        raise SystemExit(f'{what} is not UTF-8')
+
+
+def file_digest(path, name):
+    digest = hashlib.sha256()
+    try:
+        with open(path, 'rb') as file:
+            for block in iter(lambda: file.read(CHUNK), b''):
+                digest.update(block)
+    except OSError:
+        raise SystemExit(f'SHA256SUMS lists {name}, which the folder does not hold')
+    return digest.hexdigest()
+
+
+def entry_digest(archive, info, label):
+    """The sha256 of one zip entry, read in blocks after its stated size is checked against
+    MAX_ENTRY, and refused when it unpacks to more bytes than it states or fails its CRC."""
+    if info.file_size > MAX_ENTRY:
+        raise SystemExit(f'{label} holds {info.filename!r}, which is larger than {MAX_ENTRY} bytes')
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with archive.open(info) as entry:
+            for block in iter(lambda: entry.read(CHUNK), b''):
+                size += len(block)
+                if size > info.file_size:
+                    raise SystemExit(f'{label} holds {info.filename!r}, which unpacks to more than it states')
+                digest.update(block)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, OSError, EOFError) as error:
+        raise SystemExit(f'{label} cannot be read at {info.filename!r}: {error}')
+    return digest.hexdigest()
+
+
+def check(folder, version=None, host_repository=None, host_commit=None):
+    """Checks a release folder as the module's docstring says. With version, every name must carry
+    it; with host_repository and host_commit, every zip's SOURCE.txt must name that source."""
+    if (host_repository is None) != (host_commit is None):
+        raise SystemExit('--host-repository and --host-commit name the source to check together')
+    if host_commit is not None and not COMMIT.match(host_commit):
+        raise SystemExit('--host-commit must be a full commit hash')
+    repository = public_url(host_repository) if host_repository is not None else None
+    if host_repository is not None and repository is None:
+        raise SystemExit(f'--host-repository {host_repository} is not a published repository')
+    source_line = f'{repository} at commit {host_commit}.' if host_commit else None
     folder = Path(folder)
-    sums = parse_sums((folder / 'SHA256SUMS').read_text('utf-8'), allow_slash=False)
+    sums = parse_sums(read_list(folder / 'SHA256SUMS', 'SHA256SUMS'), allow_slash=False)
     stems = {}
     sources = 0
+    versions = set()
     for name, digest in sums.items():
         match = RELEASE_NAME.match(name)
-        if not SOURCE_NAME.match(name) and (not match or match.group(2) not in SYSTEMS):
+        source = SOURCE_NAME.match(name)
+        if not source and (not match or match.group(2) not in SYSTEMS):
             raise SystemExit(f'SHA256SUMS lists {name}, which is not a host release file')
-        actual = sha256((folder / name).read_bytes())
-        if actual != digest:
+        versions.add((match or source).group(1))
+        if file_digest(folder / name, name) != digest:
             raise SystemExit(f'{name} does not match SHA256SUMS')
         if not match:
             sources += 1
@@ -327,12 +393,20 @@ def check(folder):
         raise SystemExit('SHA256SUMS lists no host release')
     if sources > 1:
         raise SystemExit('SHA256SUMS lists more than one source archive')
+    if len(versions) > 1:
+        raise SystemExit(f'SHA256SUMS lists more than one version: {", ".join(sorted(versions))}')
+    if version is not None and versions != {version}:
+        raise SystemExit(f'the release is version {versions.pop()}, not {version}')
     for stem, kinds in sorted(stems.items()):
         if kinds != {'zip', 'files'}:
             raise SystemExit(f'{stem} needs both its .zip and its .files')
-        listed = parse_sums((folder / f'{stem}.files').read_text('utf-8'), allow_slash=True)
+        listed = parse_sums(read_list(folder / f'{stem}.files', f'{stem}.files'), allow_slash=True)
         held = {}
-        with zipfile.ZipFile(folder / f'{stem}.zip') as archive:
+        try:
+            archive = zipfile.ZipFile(folder / f'{stem}.zip')
+        except (zipfile.BadZipFile, OSError) as error:
+            raise SystemExit(f'{stem}.zip is not a zip that can be read: {error}')
+        with archive:
             members = archive.infolist()
             clash = unique_members(info.filename for info in members)
             if clash is not None:
@@ -341,12 +415,22 @@ def check(folder):
                 mode = info.external_attr >> 16
                 if info.create_system != 3 or not stat.S_ISREG(mode) or mode not in (EXECUTABLE, PLAIN):
                     raise SystemExit(f'{stem}.zip holds {info.filename!r}, which is not a plain file')
-                held[info.filename] = sha256(archive.read(info))
-        if held != listed:
-            raise SystemExit(f'{stem}.zip does not hold exactly what {stem}.files lists')
-        host_name, core_name = SYSTEMS[RELEASE_NAME.match(f'{stem}.zip').group(2)]
-        if host_name not in listed or core_name not in listed:
-            raise SystemExit(f'{stem}.files does not list {host_name} and {core_name}')
+                held[info.filename] = entry_digest(archive, info, f'{stem}.zip')
+            missing = sorted(set(listed) - set(held))
+            extra = sorted(set(held) - set(listed))
+            changed = sorted(name for name in set(held) & set(listed) if held[name] != listed[name])
+            if missing or extra or changed:
+                raise SystemExit(f'{stem}.zip does not hold exactly what {stem}.files lists: '
+                                 f'missing {missing}, not listed {extra}, different {changed}')
+            host_name, core_name = SYSTEMS[RELEASE_NAME.match(f'{stem}.zip').group(2)]
+            if host_name not in listed or core_name not in listed:
+                raise SystemExit(f'{stem}.files does not list {host_name} and {core_name}')
+            if source_line:
+                if 'SOURCE.txt' not in held or archive.getinfo('SOURCE.txt').file_size > MAX_LIST:
+                    raise SystemExit(f'{stem}.zip holds no SOURCE.txt that can be read')
+                lines = archive.read('SOURCE.txt').decode('utf-8', 'replace').splitlines()
+                if source_line not in lines:
+                    raise SystemExit(f'the SOURCE.txt in {stem}.zip does not name {source_line[:-1]}')
         print(f'{stem}: {len(listed)} files match')
 
 
@@ -371,7 +455,9 @@ def main():
         write_sums(args.sums, args.files)
         return
     if args.check:
-        check(args.check)
+        if args.version is not None and not VERSION.match(args.version):
+            raise SystemExit('--version must be <major>.<minor>.<patch>')
+        check(args.check, args.version, args.host_repository, args.host_commit)
         return
     missing = [name for name in ('version', 'system', 'host', 'core', 'core_licence',
                                  'swanstation_commit', 'out') if getattr(args, name) is None]
