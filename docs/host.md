@@ -91,9 +91,12 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 - **Bounds on what the core gives.** An option's values stop at
   `RETRO_NUM_CORE_OPTION_VALUES_MAX` (128) even without a `NULL` entry, as
   libretro allows; an option key the core defines again is skipped, so status
-  never has a key twice; and `discs` lists at most 128 discs, the ones
-  `changeDisc` and `initialDisc` can reach. A disc past the 128th that the
-  core has inserted shows as `inserted: null`.
+  never has a key twice. Keys are compared as status sends them, with U+FFFD
+  for bytes that are not UTF-8, so two keys that differ only in such bytes are
+  one key, and `option` and `start.options` name an option by that key; and
+  `discs` lists at most 128 discs, the ones `changeDisc` and `initialDisc` can
+  reach. A disc past the 128th that the core has inserted shows as
+  `inserted: null`.
 - **A stuck core.** A game limit marks the game ended at once. If the core
   never returns from `retro_run`, `release` replies and then the host exits,
   as protocol.md "release" says.
@@ -120,7 +123,9 @@ A crash gives none of these, so the tests expect the exact code.
   the session on what protocol.md "Network" forbids, or when its trace is
   missing or has none of the host's reads;
   [`tests/trace_test.py`](../tests/trace_test.py) checks that rule on sample
-  strace lines. A read's timeout is for a message to begin: once its first byte has
+  strace lines. strace runs with `-D`, so the host's parent is the launcher's
+  process, as without strace, and a trace is checked once strace has written
+  the host's exit. A read's timeout is for a message to begin: once its first byte has
   come, the reader waits the 5-second write limit of protocol.md "Framing",
   counted from that byte, for the rest of the length and the body, because
   giving up in the middle of a message would read the next body as a length.
@@ -156,11 +161,16 @@ A crash gives none of these, so the tests expect the exact code.
   - ring growth: 800 × 600 frames bring slots of twice the first ring's,
     1920 × 1080 slots of what the frame needs, and smaller frames no ring;
   - epochs through two games;
-  - leaving: within 10 s of end-of-stream, `SIGTERM` or the launcher's exit
-    (a relay process starts the host and exits, leaving the stream open), and
-    with 3 after the 5-second write limit when the launcher stops reading;
+  - leaving: with 0 within 10 s of end-of-stream, `SIGTERM` or the launcher's
+    exit (a relay process starts the host and exits, leaving the stream open;
+    the test reads the host's exit code as a child subreaper on Linux, and on
+    macOS, where the host passes to launchd, through kqueue's
+    `NOTE_EXITSTATUS`), and with 3 after the 5-second write limit when the
+    launcher stops reading;
   - an option of 128 values with no end marker, a key given twice and a
     playlist of 130 discs;
+  - two option keys that differ only in a byte that is not UTF-8: listed once,
+    with the first definition, and set by the key status sends;
   - rumble on Cross for ports 1 and 2, and `connectedPorts` giving port 2 a
     controller and taking it away;
   - `initialDisc` (and its errors) and `changeDisc` (a swap, and the indexes
@@ -173,7 +183,9 @@ A crash gives none of these, so the tests expect the exact code.
     working directory;
   - eight games in a row with `volume`, `pause` and `stop` calls in between.
 
-  Run it like `conformance.py`.
+  Run it like `conformance.py`; with `--strace` (Linux) it traces every
+  session's host and checks each trace the same way. The one host
+  `wrong_parent` starts is not traced: it exits before it reads anything.
 - [`tests/ring_access.c`](../tests/ring_access.c) gives the fake launcher the
   sequentially consistent loads and stores of `latest` and `reading` that
   protocol.md asks for; Python cannot make them on shared memory itself. It
