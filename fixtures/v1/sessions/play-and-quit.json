@@ -199,6 +199,14 @@
               "activeValue": "4",
               "restart": false
             }
+          },
+          "core": {
+            "name": "SwanStation",
+            "version": "anyps5-1-0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "timing": {
+            "fps": 59.81733322143555,
+            "region": "ntsc"
           }
         }
       },
@@ -206,7 +214,9 @@
         "id",
         "result.options",
         "result.hardware",
-        "result.aspect"
+        "result.aspect",
+        "result.core",
+        "result.timing"
       ]
     },
     {
@@ -278,6 +288,14 @@
               "activeValue": "4",
               "restart": false
             }
+          },
+          "core": {
+            "name": "SwanStation",
+            "version": "anyps5-1-0000000000000000000000000000000000000000000000000000000000000000"
+          },
+          "timing": {
+            "fps": 59.81733322143555,
+            "region": "ntsc"
           }
         }
       },
@@ -285,7 +303,9 @@
         "id",
         "result.options",
         "result.hardware",
-        "result.aspect"
+        "result.aspect",
+        "result.core",
+        "result.timing"
       ]
     },
     {

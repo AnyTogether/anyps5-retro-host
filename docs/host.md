@@ -282,7 +282,9 @@ A crash gives none of these, so the tests expect the exact code.
   `fake_region` option at `pal` runs at 50 frames a second and answers
   `RETRO_REGION_PAL`, and a `fake-refresh-50` file makes an NTSC game switch
   to 50 through `SET_SYSTEM_AV_INFO` after a frame, as SwanStation does when
-  a game changes its video mode.
+  a game changes its video mode. It still reads `fake_region` every frame,
+  so `restart_option` sees the host keep a restart option's new value from
+  the running game.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
   not. Its fake launcher checks every `ring` (its size and the growth rule)
   and every `frame` (the newest slot's epoch is the one `start` returned, and

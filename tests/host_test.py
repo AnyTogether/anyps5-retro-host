@@ -476,7 +476,9 @@ def game_timing(program, core, log):
             raise c.Failed(f'a game that switched to 50 Hz ran at {rate:.1f} frames a second')
         refresh.unlink()
         session.call('stop')
-        session.wait(lambda s: s['ended'], 5)
+        status = session.wait(lambda s: s['ended'], 5)
+        if status.get('timing') != {'fps': 50.0, 'region': 'ntsc'}:
+            raise c.Failed(f'an ended game that had switched to 50 Hz gave timing {status.get("timing")!r}')
         session.call('release')
 
         session.call('start', {'core': session.paths['disc'], 'disc': session.paths['disc'],

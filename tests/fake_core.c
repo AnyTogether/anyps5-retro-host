@@ -33,7 +33,8 @@
  * SwanStation gives for a PAL console; otherwise it runs at 60 and is NTSC. While the system
  * directory holds fake-refresh-50, an NTSC game switches to 50 frames a second through
  * RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO after a frame, as SwanStation does when a game changes its
- * video mode, keeping its region. */
+ * video mode, keeping its region. It reads fake_region again every frame, without using it, so a
+ * test sees that the host keeps a restart option's new value from a running game. */
 
 #include <libretro.h>
 
@@ -568,6 +569,7 @@ RETRO_API unsigned retro_get_region(void) { return pal ? RETRO_REGION_PAL : RETR
 RETRO_API void retro_run(void) {
   struct retro_variable color = {"fake_color", NULL};
   struct retro_variable hang = {"fake_hang", NULL};
+  struct retro_variable region = {"fake_region", NULL};
   struct retro_variable size = {"fake_size", NULL};
   struct retro_variable bytes = {"fake_bytes\xff", NULL};
   unsigned width = WIDTH, height = HEIGHT;
@@ -588,6 +590,7 @@ RETRO_API void retro_run(void) {
     }
   }
   environment(RETRO_ENVIRONMENT_GET_VARIABLE, &color);
+  environment(RETRO_ENVIRONMENT_GET_VARIABLE, &region);
   environment(RETRO_ENVIRONMENT_GET_VARIABLE, &bytes);
   if (!environment(RETRO_ENVIRONMENT_GET_VARIABLE, &size) || !size.value ||
       sscanf(size.value, "%ux%u", &width, &height) != 2 || width > MAX_WIDTH || height > MAX_HEIGHT) {

@@ -1105,3 +1105,6 @@ or a different one.
 
 [`tools/check_fixtures.py`](../tools/check_fixtures.py) checks every message
 in the fixtures against the fields, types, ranges and order in this document.
+In a session, every `status` the host sends has the fields of the
+capabilities its `welcome` listed: `core` with `coreIdentity` and `timing`
+with `gameTiming`.
