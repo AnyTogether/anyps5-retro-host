@@ -178,8 +178,8 @@ def source_text(version, system, host_repository, host_commit, swanstation_commi
         '\n'
         'swanstation_libretro (GPL-3.0) is SwanStation, built from\n'
         f'https://github.com/libretro/swanstation at commit {swanstation_commit},\n'
-        'the commit this host release was tested with, with the patches in the host\'s\n'
-        'cores/patches applied in the byte order of their names.\n'
+        'the commit this host release was tested with, with the swanstation-*.patch files in\n'
+        'the host\'s cores/patches applied in the byte order of their names.\n'
         f'SwanStation was modified by AnyPS5 Desktop contributors, last on {modified};\n'
         'each patch and each file it changes say what was changed and when.\n'
         '\n'
@@ -199,7 +199,7 @@ def release_files(args, host_repository, host_commit):
         ('licenses/swanstation-GPL-3.0.txt', Path(args.core_licence).read_bytes(), PLAIN),
         ('SOURCE.txt',
          source_text(args.version, args.system, host_repository, host_commit,
-                     args.swanstation_commit, core_identity.modified()).encode('utf-8'),
+                     args.swanstation_commit, core_identity.modified('swanstation')).encode('utf-8'),
          PLAIN),
         *dependency_notices(args.core_notices),
         *extra_notices(args.notice),

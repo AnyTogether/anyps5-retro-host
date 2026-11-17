@@ -79,7 +79,11 @@ bool OnRumble(unsigned port, enum retro_rumble_effect effect, uint16_t strength)
   return game && game->Rumble(port, static_cast<int>(effect), strength);
 }
 
+// The controller each console's core takes for a DualShock: SwanStation's analog controller, and
+// LRPS2's DualShock 2, which it names RETRO_DEVICE_JOYPAD (pcsx2/PAD/PAD.c,
+// retro_set_controller_port_device) and reads the sticks and pressure-sensitive buttons of.
 constexpr unsigned kDualShock = RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_ANALOG, 0);
+constexpr unsigned kDualShock2 = RETRO_DEVICE_JOYPAD;
 constexpr int64_t kCardSaveMs = 5000;
 constexpr size_t kPathBytes = 3 * 32767 + 1;
 // The BIOS image sizes SwanStation loads: PS1, PS2 and PS3 (src/core/bios.h, BIOS_SIZE*).
@@ -114,8 +118,53 @@ constexpr const char* kFixedOptions[] = {"swanstation_MemoryCards_Card1Type", "s
                                          "swanstation_ControllerPorts_MultitapMode", "swanstation_Logging_LogLevel",
                                          "swanstation_GPU_Renderer"};
 
+// LRPS2 options the host sets itself and does not list (docs/ps2.md "What the protocol gains"):
+// - one memory card per game, <disc's name without its extension>.ps2 in saves, as PS1's card 1
+//   is <disc>.srm there, instead of cards shared by every game in the system directory;
+// - the renderer, which LRPS2 then picks by the context the host offers (OpenGL), since the host
+//   makes no Direct3D or Vulkan context;
+// - the multitap, which moves controllers away from the two ports protocol.md defines;
+// - the USB camera, which with no camera from the frontend opens the first webcam and its
+//   microphone on Linux, and the DEV9 ethernet adapter, which opens TCP and UDP sockets: the host
+//   offers no camera and must open no network connection (protocol.md "Network");
+// - the DEV9 hard disk, whose image LRPS2 creates in the system directory at its size option
+//   (40 GiB by default) on first use, and that size, which then does nothing.
+struct ForcedOption {
+  const char* key;
+  const char* value;
+};
+constexpr ForcedOption kPs2ForcedOptions[] = {
+    {"pcsx2_shared_memory_cards", "disabled"}, {"pcsx2_renderer", "Auto"},     {"pcsx2_multitap", "disabled"},
+    {"pcsx2_usb_camera", "disabled"},          {"pcsx2_dev9_eth", "disabled"}, {"pcsx2_dev9_hdd", "disabled"},
+    {"pcsx2_dev9_hdd_size", "40 GiB"}};
+// LRPS2 options it reads only when the game is loaded, though their titles have no "(Restart)":
+// the BIOS (libretro/main.c, check_variables, under first_run).
+constexpr const char* kPs2StartOnlyOptions[] = {"pcsx2_bios"};
+
+// The library_name of each core the host is built with, and its console. A core reporting one of
+// these for the other console ends the game with errorCode core; the host does not judge any other
+// name, so a launcher's or a test's own core still loads.
+struct KnownCore {
+  const char* name;
+  Console console;
+};
+constexpr KnownCore kKnownCores[] = {
+    {"SwanStation", Console::kPs1}, {"SwanStation Debug", Console::kPs1}, {"ParaLLEl PS2", Console::kPs2}};
+
+// What LRPS2 logs when it finds no BIOS (libretro/main.c, retro_load_game, at LRPS2_COMMIT;
+// docs/ps2.md "The BIOS").
+constexpr char kPs2NoBios[] = "Could not find any valid PS2 BIOS File in \"";
+
 bool Listed(const char* const* list, size_t count, const std::string& key) {
   return std::find(list, list + count, key) != list + count;
+}
+
+const ForcedOption* Forced(Console console, const std::string& key) {
+  if (console != Console::kPs2) return nullptr;
+  for (const ForcedOption& option : kPs2ForcedOptions) {
+    if (key == option.key) return &option;
+  }
+  return nullptr;
 }
 
 #ifdef _WIN32
@@ -219,6 +268,14 @@ bool Game::LoadCore(std::string& error) {
   }
   retro_system_info info{};
   Get<void (*)(retro_system_info*)>("retro_get_system_info")(&info);
+  for (const KnownCore& known : kKnownCores) {
+    if (info.library_name && std::strcmp(info.library_name, known.name) == 0 && known.console != config_.console) {
+      error = std::string("The core is ") + known.name + ", which is not for " +
+              (config_.console == Console::kPs2 ? "PS2" : "PS1") + " games.";
+      library_.Close();
+      return false;
+    }
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   core_identity_.emplace(IdentityText(info.library_name), IdentityText(info.library_version));
   return true;
@@ -271,14 +328,17 @@ void Game::RunGame() {
   }
 
   retro_game_info game{config_.disc.c_str(), nullptr, 0, nullptr};
+  const bool ps2 = config_.console == Console::kPs2;
   if (!Get<bool (*)(const retro_game_info*)>("retro_load_game")(&game)) {
     DropGpu();
     Get<void (*)()>("retro_deinit")();
-    if (!UsesBios()) Finish("No PS1 BIOS was found.", "bios");
+    if (ps2 && ps2_bios_missing_) Finish("No PS2 BIOS was found.", "bios");
+    else if (ps2) Finish("The core could not start the game.", "core");
+    else if (!UsesBios()) Finish("No PS1 BIOS was found.", "bios");
     else Finish("The disc could not be read.", "disc");
     return;
   }
-  if (disc_missing_ || !UsesBios()) {
+  if (!ps2 && (disc_missing_ || !UsesBios())) {
     DropGpu();
     Get<void (*)()>("retro_unload_game")();
     Get<void (*)()>("retro_deinit")();
@@ -288,7 +348,7 @@ void Game::RunGame() {
   }
 
   const auto set_port = Get<void (*)(unsigned, unsigned)>("retro_set_controller_port_device");
-  set_port(0, kDualShock);
+  set_port(0, PadDevice());
   set_port(1, RETRO_DEVICE_NONE);
 
   void* card = Get<void* (*)(unsigned)>("retro_get_memory_data")(RETRO_MEMORY_SAVE_RAM);
@@ -457,7 +517,7 @@ void Game::ApplyPendingWork() {
     count = connected_ports_;
   }
   if (ports) {
-    Get<void (*)(unsigned, unsigned)>("retro_set_controller_port_device")(1, count == 2 ? kDualShock : RETRO_DEVICE_NONE);
+    Get<void (*)(unsigned, unsigned)>("retro_set_controller_port_device")(1, count == 2 ? PadDevice() : RETRO_DEVICE_NONE);
   }
   if (refresh && update_display_) update_display_();
   if (disc) {
@@ -595,9 +655,12 @@ bool Game::Environment(unsigned command, void* data) {
         option.name = std::move(name);
         const std::string text = definition->desc ? definition->desc : definition->key;
         option.title = ClipUtf8(text, kTextBytes);
+        const bool ps1 = config_.console == Console::kPs1;
+        const ForcedOption* forced = Forced(config_.console, option.key);
         option.restart = (text.size() >= 9 && text.compare(text.size() - 9, 9, "(Restart)") == 0) ||
-                         Listed(kStartOnlyOptions, std::size(kStartOnlyOptions), option.key);
-        option.fixed = Listed(kFixedOptions, std::size(kFixedOptions), option.key);
+                         (ps1 && Listed(kStartOnlyOptions, std::size(kStartOnlyOptions), option.key)) ||
+                         (!ps1 && Listed(kPs2StartOnlyOptions, std::size(kPs2StartOnlyOptions), option.key));
+        option.fixed = forced || (ps1 && Listed(kFixedOptions, std::size(kFixedOptions), option.key));
         for (const retro_core_option_value* value = definition->values;
              value != definition->values + RETRO_NUM_CORE_OPTION_VALUES_MAX && value->value; ++value) {
           option.values.emplace_back(value->value);
@@ -609,6 +672,7 @@ bool Game::Environment(unsigned command, void* data) {
           return found == option.values.end() ? std::optional<size_t>() : std::optional<size_t>(found - option.values.begin());
         };
         option.selected = chosen(definition->default_value ? definition->default_value : "").value_or(0);
+        if (forced) option.selected = chosen(forced->value).value_or(option.selected);
         for (const auto& [key, value] : config_.options) {
           if (key == option.name && !option.fixed) option.selected = chosen(value).value_or(option.selected);
         }
@@ -831,6 +895,17 @@ int16_t Game::InputState(unsigned port, unsigned device, unsigned index, unsigne
 
 void Game::Log(int level, const char* text) {
   const std::string_view message = LogMessage(text);
+  if (config_.console == Console::kPs2) {
+    if (StartsWith(message, kPs2NoBios)) ps2_bios_missing_ = true;
+  } else {
+    LogPs1(message);
+  }
+  std::fprintf(stderr, "[core %d] %s", level, text);
+  const size_t length = std::strlen(text);
+  if (length == 0 || text[length - 1] != '\n') std::fputc('\n', stderr);
+}
+
+void Game::LogPs1(std::string_view message) {
   if (StartsWith(message, "Using BIOS '") || StartsWith(message, "Falling back to possibly-incompatible image '")) {
     bios_found_ = true;
   }
@@ -841,9 +916,6 @@ void Game::Log(int level, const char* text) {
   if (StartsWith(message, "Failed to load CD image '") && EndsWith(message, ". Booting BIOS with no disc.")) {
     disc_missing_ = true;
   }
-  std::fprintf(stderr, "[core %d] %s", level, text);
-  const size_t length = std::strlen(text);
-  if (length == 0 || text[length - 1] != '\n') std::fputc('\n', stderr);
 }
 
 bool Game::Rumble(unsigned port, int effect, uint16_t strength) {
@@ -886,7 +958,8 @@ Json Game::Status() const {
                     {"progressLabel", nullptr},
                     {"progressPercent", nullptr},
                     {"options", std::move(options)},
-                    {"cardUnreadable", card_unreadable_.load()}};
+                    {"cardUnreadable", card_unreadable_.load()},
+                    {"console", config_.console == Console::kPs2 ? "ps2" : "ps1"}};
   if (core_identity_) {
     status.emplace_back("core", JsonObject{{"name", core_identity_->first}, {"version", core_identity_->second}});
   } else {
@@ -1020,6 +1093,8 @@ void Game::SetAspect(const retro_game_geometry& geometry) {
   }
 }
 
+unsigned Game::PadDevice() const { return config_.console == Console::kPs2 ? kDualShock2 : kDualShock; }
+
 bool Game::UsesBios() const {
   if (bios_found_) return true;
   std::string region;
@@ -1136,6 +1211,7 @@ bool Game::AwaitFrameEnd(std::unique_lock<std::mutex>& lock) {
 }
 
 std::optional<uint64_t> Game::Lockstep(const LockstepConfig& config) {
+  if (config_.console != Console::kPs1) return std::nullopt;
   std::unique_lock<std::mutex> lock(mutex_);
   if (!AwaitFrameEnd(lock) || ended_) return std::nullopt;
   if (!lockstep_) {

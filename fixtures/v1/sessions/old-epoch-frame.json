@@ -30,6 +30,7 @@
           "ps1",
           "coreIdentity",
           "gameTiming",
+          "ps2",
           "ps1Lockstep"
         ],
         "pixelFormat": "rgba8"
@@ -225,6 +226,7 @@
               "restart": false
             }
           },
+          "console": "ps1",
           "core": {
             "name": "SwanStation",
             "version": "anyps5-1-0000000000000000000000000000000000000000000000000000000000000000"

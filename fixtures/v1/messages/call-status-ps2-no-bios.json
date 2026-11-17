@@ -1,0 +1,62 @@
+{
+  "description": "Status of a PS2 game whose system directory holds no BIOS LRPS2 takes: it ended before its first frame, with the core loaded. options shows two of the options LRPS2 lists at LRPS2_COMMIT as tests/ps2_core.py prints them; the real core lists about 70, and none the host fixes.",
+  "from": "launcher",
+  "message": {
+    "type": "call",
+    "id": 3,
+    "method": "status"
+  },
+  "reply": {
+    "type": "reply",
+    "id": 3,
+    "result": {
+      "ready": false,
+      "ended": true,
+      "error": "No PS2 BIOS was found.",
+      "errorCode": "bios",
+      "aspect": 1.3333333333333333,
+      "hardware": false,
+      "resolutionError": "",
+      "graphicsPending": false,
+      "progressLabel": null,
+      "progressPercent": null,
+      "options": {
+        "pcsx2_fastboot": {
+          "title": "System > Fast Boot (Restart)",
+          "values": [
+            "enabled",
+            "disabled"
+          ],
+          "labels": [
+            "enabled",
+            "disabled"
+          ],
+          "selected": 0,
+          "activeValue": "enabled",
+          "restart": true
+        },
+        "pcsx2_enable_cheats": {
+          "title": "System > Enable Cheats",
+          "values": [
+            "enabled",
+            "disabled"
+          ],
+          "labels": [
+            "enabled",
+            "disabled"
+          ],
+          "selected": 1,
+          "activeValue": "disabled",
+          "restart": false
+        }
+      },
+      "cardUnreadable": false,
+      "console": "ps2",
+      "core": {
+        "name": "ParaLLEl PS2",
+        "version": "anyps5-1-0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "timing": null
+    }
+  }
+}

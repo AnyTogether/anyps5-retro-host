@@ -15,6 +15,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -29,6 +30,10 @@ struct retro_game_geometry;
 
 namespace retro_host {
 
+// The console a game is for (protocol.md "start", console): PS1 on SwanStation, or, with the
+// capability ps2, PS2 on LRPS2 (docs/ps2.md).
+enum class Console { kPs1, kPs2 };
+
 // How a game in lockstep runs (protocol.md "lockstep"): one frame per step the launcher sends, a
 // sync message every check frames, and, when paced, no faster than the core's frame rate.
 struct LockstepConfig {
@@ -37,6 +42,7 @@ struct LockstepConfig {
 };
 
 struct GameConfig {
+  Console console = Console::kPs1;
   std::string core;
   std::string disc;
   std::string system;
@@ -106,8 +112,8 @@ class Game {
 
   // Puts a running game in lockstep, or changes how it runs there; the frame count starts at 0
   // when it enters. Both this and LeaveLockstep wait for the frame being run to end, so no frame
-  // straddles the change. Returns the frame the next step is for, or nothing when it has ended
-  // or its frame did not end within 4 seconds.
+  // straddles the change. Returns the frame the next step is for, or nothing for a PS2 game, when
+  // it has ended or when its frame did not end within 4 seconds.
   std::optional<uint64_t> Lockstep(const LockstepConfig& config);
   // Leaves lockstep and drops the steps not yet run; false when the game has ended or its frame
   // did not end within 4 seconds.
@@ -276,7 +282,13 @@ class Game {
   std::atomic<bool> bios_found_{false};
   std::string console_region_;
   std::atomic<bool> disc_missing_{false};
+  void LogPs1(std::string_view message);
   bool UsesBios() const;
+  // LRPS2 said it found no PS2 BIOS in its folder of the system directory (docs/ps2.md "The
+  // BIOS"). It may log from threads of its own.
+  std::atomic<bool> ps2_bios_missing_{false};
+  // The libretro device a controller port with a controller in is given.
+  unsigned PadDevice() const;
   std::string card_;
   struct DiscControl;
   std::unique_ptr<DiscControl> disc_control_;

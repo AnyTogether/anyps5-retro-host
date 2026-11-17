@@ -5,7 +5,8 @@
 
 The separate program that runs emulator cores for the AnyPS5 launchers, and
 the contract between them. Version 1 runs single-player PS1 games with
-SwanStation.
+SwanStation, and starts PS2 games on LRPS2 with the player's own BIOS; no PS2
+program has been booted in CI, since no PS2 BIOS may be used there.
 
 - [docs/protocol.md](docs/protocol.md): the protocol, the contract both sides
   are written from.
@@ -14,6 +15,8 @@ SwanStation.
   one capability at a time. The core build identity two players' launchers
   compare (protocol.md "status", `core`), the game's frame rate (`timing`)
   and lockstep (protocol.md "Lockstep") are built.
+- [docs/ps2.md](docs/ps2.md): PS2 games: why LRPS2, how it is built, the
+  player's BIOS, drawing, the protocol's `ps2` capability, and what is left.
 - [fixtures/v1](fixtures/v1): every message, and whole conversations
   (valid and invalid), for the host's and the launcher's conformance tests.
 - [tools/check_fixtures.py](tools/check_fixtures.py): checks the fixtures
@@ -41,7 +44,10 @@ python3 tests/lockstep_test.py --host build/anyps5-retro-host --core build/fake_
 
 The real-core tests need SwanStation built with the host's patches:
 `bash cores/apply-swanstation-patches.sh <swanstation checkout>` before
-building it ([docs/host.md](docs/host.md) "SwanStation patches").
+building it ([docs/host.md](docs/host.md) "SwanStation patches"). The PS2
+test needs LRPS2 built the same way, with
+`bash cores/apply-core-patches.sh lrps2 <lrps2 checkout>`
+([docs/host.md](docs/host.md) "LRPS2 patches").
 
 On Windows the programs are `build/Release/anyps5-retro-host.exe` and
 `build/Release/fake_core.dll`; on macOS the core is `build/fake_core.so`.
@@ -56,8 +62,8 @@ against it rather than SwanStation, which needs a BIOS and a game.
 | The host (`src/`, `tests/`, `CMakeLists.txt`) | GPL-2.0-or-later ([LICENSES/GPL-2.0-or-later.txt](LICENSES/GPL-2.0-or-later.txt)) |
 | `3rdparty/libretro-common` | MIT, submodule of [libretro/libretro-common](https://github.com/libretro/libretro-common) (only `libretro.h` is used) |
 | `3rdparty/miniaudio` | Public domain or MIT-0, submodule of [mackron/miniaudio](https://github.com/mackron/miniaudio) at 0.11.26 |
-| `cores/patches` | GPL-3.0-only ([LICENSES/GPL-3.0-only.txt](LICENSES/GPL-3.0-only.txt)), patches to [libretro/swanstation](https://github.com/libretro/swanstation) that the host's SwanStation is built with ([docs/host.md](docs/host.md) "SwanStation patches") |
-| `cores/apply-swanstation-patches.sh` | MIT |
+| `cores/patches` | GPL-3.0-only ([LICENSES/GPL-3.0-only.txt](LICENSES/GPL-3.0-only.txt)), patches to [libretro/swanstation](https://github.com/libretro/swanstation) and [libretro/parallel-ps2](https://github.com/libretro/parallel-ps2) that the host's SwanStation and LRPS2 are built with ([docs/host.md](docs/host.md) "SwanStation patches" and "LRPS2 patches") |
+| `cores/apply-core-patches.sh`, `cores/apply-swanstation-patches.sh` | MIT |
 
 The JSON fixtures cannot hold a comment, and the patches' headers hold only
 DEP-3 fields, so [REUSE.toml](REUSE.toml) gives their licences. A launcher may copy anything that is MIT here.
