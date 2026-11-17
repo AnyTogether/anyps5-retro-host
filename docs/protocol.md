@@ -237,8 +237,14 @@ A launcher is built in one of three ways, and only a release is published:
   build's mark (its `docs/AnyPS5 Desktop - Emulator Host Client.md`, "Debug
   and test builds").
 
-A debug or test build that runs an unchecked host SHOULD say so where the
-player sees the emulator, so a tester can tell it from a release.
+A test build that runs an unchecked host MUST say so where the game plays,
+on the game's screen, every time that screen is shown, so that no screenshot
+of the game can pass for a release. A note in its settings alone is not
+enough. A debug build that runs an unchecked host SHOULD say so in the same
+way. The Flutter launcher marks the game's screen with a small corner label
+while a game plays on an unchecked host, and a release is compiled without
+it (its `docs/AnyPS5 Desktop - Emulator Host UI.md`, "The unchecked-host
+mark").
 
 **macOS signing.** The host is signed with Developer ID, the hardened runtime
 and library validation, and notarized. The SwanStation library in a macOS
