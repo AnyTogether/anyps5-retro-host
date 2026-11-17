@@ -259,8 +259,10 @@ def dependency_notices(folder, prefix, option):
 
 
 COPYRIGHT_LINE = re.compile(r'\bCopyright\s+(?:\([Cc]\)\s*)?[0-9][0-9, -]*[0-9]\s+\S.*$')
+# REUSE-IgnoreStart
 SPDX_COPYRIGHT = re.compile(r'\bSPDX-FileCopyrightText:\s*(\S.*)$')
 SPDX_MIT = re.compile(r'\bSPDX-License-Identifier:\s*MIT\s*$', re.M)
+# REUSE-IgnoreEnd
 COMMENT_MARK = re.compile(r'^\s*(?:/\*+|\*+/|\*+|//+|#+)?\s?')
 MIT_GRANT = re.compile(r'Permission\s+is\s+hereby\s+granted,\s+free\s+of\s+charge,.*?'
                        r'DEALINGS\s+IN\s+THE\s+(?:SOFTWARE|MATERIALS)\.', re.DOTALL)
