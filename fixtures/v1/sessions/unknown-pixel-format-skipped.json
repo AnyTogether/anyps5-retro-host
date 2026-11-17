@@ -26,7 +26,8 @@
         "capabilities": [
           "ps1",
           "coreIdentity",
-          "gameTiming"
+          "gameTiming",
+          "ps1Lockstep"
         ],
         "pixelFormat": "bgra8"
       },

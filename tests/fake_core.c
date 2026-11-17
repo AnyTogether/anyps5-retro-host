@@ -9,6 +9,11 @@
  * directory) or for none. Setting fake_hang to "yes" makes retro_run never return, as a stuck core
  * would.
  *
+ * For lockstep tests its "system RAM" is four 32-bit words: the frame count, a mix of every
+ * controller input it has read, and the last buttons of ports 1 and 2. Its serialized state holds
+ * those, the rumble state and the memory card, so a sync's state hash changes when any of them
+ * does.
+ *
  * When the system directory holds fake-gpu, it also offers SwanStation's internal resolution
  * option (swanstation_GPU_ResolutionScale, 1x to 16x) and asks for an OpenGL 3.3 core context.
  * With one, it draws as SwanStation draws a 640-pixel-wide screen: frames of 640 x 480 times the
@@ -17,7 +22,10 @@
  * RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO before the next frame is drawn. While the system directory
  * holds fake-hold-load, retro_load_game waits after reading the scale, and while it holds
  * fake-hold-reset, context_reset waits, each writing fake-held-load or fake-held-reset there
- * first, so a test can act, and look at the host, between those steps.
+ * first, so a test can act, and look at the host, between those steps. fake-hold-run does the same
+ * inside retro_run, so a test can act while a frame is being run. While it holds fake-dupe, a
+ * frame drawn in software is a duplicate: the core passes no pixels, as libretro lets a core do
+ * when nothing changed.
  *
  * Its context_reset also binds a pixel pack buffer and a renderbuffer of its own and sets
  * GL_PACK_ALIGNMENT to 2, and every frame it checks that those, and the draw and read
@@ -72,6 +80,8 @@
 #define GL_CALL
 #endif
 #define CARD_BYTES (128 * 1024)
+#define STATE_MAGIC "FAKESTAT"
+#define STATE_BYTES (8 + 4 * 6 + CARD_BYTES)
 #define MAX_DISCS 130
 
 static retro_environment_t environment;
@@ -82,6 +92,7 @@ static retro_input_state_t input_state;
 static retro_log_printf_t log_printf;
 static struct retro_rumble_interface rumble;
 static unsigned frame_count;
+static uint32_t memory[4];
 static bool rumbling[2];
 static unsigned port_devices[2];
 static uint32_t pixels[MAX_WIDTH * MAX_HEIGHT];
@@ -299,6 +310,7 @@ RETRO_API void retro_init(void) {
   environment(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, &disc_control);
   if (!environment(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &rumble)) rumble.set_rumble_state = NULL;
   frame_count = 0;
+  memset(memory, 0, sizeof memory);
   rumbling[0] = rumbling[1] = false;
   port_devices[0] = port_devices[1] = RETRO_DEVICE_NONE;
   disc_count = 0;
@@ -580,6 +592,7 @@ RETRO_API void retro_run(void) {
   join_logger();
 #endif
   input_poll();
+  hold_while_asked("run");
   if (environment(RETRO_ENVIRONMENT_GET_VARIABLE, &hang) && hang.value && strcmp(hang.value, "yes") == 0) {
     for (;;) {
 #ifdef _WIN32
@@ -617,6 +630,8 @@ RETRO_API void retro_run(void) {
                    (float)(fill & 0xFF) / 255.0f, 1.0f);
     gl_clear(GL_COLOR_BUFFER_BIT);
     video(RETRO_HW_FRAME_BUFFER_VALID, WIDTH * scale, HEIGHT * scale, 0);
+  } else if (in_system_directory("fake-dupe")) {
+    video(NULL, width, height, 0);
   } else {
     for (i = 0; i < width * height; ++i) pixels[i] = fill + (frame_count & 0xFF) * 0x10000u;
     video(pixels, width, height, width * sizeof(uint32_t));
@@ -630,8 +645,13 @@ RETRO_API void retro_run(void) {
       rumble.set_rumble_state(port, RETRO_RUMBLE_STRONG, cross ? 0xFFFF : 0);
     }
   }
+  memory[2] = (uint16_t)input_state(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
+  memory[3] = (uint16_t)input_state(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
+  memory[1] = memory[1] * 31u + memory[2] + memory[3] * 65599u +
+              (uint16_t)input_state(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
   card[0] = (unsigned char)(frame_count >= 30 ? 1 : 0);
   ++frame_count;
+  memory[0] = frame_count;
   if (fps != 50.0 && in_system_directory("fake-refresh-50")) {
     struct retro_system_av_info info;
     fps = 50.0;
@@ -640,11 +660,16 @@ RETRO_API void retro_run(void) {
   }
 }
 
-RETRO_API size_t retro_serialize_size(void) { return 0; }
+RETRO_API size_t retro_serialize_size(void) { return STATE_BYTES; }
 RETRO_API bool retro_serialize(void* data, size_t size) {
-  (void)data;
-  (void)size;
-  return false;
+  unsigned char* out = data;
+  const uint32_t motors = (rumbling[0] ? 1u : 0u) | (rumbling[1] ? 2u : 0u);
+  const uint32_t words[6] = {frame_count, memory[1], memory[2], memory[3], motors, 0};
+  if (size < STATE_BYTES) return false;
+  memcpy(out, STATE_MAGIC, 8);
+  memcpy(out + 8, words, sizeof words);
+  memcpy(out + 8 + sizeof words, card, CARD_BYTES);
+  return true;
 }
 RETRO_API bool retro_unserialize(const void* data, size_t size) {
   (void)data;
@@ -657,5 +682,9 @@ RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char* code) {
   (void)enabled;
   (void)code;
 }
-RETRO_API void* retro_get_memory_data(unsigned id) { return id == RETRO_MEMORY_SAVE_RAM ? card : NULL; }
-RETRO_API size_t retro_get_memory_size(unsigned id) { return id == RETRO_MEMORY_SAVE_RAM ? sizeof card : 0; }
+RETRO_API void* retro_get_memory_data(unsigned id) {
+  return id == RETRO_MEMORY_SAVE_RAM ? (void*)card : id == RETRO_MEMORY_SYSTEM_RAM ? (void*)memory : NULL;
+}
+RETRO_API size_t retro_get_memory_size(unsigned id) {
+  return id == RETRO_MEMORY_SAVE_RAM ? sizeof card : id == RETRO_MEMORY_SYSTEM_RAM ? sizeof memory : 0;
+}

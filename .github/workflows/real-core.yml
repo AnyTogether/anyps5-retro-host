@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
-# Boots the real SwanStation core, built with the host's patches, through the host on each system.
-# The BIOS and the program are built here from pcsx-redux's nugget (MIT): OpenBIOS and the psyqo
-# "hello" example. No Sony BIOS or game is used. Each system's core must report the core build
-# identity tools/core_identity.py computes, and the same-core job checks that every system reports
-# the same one (docs/netplay.md "Core build identity").
+# Boots the real SwanStation core, built with the host's patches, through the host on each system,
+# and runs two of them in lockstep. The BIOS and the program are built here from pcsx-redux's
+# nugget (MIT): OpenBIOS and the psyqo "hello" example. No Sony BIOS or game is used. Each
+# system's core must report the core build identity tools/core_identity.py computes, and the
+# same-core job checks that every system reports the same one (docs/netplay.md "Core build
+# identity").
 name: real-core
 on: [push, pull_request]
 permissions:
@@ -104,8 +105,10 @@ jobs:
         run: |
           identity="$(${{ matrix.python }} tools/core_identity.py --swanstation-commit "$SWANSTATION_COMMIT")"
           ${{ matrix.python }} tests/real_core.py --host ${{ matrix.host }} --core ${{ matrix.core }} --bios ps1-files/openbios.bin --program ps1-files/hello.exe --log build/real-core.log --picture build/real-core.png ${{ matrix.opengl }} --expect-core-version "$identity" --core-identity-out "build/core-identity-${{ matrix.os }}.json"
+      - name: Two real cores in lockstep, fed the same input, frame for frame
+        run: ${{ matrix.python }} tests/lockstep_test.py --host ${{ matrix.host }} --core ${{ matrix.core }} --bios ps1-files/openbios.bin --program ps1-files/hello.exe --log build/lockstep.log --frames 600
       - if: failure()
-        run: tail -200 build/real-core.log || true
+        run: tail -200 build/real-core.log build/lockstep.log || true
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:

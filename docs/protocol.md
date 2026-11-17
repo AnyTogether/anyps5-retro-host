@@ -14,7 +14,11 @@ change settings, stop. The `coreIdentity` capability adds the core build
 identity two players' launchers compare before PS1 online play
 ([netplay.md](netplay.md) "Core build identity"), and `gameTiming` the
 game's frame rate and region, which a match's frame clock follows
-([netplay.md](netplay.md) "Frame rate"). Online play itself, PS2 and
+([netplay.md](netplay.md) "Frame rate"). `ps1Lockstep` adds the first step
+of online play itself: a game that runs one frame per input the launcher
+hands it, so two players' hosts stay frame for frame alike (see
+[Lockstep](#lockstep) and [netplay.md](netplay.md)). Joining a running
+game, rollback, PS2 and
 PS3 are later capabilities (see [Capabilities](#capabilities)).
 
 The words MUST, MUST NOT and SHOULD are used as in RFC 2119.
@@ -54,7 +58,9 @@ killing. It never uses the `pid` in [`welcome`](#welcome) for those. A
 `welcome` whose `pid` is not that process id is a protocol error.
 
 **Network.** In version 1, the host and the core MUST NOT open any network
-connection or listening socket. The only channel the host has is the one the
+connection or listening socket. This holds for online play too: the launcher
+carries every packet between players, and the host only runs the frames it is
+given ([netplay.md](netplay.md), "Who owns the network"). The only channel the host has is the one the
 launcher hands it. Reading a game or BIOS file that the operating system
 serves from a network share (SMB, NFS) is ordinary file access, not a
 network connection under this rule, and neither is playing sound through the
@@ -418,6 +424,8 @@ another SwanStation commit, its maintainers check this again.
 | [`ring`](#ring) | host → launcher | none |
 | [`frame`](#frame) | host → launcher | none |
 | [`rumble`](#rumble) | host → launcher | none |
+| [`step`](#step) | launcher → host | none (capability `ps1Lockstep`) |
+| [`sync`](#sync) | host → launcher | none (capability `ps1Lockstep`) |
 
 ### hello
 
@@ -477,8 +485,9 @@ a method whose capability the host did not list.
 | `ps1` | The methods below, for PS1 games, with controller ports 1 and 2 |
 | `coreIdentity` | `core` in [`status`](#status): the loaded core's name and build identity, which two players' launchers compare before a match |
 | `gameTiming` | `timing` in [`status`](#status): the frame rate the host paces the game to and the game's region, which a launcher's frame clock follows in an online match |
+| `ps1Lockstep` | [Lockstep](#lockstep): `start.lockstep`, the method `lockstep`, and the messages `step` and `sync` |
 
-Later versions add capabilities such as PS1 online play, PS2 and PS3.
+Later versions add capabilities such as PS1 rollback, PS2 and PS3.
 
 ### call and reply
 
@@ -624,7 +633,8 @@ launcher does not have input focus, the launcher does not forward `rumble`.
 
 ## Methods
 
-All methods have the `ps1` capability. A call whose argument has the wrong
+All methods below have the `ps1` capability, except `lockstep`, which has
+`ps1Lockstep`. A call whose argument has the wrong
 type, or a value outside the range given below, is an `argument` error
 whether or not a game is loaded. With a valid argument and no game loaded,
 `status` returns `null`; `pause`, `stop` and `release` do nothing and return
@@ -651,6 +661,7 @@ Loads and starts a PS1 game.
 | `saves` | path | Where memory cards are kept; the host creates it if needed. Memory card 1 is the file `<disc's name without its extension>.srm` in it, as libretro frontends name it, and is checked for changes every 5 seconds between frames, also while paused, and written whenever the game ends: to a file beside it, flushed to the disk, then renamed over it, so a crash or power cut leaves the old card or the new one. A card file the host cannot read is left as it is and never written over, and `status.cardUnreadable` is `true` |
 | `options` | object of strings, optional | Core option values saved by the player, by key, including the internal resolution (`swanstation_GPU_ResolutionScale`). Unknown keys and values are ignored |
 | `initialDisc` | integer 0 to 127, optional | Only for an `.m3u`: the index of the playlist entry to insert at boot. With any other `disc` it is an `argument` error |
+| `lockstep` | object, optional | Capability `ps1Lockstep`: the game starts in [lockstep](#lockstep), as the `lockstep` method's argument says, and runs not even its first frame before a `step` |
 
 The result is `{"epoch":<integer>}`. The epoch identifies this game's frames
 in the ring (see [Frame ring](#frame-ring)). It is 1 for the host's first
@@ -743,7 +754,8 @@ form; anything else is a different core. The host does not judge the value.
 `timing` has `fps` and `region`:
 
 - `fps`, a number above 1 and below 1000, is the frames a second the host
-  runs the game at. It is the `timing.fps` of the core's newest
+  runs the game at when it keeps its own time: on its own, and in
+  [lockstep](#lockstep) with `paced`. It is the `timing.fps` of the core's newest
   `retro_system_av_info`, from `retro_get_system_av_info` once the game has
   loaded or from `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO` after a frame, or
   60 when that is not above 1 and below 1000. SwanStation gives the
@@ -811,7 +823,8 @@ Argument: an integer, 1 or 2. This is how many controller ports have a
 controller in, counting from port 1. With 1, port 2 has no controller
 (`RETRO_DEVICE_NONE`), so a game offers a second player only once one has
 joined. A game starts with 1. The core is told between frames. Returns `true`
-when the count was taken, and `false` when the game has ended.
+when the count was taken, and `false` when the game has ended or is in
+lockstep, where each `step` carries the count.
 
 ### changeDisc
 
@@ -819,14 +832,16 @@ Argument: an integer from 0 to 127, the index into `discs.labels`. It opens
 the tray, inserts that disc and closes the tray, between frames. It returns
 `true` when the change has started, and `discs.busy` then shows its progress.
 It returns `false` for a game with one disc, for an index past the last
-disc, while another change is in progress, or when the game has ended.
+disc, while another change is in progress, when the game has ended, or while
+it is in lockstep.
 
 ### option
 
 Argument: `{"key":<string>,"value":<string>}`. Sets a core option that
 `status` lists. Returns `true` when the value is one of the option's `values`
 and was accepted (it may be pending, see `graphicsPending` and `restart`), and
-`false` otherwise.
+`false` otherwise, and always while the game is in lockstep: every player's
+console must keep the options it started with.
 
 ### volume
 
@@ -852,6 +867,96 @@ A game that ended by a [game limit](#timeouts) may have left its core stuck
 inside `retro_run`, where the host cannot unload it. Then the host sends the
 reply to `release` and exits. No game is loaded at that point, so the
 launcher does not show an error, and it starts a new host for the next game.
+
+## Lockstep
+
+Capability `ps1Lockstep`. A game in lockstep runs one frame for each `step`
+the launcher sends, with exactly the input in it, and runs no frame without
+one. Two hosts that start the same game with the same core (the same
+`status.core`, capability `coreIdentity`), BIOS and options, and are given
+the same steps, stay alike frame for frame. Each sends a [`sync`](#sync) with hashes of what the frame
+left behind, so the launchers can compare them. The launcher does all the
+networking; [netplay.md](netplay.md) is the design this is the first step of.
+
+Lockstep frames count up from 0, from the moment the game enters lockstep
+(`start.lockstep`, or the `lockstep` method on a running game), and are
+integers from 0 to 4294967295. Every frame of a game in lockstep is a frame
+run for a step, so:
+
+- `input` messages are kept, as always, but reach the core only after the
+  game leaves lockstep;
+- `connectedPorts`, `changeDisc` and `option` return `false`;
+- `pause` still works. A paused game takes steps but runs none until it is
+  resumed;
+- time spent waiting for the next step does not count toward the stall and
+  first-frame [game limits](#timeouts), just as time paused does not.
+
+### lockstep
+
+Argument: `{"check":<integer 1 to 3600>,"paced":<boolean, optional>}`, or
+`false`.
+
+- With an object, the game enters lockstep, or, when it already is in
+  lockstep, keeps its frame count and takes the new settings. `check` is how
+  often a `sync` is sent: after every frame whose number is a multiple of it.
+  `paced` (default `true`) keeps the game to its core's frame rate
+  (`status.timing.fps`, capability `gameTiming`) even when steps queue up; `false` runs queued steps as fast as the machine can, as a
+  player catching up does. The change takes effect between two frames: the
+  host waits for the frame being run to end before it replies. Returns
+  `{"frame":<integer>}`, the frame the next `step` is for, which is 0 when the
+  game has just entered lockstep. Returns `false` when the game has ended, or
+  when the frame being run did not end within 4 seconds.
+- With `false`, the game leaves lockstep and drops the steps it has not run.
+  It then runs on its own, with the input of the last `input` messages, and
+  with as many connected ports as the last step it ran had. It too takes
+  effect between two frames. Returns `true`, or `false` when the game has
+  ended or the frame being run did not end within 4 seconds.
+
+`start.lockstep` takes the same object.
+
+### step
+
+```json
+{"type":"step","frame":120,"ports":[{"buttons":1,"leftX":-32768,"leftY":0,"rightX":0,"rightY":0},
+ {"buttons":0,"leftX":0,"leftY":0,"rightX":0,"rightY":0}]}
+```
+
+The input of one lockstep frame. It has no reply.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `frame` | integer, 0 to 4294967295 | The lockstep frame this is for |
+| `ports` | array of 1 or 2 objects | One per connected controller port, from port 1. Each has the fields of [`input`](#input) other than `type` and `port`. The number of entries is the number of connected ports for this frame, as [`connectedPorts`](#connectedports) would set it |
+
+Steps come in frame order with no gaps: the first is for the frame the
+`lockstep` reply named (0 for a game started with `start.lockstep`), and each
+next one for the frame after. At most 600 steps wait to be run. A `step` sent while no game is
+loaded, while the game is not in lockstep, for any other frame, or as the
+601st waiting, is a protocol error. A `step` for a game that has ended is
+ignored.
+
+### sync
+
+```json
+{"type":"sync","frame":120,"ram":"8f67e12ab88b0626","video":"2a2019e82fedaa1a","state":"edcd2ac6e2993c68"}
+```
+
+Sent after each lockstep frame whose number is a multiple of `check`, in
+frame order. Each hash is the 64-bit FNV-1a hash of some bytes, as 16
+lowercase hexadecimal digits, or `null` when the core cannot give them:
+
+| Field | The hash of |
+| --- | --- |
+| `ram` | The console's main RAM (`RETRO_MEMORY_SYSTEM_RAM`) after the frame |
+| `video` | The last picture published by this frame or an earlier one: its width and height as two 32-bit little-endian integers, then the red, green and blue bytes of each pixel, top row first, whichever pixel format the ring has. `null` before the first picture |
+| `state` | The core's `retro_serialize` data after the frame, in a buffer of `retro_serialize_size` bytes that starts zeroed. The host tells the core the state is for netplay (`RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT` answers `RETRO_SAVESTATE_CONTEXT_ROLLBACK_NETPLAY`) while it serializes it, and `RETRO_SAVESTATE_CONTEXT_NORMAL` at any other time |
+
+Two hosts that ran the same steps from the same start have the same `ram`.
+`video` is the same on two machines only when both draw in software; GPUs may
+round differently. `state` also differs when the core keeps something of the
+machine in it: SwanStation's state names the disc's path, so two players'
+`state` match only when both keep the disc at the same path
+([netplay.md](netplay.md) "Lockstep first, rollback after").
 
 ## Frame ring
 
@@ -994,7 +1099,8 @@ that misses its own limit ends its process at once.
 
 **Game limits.** These end only the game. The host keeps running, and
 `status` shows `ended: true` with the `error` and `errorCode` given. Time
-paused is not counted.
+paused, and time a game in [lockstep](#lockstep) waits for its next step, is
+not counted.
 
 | What | Limit | `error` | `errorCode` |
 | --- | --- | --- | --- |

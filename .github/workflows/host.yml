@@ -34,6 +34,8 @@ jobs:
       - name: Host tests, with Mesa's OpenGL for the resolution limits, eight OpenGL games in one host, and an OpenGL game under strace; each fails on what the conformance sessions fail on
         run: python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --require-gpu --strace build/host-test.trace
       - run: python3 -I tests/fake_host_selftest.py
+      - name: Two hosts in lockstep (protocol.md "Lockstep")
+        run: python3 tests/lockstep_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log
       - if: failure()
         run: tail -200 build/host.log || true
 
@@ -55,6 +57,7 @@ jobs:
         run: |
           setarch "$(uname -m)" -R python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log
           setarch "$(uname -m)" -R python3 tests/conformance.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log
+          setarch "$(uname -m)" -R python3 tests/lockstep_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log
           if grep -q "WARNING: ThreadSanitizer" build/host.log; then grep -A40 "WARNING: ThreadSanitizer" build/host.log; exit 1; fi
       - if: failure()
         run: tail -200 build/host.log || true
@@ -75,6 +78,7 @@ jobs:
       - name: Host tests, with Apple's OpenGL (the runner has only its software renderer)
         run: python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --require-gpu
       - run: python3 -I tests/fake_host_selftest.py
+      - run: python3 tests/lockstep_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log
       - if: failure()
         run: tail -200 build/host.log || true
 
@@ -116,6 +120,7 @@ jobs:
       - name: Host tests, with Mesa's OpenGL through WGL
         run: python tests/host_test.py --host build/Release/anyps5-retro-host.exe --core build/Release/fake_core.dll --log build/host.log --require-gpu
       - run: python -I tests/fake_host_selftest.py
+      - run: python tests/lockstep_test.py --host build/Release/anyps5-retro-host.exe --core build/Release/fake_core.dll --log build/host.log
       - if: failure()
         shell: bash
         run: tail -200 build/host.log || true

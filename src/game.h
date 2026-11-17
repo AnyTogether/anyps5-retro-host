@@ -9,7 +9,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -27,6 +29,13 @@ struct retro_game_geometry;
 
 namespace retro_host {
 
+// How a game in lockstep runs (protocol.md "lockstep"): one frame per step the launcher sends, a
+// sync message every check frames, and, when paced, no faster than the core's frame rate.
+struct LockstepConfig {
+  uint32_t check = 1;
+  bool paced = true;
+};
+
 struct GameConfig {
   std::string core;
   std::string disc;
@@ -34,6 +43,7 @@ struct GameConfig {
   std::string saves;
   std::vector<std::pair<std::string, std::string>> options;
   std::optional<unsigned> initial_disc;
+  std::optional<LockstepConfig> lockstep;
   uint32_t epoch = 0;
 };
 
@@ -41,6 +51,26 @@ struct PortInput {
   uint16_t buttons = 0;
   std::array<int16_t, 4> sticks{};
 };
+
+// One lockstep frame's input: how many controller ports have a controller in, counting from port
+// 1, and their state. A port without a controller reads as none.
+struct StepInput {
+  unsigned connected = 1;
+  std::array<PortInput, 2> ports{};
+};
+
+// What a lockstep frame left behind, as 64-bit FNV-1a hashes: the console's main RAM, the last
+// picture published and the core's serialized state. An absent hash is one the core cannot give.
+struct SyncPoint {
+  uint64_t frame = 0;
+  std::optional<uint64_t> ram;
+  std::optional<uint64_t> video;
+  std::optional<uint64_t> state;
+};
+
+// What became of a step (protocol.md "step"): queued, dropped because the game has ended, or
+// refused because the game is not in lockstep, the frame is not the next one, or too many wait.
+enum class StepResult { kTaken, kIgnored, kRefused };
 
 // What a running game hands back to the host: frames to publish and rumble to forward. Called
 // on the game's thread.
@@ -53,6 +83,7 @@ class GameEvents {
   // one the host cannot make memory for, ends the game.
   virtual FrameResult OnFrame(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t epoch) = 0;
   virtual void OnRumble(unsigned port, uint16_t strong, uint16_t weak) = 0;
+  virtual void OnSync(const SyncPoint& point) = 0;
 };
 
 // One loaded game: a libretro core running on its own thread (protocol.md "Methods").
@@ -72,6 +103,17 @@ class Game {
   bool ChangeDisc(unsigned index);
   bool SetOption(const std::string& key, const std::string& value);
   void SetInput(unsigned port, const PortInput& input);
+
+  // Puts a running game in lockstep, or changes how it runs there; the frame count starts at 0
+  // when it enters. Both this and LeaveLockstep wait for the frame being run to end, so no frame
+  // straddles the change. Returns the next frame the game will run, or nothing when it has ended
+  // or its frame did not end within 4 seconds.
+  std::optional<uint64_t> Lockstep(const LockstepConfig& config);
+  // Leaves lockstep and drops the steps not yet run; false when the game has ended or its frame
+  // did not end within 4 seconds.
+  bool LeaveLockstep();
+  // Queues the input for one lockstep frame.
+  StepResult Step(uint64_t frame, const StepInput& input);
 
   // Asks the game to end. Ended() turns true once the core is unloaded.
   void Stop();
@@ -238,6 +280,51 @@ class Game {
   std::string card_;
   struct DiscControl;
   std::unique_ptr<DiscControl> disc_control_;
+
+  // Lockstep (protocol.md "lockstep"). lockstep_, steps_ and next_frame_ are guarded by mutex_;
+  // step_signal_ wakes the game's thread for a step.
+  struct NextStep {
+    bool lockstep = false;
+    bool paced = true;
+    uint64_t frame = 0;
+    std::optional<StepInput> input;
+  };
+  // In lockstep, takes the next step when one is queued, waiting at most wait_ms for it.
+  NextStep TakeStep(int64_t wait_ms);
+  // Hashes what lockstep frame frame left behind and hands it to the host when a check is due.
+  void FinishStep(uint64_t frame);
+  // The core's serialized state, in a buffer of retro_serialize_size bytes that starts zeroed, or
+  // nothing when the core cannot serialize now. The first serialized_used_ bytes hold every byte
+  // that is not zero: a state fills only part of the size the core asks for, and clearing and
+  // hashing the zeros after it a byte at a time cost more than the state (hash.h).
+  const std::string* Serialize();
+  std::string serialized_;
+  size_t serialized_used_ = 0;
+  // True while the game's thread runs a frame (see Lockstep and LeaveLockstep). Calls waiting for
+  // the frame to end count themselves in fence_waiters_, and no frame starts while one waits.
+  // Both are guarded by mutex_; fence_signal_ is notified when a frame ends.
+  bool in_frame_ = false;
+  int fence_waiters_ = 0;
+  std::condition_variable fence_signal_;
+  void EndFrame();
+  // With lock holding mutex_: waits up to 4 seconds for the frame being run to end; true when it
+  // has, and then no frame starts until lock is released.
+  bool AwaitFrameEnd(std::unique_lock<std::mutex>& lock);
+  std::condition_variable step_signal_;
+  std::optional<LockstepConfig> lockstep_;
+  std::deque<StepInput> steps_;
+  uint64_t next_frame_ = 0;
+  // The step being run, read by InputState on the game's thread.
+  std::optional<StepInput> step_input_;
+  // The savestate context the core is told about while the host serializes it.
+  int savestate_context_ = 0;
+  // The size of the last picture published, whose pixels converted_ holds until the next one, and
+  // its sync hash once a check has needed it. A picture published outside lockstep is hashed too
+  // when the first check after it comes, and one that no check needs is never hashed.
+  std::optional<std::pair<uint32_t, uint32_t>> picture_;
+  std::optional<uint64_t> video_hash_;
+  // The sync hash of the last picture published, or nothing before the first one.
+  std::optional<uint64_t> VideoHash();
 };
 
 }  // namespace retro_host

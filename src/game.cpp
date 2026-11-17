@@ -18,6 +18,7 @@
 
 #include "resolution.h"
 
+#include "hash.h"
 #include "paths.h"
 
 namespace retro_host {
@@ -89,6 +90,12 @@ constexpr size_t kIdentityBytes = 256;
 constexpr size_t kErrorBytes = 1024;
 // changeDisc and initialDisc reach discs 0 to 127, so status lists no more than that.
 constexpr unsigned kMaxDiscs = 128;
+// Lockstep (protocol.md "lockstep"): steps queued ahead of the game at most, and how long the
+// game's thread waits for one before it looks at other work again.
+constexpr size_t kMaxSteps = 600;
+constexpr int64_t kStepWaitMs = 10;
+// How long entering or leaving lockstep waits for the frame being run to end.
+constexpr int64_t kFrameFenceMs = 4000;
 
 constexpr char kResolutionOption[] = "swanstation_GPU_ResolutionScale";
 
@@ -182,7 +189,7 @@ const char* RegionName(unsigned region) {
 
 Game::Game(GameConfig config, PixelFormat format, GameEvents& events, AudioOutput& audio)
     : config_(std::move(config)), format_(format), events_(events), audio_(audio),
-      quiet_since_(NowMs()), disc_control_(std::make_unique<DiscControl>()) {}
+      quiet_since_(NowMs()), disc_control_(std::make_unique<DiscControl>()), lockstep_(config_.lockstep) {}
 
 Game::~Game() {
   stop_ = true;
@@ -342,8 +349,37 @@ void Game::RunGame() {
       next = std::chrono::steady_clock::now();
       continue;
     }
+    // in_frame_ marks the frame, so entering or leaving lockstep happens between two frames. While
+    // a call waits for that, no frame starts.
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (fence_waiters_ > 0) {
+        lock.unlock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        continue;
+      }
+      in_frame_ = true;
+    }
+    const NextStep step = TakeStep(kStepWaitMs);
+    if (step.lockstep && !step.input) {
+      EndFrame();
+      quiet_since_ = NowMs();
+      next = std::chrono::steady_clock::now();
+      continue;
+    }
+    step_input_ = step.input;
+    if (step.input) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (connected_ports_ != step.input->connected) {
+        connected_ports_ = step.input->connected;
+        ports_changed_ = true;
+      }
+    }
     ApplyPendingWork();
     run();
+    step_input_.reset();
+    if (step.input) FinishStep(step.frame);
+    EndFrame();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (disc_.inserted && *disc_.inserted < disc_.paths.size()) disc_.played = disc_.paths[*disc_.inserted];
@@ -367,6 +403,10 @@ void Game::RunGame() {
       end_error = "The GPU was reset, and the game's OpenGL context with it.";
       end_code = "other";
       break;
+    }
+    if (step.input && !step.paced) {
+      next = std::chrono::steady_clock::now();
+      continue;
     }
     next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(frame_time);
     const auto now = std::chrono::steady_clock::now();
@@ -502,6 +542,10 @@ bool Game::SaveCard(bool always) {
 
 bool Game::Environment(unsigned command, void* data) {
   switch (command) {
+    case RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT:
+      if (!data) return false;
+      *static_cast<retro_savestate_context*>(data) = static_cast<retro_savestate_context>(savestate_context_);
+      return true;
     case RETRO_ENVIRONMENT_GET_CAN_DUPE:
       *static_cast<bool*>(data) = true;
       return true;
@@ -744,6 +788,8 @@ void Game::Video(const void* data, unsigned width, unsigned height, size_t pitch
 }
 
 void Game::Publish(uint32_t width, uint32_t height) {
+  picture_ = std::make_pair(width, height);
+  video_hash_.reset();
   const FrameResult shown = events_.OnFrame(converted_.data(), width, height, config_.epoch);
   if (shown != FrameResult::kShown) {
     frame_failure_ = shown;
@@ -769,7 +815,7 @@ int16_t Game::InputState(unsigned port, unsigned device, unsigned index, unsigne
   if (port > 1) return 0;
   std::lock_guard<std::mutex> lock(mutex_);
   if (port == 1 && connected_ports_ < 2) return 0;
-  const PortInput& input = input_[port];
+  const PortInput& input = step_input_ ? step_input_->ports[port] : input_[port];
   const unsigned base = device & RETRO_DEVICE_MASK;
   if (base == RETRO_DEVICE_JOYPAD) {
     if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return static_cast<int16_t>(input.buttons);
@@ -889,7 +935,7 @@ void Game::Pause(bool paused) {
 
 bool Game::SetConnectedPorts(unsigned count) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (ended_) return false;
+  if (ended_ || lockstep_) return false;
   if (connected_ports_ != count) {
     connected_ports_ = count;
     ports_changed_ = true;
@@ -899,7 +945,7 @@ bool Game::SetConnectedPorts(unsigned count) {
 
 bool Game::ChangeDisc(unsigned index) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (ended_ || disc_.labels.size() < 2 || index >= disc_.labels.size() || disc_.busy) return false;
+  if (ended_ || lockstep_ || disc_.labels.size() < 2 || index >= disc_.labels.size() || disc_.busy) return false;
   disc_.busy = true;
   disc_request_ = index;
   return true;
@@ -907,7 +953,7 @@ bool Game::ChangeDisc(unsigned index) {
 
 bool Game::SetOption(const std::string& key, const std::string& value) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (ended_) return false;
+  if (ended_ || lockstep_) return false;
   for (auto& option : options_) {
     if (option.name != key || !option.visible || option.fixed) continue;
     const auto found = std::find(option.values.begin(), option.values.end(), value);
@@ -1070,6 +1116,139 @@ bool Game::Finished() const {
 bool Game::Ready() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return ready_;
+}
+
+void Game::EndFrame() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    in_frame_ = false;
+  }
+  fence_signal_.notify_all();
+}
+
+bool Game::AwaitFrameEnd(std::unique_lock<std::mutex>& lock) {
+  ++fence_waiters_;
+  step_signal_.notify_all();
+  const bool between =
+      fence_signal_.wait_for(lock, std::chrono::milliseconds(kFrameFenceMs), [this] { return !in_frame_; });
+  --fence_waiters_;
+  return between;
+}
+
+std::optional<uint64_t> Game::Lockstep(const LockstepConfig& config) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!AwaitFrameEnd(lock) || ended_) return std::nullopt;
+  if (!lockstep_) {
+    next_frame_ = 0;
+    steps_.clear();
+  }
+  lockstep_ = config;
+  return next_frame_ + steps_.size();
+}
+
+bool Game::LeaveLockstep() {
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!AwaitFrameEnd(lock) || ended_) return false;
+    lockstep_.reset();
+    steps_.clear();
+  }
+  step_signal_.notify_all();
+  return true;
+}
+
+StepResult Game::Step(uint64_t frame, const StepInput& input) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (ended_) return StepResult::kIgnored;
+    if (!lockstep_ || frame != next_frame_ + steps_.size() || steps_.size() >= kMaxSteps) return StepResult::kRefused;
+    steps_.push_back(input);
+  }
+  step_signal_.notify_all();
+  return StepResult::kTaken;
+}
+
+Game::NextStep Game::TakeStep(int64_t wait_ms) {
+  std::unique_lock<std::mutex> lock(mutex_);
+  NextStep next;
+  if (!lockstep_) return next;
+  if (steps_.empty()) {
+    step_signal_.wait_for(lock, std::chrono::milliseconds(wait_ms),
+                          [this] {
+                            return !lockstep_ || !steps_.empty() || stop_ || fence_waiters_ > 0;
+                          });
+  }
+  if (!lockstep_) return next;
+  next.lockstep = true;
+  next.paced = lockstep_->paced;
+  if (steps_.empty() || fence_waiters_ > 0) return next;
+  next.frame = next_frame_++;
+  next.input = steps_.front();
+  steps_.pop_front();
+  return next;
+}
+
+void Game::FinishStep(uint64_t frame) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!lockstep_ || frame % lockstep_->check != 0) return;
+  }
+  SyncPoint point;
+  point.frame = frame;
+  point.video = VideoHash();
+  const auto ram = Get<void* (*)(unsigned)>("retro_get_memory_data")(RETRO_MEMORY_SYSTEM_RAM);
+  const size_t ram_size = Get<size_t (*)(unsigned)>("retro_get_memory_size")(RETRO_MEMORY_SYSTEM_RAM);
+  if (ram && ram_size) point.ram = Fnv(ram, ram_size);
+  savestate_context_ = RETRO_SAVESTATE_CONTEXT_ROLLBACK_NETPLAY;
+  if (const std::string* state = Serialize()) {
+    point.state = FnvZeros(state->size() - serialized_used_, Fnv(state->data(), serialized_used_));
+  }
+  savestate_context_ = RETRO_SAVESTATE_CONTEXT_NORMAL;
+  events_.OnSync(point);
+}
+
+std::optional<uint64_t> Game::VideoHash() {
+  if (!picture_ || video_hash_) return video_hash_;
+  // The picture in RGB order, whichever pixel format the ring has, so peers can compare it.
+  const uint32_t size[2] = {picture_->first, picture_->second};
+  uint64_t hash = Fnv(size, sizeof size);
+  const bool bgra = format_ == PixelFormat::kBgra8;
+  const size_t red = bgra ? 2 : 0;
+  const size_t blue = bgra ? 0 : 2;
+  const uint8_t* pixels = converted_.data();
+  for (size_t at = 0, end = converted_.size(); at < end; at += 4) {
+    hash = (hash ^ pixels[at + red]) * kFnvPrime;
+    hash = (hash ^ pixels[at + 1]) * kFnvPrime;
+    hash = (hash ^ pixels[at + blue]) * kFnvPrime;
+  }
+  video_hash_ = hash;
+  return video_hash_;
+}
+
+const std::string* Game::Serialize() {
+  const auto size_of = Get<size_t (*)()>("retro_serialize_size");
+  const auto serialize = Get<bool (*)(void*, size_t)>("retro_serialize");
+  if (!size_of || !serialize) return nullptr;
+  const size_t size = size_of();
+  if (size == 0) return nullptr;
+  try {
+    if (serialized_.size() != size) {
+      serialized_.assign(size, '\0');
+      serialized_used_ = 0;
+    }
+  } catch (const std::bad_alloc&) {
+    serialized_.clear();
+    serialized_used_ = 0;
+    return nullptr;
+  }
+  // Only the bytes the last state used can be other than zero, so only they are cleared.
+  std::memset(serialized_.data(), 0, serialized_used_);
+  if (!serialize(serialized_.data(), size)) {
+    serialized_used_ = size;
+    return nullptr;
+  }
+  serialized_used_ = UsedLength(serialized_.data(), size);
+  return &serialized_;
 }
 
 }  // namespace retro_host

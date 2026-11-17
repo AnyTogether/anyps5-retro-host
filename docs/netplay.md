@@ -10,10 +10,12 @@ the host adds for it, one capability at a time, each with its own tests.
 built.
 
 Built so far: the core build identity (capability `coreIdentity`, `core` in
-protocol.md "status"), which two players' launchers compare before a match,
-and the game's frame rate and region (capability `gameTiming`, `timing` in
-protocol.md "status"), which a match's frame clock follows. The steps after
-them are in [Steps](#steps).
+protocol.md "status"), which two players' launchers compare before a match;
+the game's frame rate and region (capability `gameTiming`, `timing` in
+protocol.md "status"), which a match's frame clock follows; and lockstep
+(capability `ps1Lockstep`, protocol.md "Lockstep"), in which two players'
+hosts run the same frames on the same input from a cold boot and hash what
+each frame left behind. The steps after them are in [Steps](#steps).
 
 ## What others do
 
@@ -53,9 +55,27 @@ need the same emulator build; and desyncs are found by comparing hashes.
   network calls, and means a flaw in a core cannot be reached from the
   internet.
 - The host owns what only it can do well: telling the launcher which core
-  build it loaded, and, in the later steps, running exactly one frame per
-  input, saving and loading the core's state between frames, and hashing
-  what each frame left behind. These need the core and the game's thread.
+  build it loaded, running exactly one frame per input, hashing what each
+  frame left behind, and, in the later steps, saving and loading the core's
+  state between frames. These need the core and the game's thread.
+- The cost is one more local hop for each frame's input, over a pipe or
+  socket on the same machine. It is far below a frame's 16.7 ms (20 ms in a
+  PAL game).
+
+So each launcher is the network peer and the host is a deterministic
+machine it feeds:
+
+```
+ Player A's PC                                        Player B's PC
+ ┌───────────────────────────┐   AnyTogether rooms,   ┌───────────────────────────┐
+ │ launcher                  │   WebRTC data channel, │ launcher                  │
+ │  lobby, seats, input wire ├────── TURN relay ──────┤  lobby, seats, input wire │
+ │        │ step   ▲ sync    │                        │        │ step   ▲ sync    │
+ │        ▼        │         │                        │        ▼        │         │
+ │ anyps5-retro-host         │                        │ anyps5-retro-host         │
+ │  SwanStation, no sockets  │                        │  SwanStation, no sockets  │
+ └───────────────────────────┘                        └───────────────────────────┘
+```
 
 ## Core build identity
 
@@ -124,7 +144,8 @@ option MSB_FIRST=OFF
   and checking the host"). A changed comment or patch name changes the
   identity although the emulation is the same; that errs on the safe side.
   Equal identities do not prove that two machines run alike either; the
-  hashes compared during a match (a later step) are that check.
+  hashes compared during a match (`sync`, protocol.md "Lockstep") are that
+  check.
 - Without `anyps5-core-source.txt` (a SwanStation built without the script)
   the core keeps SwanStation's own `library_version`, which is not of the
   `anyps5-1-` form, so a launcher does not play online with it.
@@ -155,10 +176,11 @@ players need the same host release to play together.
 
 ## Frame rate
 
-Once the host runs one frame per input (step 3 in [Steps](#steps)), the
-launcher's frames are the game's frames, and in rollback (step 5) the
+In lockstep the host runs one frame per input, so the launcher's frames are
+the game's frames, and in rollback (step 5 in [Steps](#steps)) the
 launcher's frame clock is the game's only clock: the host runs each step as
-it comes. That clock must run at the game's own rate. A PS1 game does not
+it comes. A paced lockstep game (`lockstep.paced`) keeps to the same rate
+the host reports, so it never runs faster than the game would on its own. That clock must run at the game's own rate. A PS1 game does not
 always run at 60 frames a second: SwanStation gives the vertical frequency
 of the video mode the game set, about 60 for NTSC and 50 for PAL (a European
 game sets PAL), and gives a new one when the game changes its mode. At
@@ -184,6 +206,91 @@ frame are all counted in frames of that length: 16.7 ms in an NTSC game and
 plus one, at most 8, the longest round trip a match takes is about 230 ms in
 an NTSC game and 280 ms in a PAL one.
 
+## Lockstep first, rollback after
+
+**Lockstep with input delay** (capability `ps1Lockstep`, built). A frame
+runs only when every player's input for it is known. Each launcher sends its
+own input for frame *n* + *d*, where *d* is the input delay, and hands the
+host the step for frame *n* once the friend's input for *n* has arrived. With
+*d* frames of delay covering half the round trip plus some jitter, the game
+never waits. A late packet makes both players wait; it never makes them
+differ.
+
+**Rollback** (step 5). The host runs ahead on predicted input and, when the
+real input differs, loads the state from before that frame and runs again.
+It hides more of the round trip than delay alone, and costs a state save
+before every frame run on a prediction and a burst of frames run again on
+each wrong guess.
+
+Lockstep comes first because:
+
+- it needs the fewest new parts: the host waits, the launcher's input wire
+  stays as it is, and nothing is undone;
+- it is the control rollback is checked against: a rollback run must reach
+  the same hashes as a lockstep run of the same input;
+- it needs no state at all when both games start from a cold boot with
+  `start.lockstep`, and the stock SwanStation boots alike on every system,
+  so it needs no SwanStation patch. Rollback, and a friend joining a running
+  game, need states the core saves and loads exactly and quickly; the
+  launcher's own harness found that stock SwanStation's are not exact (it
+  reschedules the sound unit's sample event with timing from the discarded
+  timeline), so states come with their patches in step 4.
+
+A match picks *d* from the round trip it measures while the lobby is open:
+*d* = ⌈(round trip ÷ 2) ÷ frame⌉ + 1, at most 8, where a frame lasts
+1 ÷ `status.timing.fps` (16.7 ms in an NTSC game, 20 ms in a PAL one;
+"Frame rate" above). Above 8 frames (a round trip above about 230 ms in an
+NTSC game, 280 ms in a PAL one) the lobby says the connection is too slow
+for this game, rather than offering a match that feels broken. Rollback
+later lowers the delay players feel to a fixed 1 or 2 frames, with the rest
+predicted.
+
+**What a `sync` compares.** Every `check` frames the host hashes the
+console's main RAM, the last picture and the core's serialized state
+(protocol.md "sync"), as RetroArch and GGPO compare checksums to find a
+desync. `ram` must match on every machine. `video` matches only when both
+draw in software, since GPUs may round differently. `state` matches only
+when both machines keep the disc at the same path, because SwanStation's
+state names the disc's path; that also means a state sent to a friend would
+tell them where the game is on the other player's disk. Step 4's patches
+give a state for netplay no path. Until then a launcher compares `ram`, and
+`video` only when both players draw in software.
+
+## Lobby, seats and controller ports
+
+The launcher's lobby has seats for Player 1 to 4. Each seat is held by one
+controller on one PC. For a PS1 game:
+
+- Player 1 is controller port 1 and Player 2 is port 2. Seats 3 and 4 show as
+  *Not in this game*: version 1 keeps SwanStation's Multitap off (its option
+  is one the host fixes), so a PS1 game has two ports. Four players need a
+  later change that lets a lockstep match turn the Multitap on for every
+  player at boot.
+- The match host's launcher assigns seats, and every launcher builds the same
+  `step` for each frame from all seats' input: port 1's input from whoever
+  holds seat 1, wherever they are. A PC can hold both seats (couch co-op) or
+  one, so a local second player and an online friend are the same thing to
+  the host.
+- How many ports are connected is part of each step (`ports` has one or two
+  entries), so a second player joining or leaving takes effect at the same
+  frame on both machines. `connectedPorts` is refused in lockstep for that
+  reason.
+- Pausing from the PS menu during a match pauses for both players: the
+  launcher stops sending steps and tells the friend's launcher, which does the
+  same. The host itself needs nothing more; it simply waits.
+
+## NAT and relays
+
+Nothing new is needed. The launcher reuses AnyTogether's rooms for the
+invitation and the WebRTC data channel it already uses for PS1 and PS2 online
+play: a direct path when the two PCs can reach each other, and the TURN relay
+when they cannot. The lobby shows which one it got. Input is small (one
+frame's input for two ports is under 30 bytes, and the input wire sends up to
+eight frames in one 108-byte packet), so a relay carries it easily. The one
+large transfer, the state a friend joins a running game from (step 4), is
+sent once over the reliable channel. Relay use and its traffic policy remain
+AnyTogether's decision, as for the launcher's existing online play.
+
 ## Steps
 
 Each step is a capability of its own, with its tests, and changes the
@@ -191,9 +298,10 @@ identity when it adds a SwanStation patch:
 
 1. `coreIdentity`: built (above).
 2. `gameTiming`: built ("Frame rate", above).
-3. `ps1Lockstep`: the game runs one frame for each `step` the launcher sends,
-   with exactly the input in it, and sends hashes of what chosen frames left
-   behind (`sync`), so two players' launchers can compare them.
+3. `ps1Lockstep`: built ("Lockstep first, rollback after", above). The game
+   runs one frame for each `step` the launcher sends, with exactly the input
+   in it, and sends hashes of what chosen frames left behind (`sync`), so two
+   players' launchers can compare them.
 4. `saveState` and `loadState`, with the SwanStation patches a state needs
    to bring back everything that affects later frames, so a friend can join
    a running game from the other player's state, and the launcher can keep
@@ -212,8 +320,9 @@ identity when it adds a SwanStation patch:
 - `host_test.py` `game_timing` checks with the test core that
   `status.timing` is 60 and `ntsc` for its NTSC game, 50 and `pal` for its
   PAL game, and 50 and `ntsc` once a game has switched to 50 while it runs;
-  that a game runs no faster than that rate; and that it is `null` for a
-  core that did not load.
+  that a game runs no faster than that rate, also 100 paced lockstep steps
+  of the PAL game; that a game started in lockstep reports its timing before
+  its first step; and that it is `null` for a core that did not load.
 - `real_core.py` checks SwanStation's `status.timing` on an auto-detected
   console (`ntsc` or `pal`, about 50 or 60) and on a PAL console running a
   program that sets a PAL video mode (`pal`, about 50), and that the game
@@ -223,3 +332,25 @@ identity when it adds a SwanStation patch:
   computes, in the `real-core` workflow on every system and in the `release`
   workflow on each zip; `real-core`'s `same-core` job checks that all four
   systems report the same one.
+- [`tests/lockstep_test.py`](../tests/lockstep_test.py) runs two hosts as two
+  players' hosts. Both start in lockstep from a cold boot and are fed the
+  same input, which changes every frame on both ports; every frame's `sync`
+  must match.
+  - With the test core (`tests/fake_core.c`, whose "RAM" mixes every input
+    it reads, and whose state holds that RAM) `ram`, `video` and `state` must
+    match. It also checks that a different input on port 2 changes the next
+    `sync.ram`; that lockstep refuses option and port changes and arguments
+    out of range; that leaving lockstep while a frame is being run is
+    answered only once that frame has ended, with nothing of the old frame
+    count after it, and that a game entering lockstep again runs no frame
+    before its first step; that a game that ran on its own and enters
+    lockstep on a duplicate frame gives the hash of the picture it published
+    last; and that a step out of order or outside lockstep is a protocol
+    error. CI runs it on Linux, macOS, Windows and under
+    ThreadSanitizer.
+  - With `--bios` and `--program`, it runs real SwanStation on the OpenBIOS
+    and psyqo `hello` disc that `tests/make_test_disc.py` makes, each player
+    with their own copy of the disc in a different folder. Every frame's
+    main RAM and picture must match; the state is not compared ("What a
+    `sync` compares"). The `real-core` workflow runs it on Linux, macOS and
+    Windows for 600 frames.

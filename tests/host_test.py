@@ -443,8 +443,9 @@ def core_identity(program, core, log):
 def game_timing(program, core, log):
     """status.timing gives the frame rate the host paces the game to and the core's region: the fake
     core's NTSC game at 60, its PAL game at 50, and a game that switches to 50 through
-    SET_SYSTEM_AV_INFO while it runs. A paced game publishes no more frames a second than that, the
-    timing stays once the game has ended, and it is null for a core that did not load."""
+    SET_SYSTEM_AV_INFO while it runs. A paced game, on its own or in lockstep, publishes no more frames
+    a second than that, the timing stays once the game has ended, it is known before a game started in
+    lockstep runs its first step, and it is null for a core that did not load."""
     session = Session(program, core, log)
     try:
         for options, timing in (({}, {'fps': 60.0, 'region': 'ntsc'}),
@@ -479,6 +480,25 @@ def game_timing(program, core, log):
         status = session.wait(lambda s: s['ended'], 5)
         if status.get('timing') != {'fps': 50.0, 'region': 'ntsc'}:
             raise c.Failed(f'an ended game that had switched to 50 Hz gave timing {status.get("timing")!r}')
+        session.call('release')
+
+        pal = {'fps': 50.0, 'region': 'pal'}
+        session.start(options={'fake_region': 'pal'}, lockstep={'check': 1})
+        status = session.wait(lambda s: s and s.get('timing') is not None, 10)
+        if status['timing'] != pal or status['ready']:
+            raise c.Failed(f'a PAL game waiting for its first step gave {status}')
+        steps = 100
+        began = time.monotonic()
+        for frame in range(steps):
+            session.host.send_message({'type': 'step', 'frame': frame, 'ports': [
+                {'buttons': 0, 'leftX': 0, 'leftY': 0, 'rightX': 0, 'rightY': 0}]})
+        session.read(lambda m: m.get('type') == 'sync' and m['frame'] == steps - 1, 30)
+        took = time.monotonic() - began
+        print(f'      {steps} paced lockstep steps of a PAL game: {took:.2f} s')
+        if took < 0.95 * (steps - 1) / 50:
+            raise c.Failed(f'{steps} paced lockstep steps of a 50 Hz game took {took:.2f} s')
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
         session.call('release')
 
         session.call('start', {'core': session.paths['disc'], 'disc': session.paths['disc'],
