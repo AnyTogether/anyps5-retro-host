@@ -3,13 +3,14 @@
 
 # How the host is put together
 
-The host implements [protocol version 1](protocol.md) with the `ps1`
-capability. It is a small C++17 program with three threads:
+The host implements [protocol version 1](protocol.md) with the `ps1`,
+`coreIdentity` and `gameTiming` capabilities. It is a small C++17 program
+with three threads:
 
 | Thread | Does |
 | --- | --- |
 | Control (`main`) | Reads each message, answers calls and pings in order, and enforces the connection's order rules |
-| Game | Started once the `start` reply is sent. Opens the core and the disc, then `retro_init`, `retro_load_game` and `retro_run` paced to the core's frame rate. Publishes frames and sends `ring`, `frame` and `rumble` |
+| Game | Started once the `start` reply is sent. Opens the core and the disc, then `retro_init`, `retro_load_game` and `retro_run` paced to the core's frame rate. `ApplyTiming` takes the core's `timing.fps` and `retro_get_region` once the game has loaded and again between frames after `SET_SYSTEM_AV_INFO`, also while the game is paused, so pacing and `status.timing` use the same rate (60 when the core gives none above 1 and below 1000). Publishes frames and sends `ring`, `frame` and `rumble` |
 | Watch | Every 100 ms: the 5 s write limit, the stall and first-frame game limits, the `stop` limit, and the 10 s limit for leaving |
 
 On Linux and macOS a fourth thread waits for `SIGTERM` (sent by
@@ -277,7 +278,13 @@ A crash gives none of these, so the tests expect the exact code.
   (a binding of the old framebuffer must have moved to the new one), and when
   the host changed any it logs `[fake] The host changed the core's OpenGL
   state ...` and asks the host to shut the game down, which every OpenGL test
-  then sees as a game that ended by itself.
+  then sees as a game that ended by itself. A game started with the
+  `fake_region` option at `pal` runs at 50 frames a second and answers
+  `RETRO_REGION_PAL`, and a `fake-refresh-50` file makes an NTSC game switch
+  to 50 through `SET_SYSTEM_AV_INFO` after a frame, as SwanStation does when
+  a game changes its video mode. It still reads `fake_region` every frame,
+  so `restart_option` sees the host keep a restart option's new value from
+  the running game.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
   not. Its fake launcher checks every `ring` (its size and the growth rule)
   and every `frame` (the newest slot's epoch is the one `start` returned, and
@@ -289,6 +296,11 @@ A crash gives none of these, so the tests expect the exact code.
     the environment variable `FAKE_CORE_VERSION`, passed as it is when it is
     printable ASCII of at most 256 bytes and as `""` otherwise, kept after the
     game ends, and `null` for a core that did not load;
+  - `status.timing` (`game_timing`): 60 and `ntsc` for the test core's NTSC
+    game, 50 and `pal` for its PAL game, and 50 and `ntsc` after the game
+    switches to 50 while it runs, each kept after the game ends; the frames a
+    second the game publishes over 3 seconds, which must not pass that rate
+    by more than 5%; and `null` for a core that did not load;
   - a core that is not a library and a missing disc, each ending the game
     with `errorCode` `core` or `disc`;
   - a playlist saved in Latin-1, whose labels and paths reach `status` as
@@ -369,7 +381,9 @@ A crash gives none of these, so the tests expect the exact code.
   so). With `--expect-core-version`, which both workflows pass with the value
   [`tools/core_identity.py`](../tools/core_identity.py) computes, `welcome`
   must list `coreIdentity` and `status.core` must be `SwanStation` with that
-  version; `--core-identity-out` writes `status.core`, and `real-core.yml`'s
+  version. It checks `status.timing` on the auto-detected console: region
+  `ntsc` or `pal`, a frame rate of about 50 or 60, and no more frames in 10
+  seconds than that rate allows. `--core-identity-out` writes `status.core`, and `real-core.yml`'s
   `same-core` job checks that Windows, both Linux runners and macOS wrote the
   same one. With `--expect-opengl`, which `real-core.yml` passes on Linux and macOS, the test also
   fails when the host made no OpenGL context, so neither system can slip back
@@ -380,8 +394,11 @@ A crash gives none of these, so the tests expect the exact code.
   the screen blue and only its top-left corner red; the test checks those
   colours near all four corners, which a picture turned upside down, mirrored
   or with red and blue swapped fails. The second game also makes a second
-  OpenGL context in the same host. The test then checks a clean `stop` and
-  exit, and keeps the last picture (`--picture`) as a workflow artifact. No
+  OpenGL context in the same host. A third game runs the same program with
+  a PAL video mode (`corner_program(pal=True)`, GP1(08h) bit 3) on a console
+  set to PAL: it must report `pal` and about 50 frames a second, and publish
+  at least 50 frames, and no more than that rate allows, in 5 seconds. The
+  test then checks a clean `stop` and exit, and keeps the last picture (`--picture`) as a workflow artifact. No
   Sony BIOS or game is used.
 - [`tests/fake_host.py`](../tests/fake_host.py) is the fake host of
   protocol.md "Fixtures", for testing a launcher; see below.

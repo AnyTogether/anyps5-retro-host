@@ -28,7 +28,8 @@
         "hostVersion": "1.0.0",
         "capabilities": [
           "ps1",
-          "coreIdentity"
+          "coreIdentity",
+          "gameTiming"
         ],
         "pixelFormat": "rgba8"
       },
@@ -202,6 +203,14 @@
             "activeValue": "4",
             "restart": false
           }
+        },
+        "core": {
+          "name": "SwanStation",
+          "version": "anyps5-1-0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "timing": {
+          "fps": 59.81733322143555,
+          "region": "ntsc"
         }
       }
     },

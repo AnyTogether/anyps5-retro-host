@@ -25,7 +25,8 @@
         "hostVersion": "1.0.0",
         "capabilities": [
           "ps1",
-          "coreIdentity"
+          "coreIdentity",
+          "gameTiming"
         ],
         "pixelFormat": "bgra8"
       },
