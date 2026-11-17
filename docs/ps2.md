@@ -289,8 +289,10 @@ All of it is behind the `ps2` capability ([protocol.md](protocol.md)
 ## PS2 online play
 
 Not part of this work, and nothing here decides it. PS1 online play is itself
-still a proposal on the maintainers' side ([netplay.md](netplay.md)). These
-are the known obstacles for PS2, for whoever takes it up:
+still a proposal on the maintainers' side ([netplay.md](netplay.md)). The
+host's lockstep (capability `ps1Lockstep`) is for PS1 games only: it refuses
+a PS2 game, at `start` and while it runs (protocol.md "Lockstep"). These are
+the known obstacles for PS2, for whoever takes it up:
 
 1. **No proof of determinism in CI.** Every PS1 claim rests on two real cores
    fed the same input in CI. With no free PS2 BIOS, the same tests could only

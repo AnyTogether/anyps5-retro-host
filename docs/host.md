@@ -4,13 +4,13 @@
 # How the host is put together
 
 The host implements [protocol version 1](protocol.md) with the `ps1`,
-`coreIdentity`, `gameTiming` and `ps2` capabilities ([ps2.md](ps2.md) for
-PS2). It is a small C++17 program with three threads:
+`coreIdentity`, `gameTiming`, `ps2` ([ps2.md](ps2.md) for PS2) and
+`ps1Lockstep` capabilities. It is a small C++17 program with three threads:
 
 | Thread | Does |
 | --- | --- |
 | Control (`main`) | Reads each message, answers calls and pings in order, and enforces the connection's order rules |
-| Game | Started once the `start` reply is sent. Opens the core and the disc, then `retro_init`, `retro_load_game` and `retro_run` paced to the core's frame rate. `ApplyTiming` takes the core's `timing.fps` and `retro_get_region` once the game has loaded and again between frames after `SET_SYSTEM_AV_INFO`, also while the game is paused, so pacing and `status.timing` use the same rate (60 when the core gives none above 1 and below 1000). Publishes frames and sends `ring`, `frame` and `rumble` |
+| Game | Started once the `start` reply is sent. Opens the core and the disc, then `retro_init`, `retro_load_game` and `retro_run` paced to the core's frame rate, or in lockstep one `retro_run` per step. `ApplyTiming` takes the core's `timing.fps` and `retro_get_region` once the game has loaded and again between frames after `SET_SYSTEM_AV_INFO`, also while the game is paused, so pacing and `status.timing` use the same rate (60 when the core gives none above 1 and below 1000). Publishes frames and sends `ring`, `frame`, `rumble` and `sync`. It marks each frame (`in_frame_`), and the control thread's `lockstep` calls wait on a condition variable for the frame to end, so the change falls between two frames |
 | Watch | Every 100 ms: the 5 s write limit, the stall and first-frame game limits, the `stop` limit, and the 10 s limit for leaving |
 
 On Linux and macOS a fourth thread waits for `SIGTERM` (sent by
@@ -23,7 +23,8 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | --- | --- |
 | [`src/main.cpp`](../src/main.cpp) | The command line, the process setup, then the host |
 | [`src/host.cpp`](../src/host.cpp) | The protocol: `hello`, the order rules, every method's argument checks and replies, and the limits |
-| [`src/game.cpp`](../src/game.cpp) | One loaded game: the libretro callbacks, core options, disc control, the memory card, input, rumble and pixel conversion |
+| [`src/game.cpp`](../src/game.cpp) | One loaded game: the libretro callbacks, core options, disc control, the memory card, input, rumble, pixel conversion, and lockstep: the queue of steps, the frame fence, pacing and the `sync` hashes. The picture's hash is taken when a check needs it, from the last picture published, which the conversion buffer holds until the next one, so a check after frames run outside lockstep or after a duplicate frame hashes the picture on screen, and a picture no check needs is not hashed |
+| [`src/hash.h`](../src/hash.h), [`src/hash.cpp`](../src/hash.cpp) | The `sync` hashes: 64-bit FNV-1a, a run of zero bytes hashed as a power of the FNV prime (the same value, without a byte at a time), and the used length of a state buffer, found from its end 8 bytes at a time. A check clears and hashes byte by byte only the part of the core's state buffer the state fills (about a third of SwanStation's 11 MiB) |
 | [`src/resolution.cpp`](../src/resolution.cpp) | Which internal resolutions a GPU game is offered (see "Resolution limits" below) |
 | [`src/ring.cpp`](../src/ring.cpp) | The frame ring writer: the header from protocol.md's byte table, slot choice, and capped doubling when a frame needs more room |
 | [`src/json.cpp`](../src/json.cpp) | A strict JSON reader (duplicate keys, found by sorting an object's keys, lone surrogates, invalid UTF-8 and non-finite numbers are errors) and a writer that sends every string as valid UTF-8, with U+FFFD for each sequence that is not |
@@ -166,8 +167,10 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   start. An option counts toward `graphicsPending` only once the core has asked
   for it.
 - **Options kept at SwanStation's default and not listed:** the memory card
-  options (the host keeps memory card 1 itself, and SwanStation formats and
-  writes over its own card files when it cannot read them), multitap (version 1
+  options (the host keeps memory card 1 itself, or in a game started in
+  lockstep leaves it the empty card SwanStation formats in memory, card 2 is
+  none, and SwanStation formats and writes over its own card files when it
+  cannot read them), multitap (version 1
   has controller ports 1 and 2 only), and the log level (the host finds a
   missing BIOS in SwanStation's information messages).
 - **activeValue** is the value the host gives the core. SwanStation's own
@@ -235,6 +238,11 @@ A crash gives none of these, so the tests expect the exact code.
   playlists that mix absolute and relative names and hold the lines
   SwanStation skips or keeps (one-character entries, a byte order mark,
   every C whitespace).
+- `hash_test` ([`tests/hash_test.cpp`](../tests/hash_test.cpp)) checks
+  FNV-1a against published values, that a run of zeros hashed at once is
+  the same as byte by byte, and the used length and zero-tail hash of
+  buffers of every size up to 40 bytes and of one the size of SwanStation's
+  state.
 - `resolution_test` checks which scales [`src/resolution.cpp`](../src/resolution.cpp)
   offers for a geometry and a limit, and which value it moves to.
 - [`tests/conformance.py`](../tests/conformance.py) is the fake launcher of
@@ -271,7 +279,10 @@ A crash gives none of these, so the tests expect the exact code.
   largest geometry 1024 × 512 times the scale), and tells the host of a new
   scale through `SET_SYSTEM_AV_INFO` before the next frame. `fake-hold-load`
   and `fake-hold-reset` files make it wait after reading the scale in
-  `retro_load_game` and in `context_reset`, so a test can act between them.
+  `retro_load_game` and in `context_reset`, so a test can act between them;
+  `fake-hold-run` makes it wait inside `retro_run`, so a test can act while a
+  frame is being run, and `fake-dupe` makes its software frames duplicates
+  (no pixels).
   Its `context_reset` binds a pixel pack buffer and a renderbuffer of its own
   and sets `GL_PACK_ALIGNMENT` to 2; every frame, and after
   `SET_SYSTEM_AV_INFO`, it checks those and the framebuffer bindings it left
@@ -343,15 +354,16 @@ A crash gives none of these, so the tests expect the exact code.
   - Windows: a library the core loads by name is not taken from the host's
     working directory;
   - a PS2 game (`ps2_game`, [ps2.md](ps2.md)): `start` refuses another
-    `console`, a PS1 disc, an `.m3u`, `initialDisc` and a PS2 disc started as
-    PS1; a PS2 game with no BIOS ends with `bios` and `No PS2 BIOS was
-    found.`, one the core cannot load with `core`, both with `console`
+    `console`, a PS1 disc, an `.m3u`, `initialDisc`, `lockstep` and a PS2 disc
+    started as PS1; a PS2 game with no BIOS ends with `bios` and `No PS2 BIOS
+    was found.`, one the core cannot load with `core`, both with `console`
     `ps2`; a running one gets LRPS2's DualShock 2 on each connected port and
     the host's own memory card, renderer, multitap, USB camera, DEV9 hard
     disk, hard disk size and DEV9 ethernet values whatever `start.options`
     asks, none of which `status.options` lists, and `pcsx2_bios` is listed
-    with `restart` `true`; and a PS1 game after it in the same host is
-    `console` `ps1` with SwanStation's analog controller;
+    with `restart` `true`; the `lockstep` method returns `false` for it; and a
+    PS1 game after it in the same host is `console` `ps1` with SwanStation's
+    analog controller;
   - a core for the other console (`core_for_other_console`): the test core
     reporting `ParaLLEl PS2` for a PS1 game, or `SwanStation` or
     `SwanStation Debug` for a PS2 game, ends with `core` and no `status.core`;
@@ -386,6 +398,41 @@ A crash gives none of these, so the tests expect the exact code.
   `wrong_parent` starts is not traced: it exits before it reads anything.
   `gpu_network` traces its own host into a file of its own, with or without
   `--strace`.
+- [`tests/lockstep_test.py`](../tests/lockstep_test.py) runs two hosts in
+  [lockstep](protocol.md#lockstep), as two online players' hosts would be
+  ([netplay.md](netplay.md) "Tests"): both start the game with
+  `start.lockstep` and are fed the same input, every button and the left stick
+  changing every frame on both ports, and every frame's `sync` must match.
+  Each player's saves folder holds a memory card of their own, different from
+  the other's, which the games must not load and which must be as it was, the
+  only file there, once the hosts have exited.
+  With the fake core it also checks that a different input on port 2 changes
+  the next `sync.ram`, that a sync can carry `ram` alone (`hashes`), that
+  lockstep refuses `option`, `connectedPorts` and `lockstep` arguments out of
+  range, and its protocol errors; and, holding the
+  fake core inside a frame (`fake-hold-run`), that leaving lockstep is
+  answered only once that frame has ended, that nothing of the old frame count
+  follows, and that after entering again the console publishes no frame until
+  a step comes; and that a game that ran on its own and enters lockstep on a
+  duplicate frame (`fake-dupe`) gives as `video` the hash of the newest
+  picture in its frame ring, computed by the test. It reads every host in turn
+  while it waits, since an unread host exits at the 5-second write limit. With
+  `--bios` and `--program` it runs the real SwanStation on the
+  `make_test_disc.py` disc, each player with their own copy in a folder of its
+  own, which the `real-core` workflow does for 600 frames on each system;
+  there `ram` and `video` must match, and `state` is not compared, since
+  SwanStation's state names the disc's path. `--syncs-out` writes that cold
+  boot's syncs and `status.hardware`, and `real-core.yml`'s `same-core` job
+  compares the four systems' files with `--same`: every frame's `ram` on all
+  of them must match, and its `video` between the systems that draw in
+  software; a `video` that differs between systems drawing with OpenGL is
+  printed as a warning, since other GPUs and drivers may round differently
+  ([netplay.md](netplay.md) "Lockstep first, rollback after" says why Windows'
+  picture differs there). For lockstep the fake core keeps four words of
+  "system RAM" (the frame count, a mix of its memory card at the first frame,
+  as a PS1 game reads the card at boot, and of every input it read, and the
+  last buttons of each port) and serializes them with its rumble state and
+  memory card.
 - [`tests/ring_access.c`](../tests/ring_access.c) gives the fake launcher the
   sequentially consistent loads and stores of `latest` and `reading` that
   protocol.md asks for; Python cannot make them on shared memory itself. It

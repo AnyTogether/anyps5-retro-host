@@ -23,6 +23,7 @@ constexpr int64_t kStallMs = 10000;
 constexpr int64_t kFirstFrameMs = 60000;
 constexpr int64_t kStopLimitMs = 5000;
 constexpr int64_t kLeaveLimitMs = 10000;
+constexpr int64_t kMaxFrame = 4294967295LL;
 
 #ifdef _WIN32
 constexpr bool kWindows = true;
@@ -57,6 +58,59 @@ std::string NeedPath(const Json& args, const char* field) {
   return value->AsString();
 }
 
+// One controller port's state as input and step give it: buttons and the four stick axes.
+bool ParsePort(const Json& message, PortInput& input) {
+  const Json* buttons = message.Find("buttons");
+  if (!buttons) return false;
+  const auto button_bits = buttons->Integer(0, 65535);
+  if (!button_bits) return false;
+  input.buttons = static_cast<uint16_t>(*button_bits);
+  const char* const axes[] = {"leftX", "leftY", "rightX", "rightY"};
+  for (int i = 0; i < 4; ++i) {
+    const Json* axis = message.Find(axes[i]);
+    if (!axis) return false;
+    const auto value = axis->Integer(-32768, 32767);
+    if (!value) return false;
+    input.sticks[i] = static_cast<int16_t>(*value);
+  }
+  return true;
+}
+
+LockstepConfig NeedLockstep(const Json& args, const std::string& where) {
+  Need(args.IsObject(), where + " must be an object.");
+  const Json* check = args.Find("check");
+  Need(check != nullptr, where + ".check must be an integer from 1 to 3600.");
+  const auto every = check->Integer(1, 3600);
+  Need(every.has_value(), where + ".check must be an integer from 1 to 3600.");
+  LockstepConfig config;
+  config.check = static_cast<uint32_t>(*every);
+  if (const Json* paced = args.Find("paced")) {
+    Need(paced->IsBool(), where + ".paced must be true or false.");
+    config.paced = paced->AsBool();
+  }
+  if (const Json* hashes = args.Find("hashes")) {
+    const std::string wrong = where + ".hashes must list one to three of \"ram\", \"video\" and \"state\", each once.";
+    Need(hashes->IsArray() && !hashes->AsArray().empty(), wrong);
+    config.ram = config.video = config.state = false;
+    for (const Json& name : hashes->AsArray()) {
+      bool* wanted = nullptr;
+      if (name.IsString() && name.AsString() == "ram") wanted = &config.ram;
+      else if (name.IsString() && name.AsString() == "video") wanted = &config.video;
+      else if (name.IsString() && name.AsString() == "state") wanted = &config.state;
+      Need(wanted != nullptr && !*wanted, wrong);
+      *wanted = true;
+    }
+  }
+  return config;
+}
+
+std::string Hex(const std::optional<uint64_t>& value) {
+  if (!value) return std::string();
+  char text[17];
+  std::snprintf(text, sizeof text, "%016llx", static_cast<unsigned long long>(*value));
+  return text;
+}
+
 }  // namespace
 
 int Host::Run() {
@@ -84,6 +138,7 @@ Host::Outcome Host::Handle(const Json& message) {
   if (kind == "hello") return Outcome::kProtocolError;
   if (kind == "call") return Call(message);
   if (kind == "input") return Input(message);
+  if (kind == "step") return Step(message);
   if (kind == "ping") {
     const Json* id = message.Find("id");
     if (!id || !id->Integer(1, kMaxId)) return Outcome::kProtocolError;
@@ -124,7 +179,7 @@ Host::Outcome Host::Hello(const Json& message) {
                        {"version", 1},
                        {"pid", ProcessId()},
                        {"hostVersion", ANYPS5_RETRO_HOST_VERSION},
-                       {"capabilities", JsonArray{"ps1", "coreIdentity", "gameTiming", "ps2"}},
+                       {"capabilities", JsonArray{"ps1", "coreIdentity", "gameTiming", "ps2", "ps1Lockstep"}},
                        {"pixelFormat", format_name}}));
   return Outcome::kContinue;
 }
@@ -157,23 +212,33 @@ Host::Outcome Host::Call(const Json& message) {
 
 Host::Outcome Host::Input(const Json& message) {
   const Json* port = message.Find("port");
-  const Json* buttons = message.Find("buttons");
-  if (!port || !buttons) return Outcome::kProtocolError;
+  if (!port) return Outcome::kProtocolError;
   const auto port_index = port->Integer(0, 1);
-  const auto button_bits = buttons->Integer(0, 65535);
-  if (!port_index || !button_bits) return Outcome::kProtocolError;
   PortInput input;
-  input.buttons = static_cast<uint16_t>(*button_bits);
-  const char* const axes[] = {"leftX", "leftY", "rightX", "rightY"};
-  for (int i = 0; i < 4; ++i) {
-    const Json* axis = message.Find(axes[i]);
-    const auto value = axis ? axis->Integer(-32768, 32767) : std::nullopt;
-    if (!value) return Outcome::kProtocolError;
-    input.sticks[i] = static_cast<int16_t>(*value);
-  }
-  inputs_[*port_index] = input;
-  if (auto game = CurrentGame()) game->SetInput(static_cast<unsigned>(*port_index), input);
+  if (!port_index || !ParsePort(message, input)) return Outcome::kProtocolError;
+  const unsigned index = static_cast<unsigned>(*port_index);
+  inputs_[index] = input;
+  if (auto game = CurrentGame()) game->SetInput(index, input);
   return Outcome::kContinue;
+}
+
+Host::Outcome Host::Step(const Json& message) {
+  const Json* frame = message.Find("frame");
+  const Json* ports = message.Find("ports");
+  if (!frame) return Outcome::kProtocolError;
+  const auto number = frame->Integer(0, kMaxFrame);
+  if (!number || !ports || !ports->IsArray() || ports->AsArray().empty() || ports->AsArray().size() > 2) {
+    return Outcome::kProtocolError;
+  }
+  StepInput input;
+  input.connected = static_cast<unsigned>(ports->AsArray().size());
+  for (size_t port = 0; port < input.connected; ++port) {
+    if (!ParsePort(ports->AsArray()[port], input.ports[port])) return Outcome::kProtocolError;
+  }
+  const auto game = CurrentGame();
+  if (!game) return Outcome::kProtocolError;
+  return game->Step(static_cast<uint64_t>(*number), input) == StepResult::kRefused ? Outcome::kProtocolError
+                                                                                  : Outcome::kContinue;
 }
 
 Host::Reply Host::Dispatch(const std::string& method, const Json& args) {
@@ -213,6 +278,12 @@ Host::Reply Host::Dispatch(const std::string& method, const Json& args) {
     muted_ = muted->AsBool();
     audio_.SetVolume(volume_, muted_);
     return Result(Json(nullptr));
+  }
+  if (method == "lockstep") {
+    if (args.IsBool() && !args.AsBool()) return Result(Json(game ? game->LeaveLockstep() : false));
+    const LockstepConfig config = NeedLockstep(args, "lockstep");
+    const auto frame = game ? game->Lockstep(config) : std::nullopt;
+    return Result(frame ? Json(JsonObject{{"frame", *frame}}) : Json(false));
   }
   if (method == "stop") {
     Need(args.IsNull(), "stop takes no argument.");
@@ -279,6 +350,10 @@ Host::Reply Host::Start(const Json& args) {
     Need(playlist, "initialDisc needs an .m3u disc.");
     config.initial_disc = static_cast<unsigned>(*index);
   }
+  if (const Json* lockstep = args.Find("lockstep")) {
+    Need(!ps2, "start.lockstep is for PS1 games.");
+    config.lockstep = NeedLockstep(*lockstep, "start.lockstep");
+  }
   if (CurrentGame()) return Failure("busy", "A game is already loaded.");
   if (games_started_ >= kMaxId) return Failure("start", "This host has started its last game.");
   config.epoch = games_started_ + 1;
@@ -315,6 +390,17 @@ FrameResult Host::OnFrame(const uint8_t* pixels, uint32_t width, uint32_t height
 
 void Host::OnRumble(unsigned port, uint16_t strong, uint16_t weak) {
   Send(Json(JsonObject{{"type", "rumble"}, {"port", port}, {"strong", strong}, {"weak", weak}}));
+}
+
+void Host::OnSync(const SyncPoint& point) {
+  JsonObject sync{{"type", "sync"}, {"frame", point.frame}};
+  const std::pair<const char*, const std::optional<uint64_t>&> hashes[] = {
+      {"ram", point.ram}, {"video", point.video}, {"state", point.state}};
+  for (const auto& [name, hash] : hashes) {
+    if (hash) sync.emplace_back(name, Hex(hash));
+    else sync.emplace_back(name, nullptr);
+  }
+  Send(Json(std::move(sync)));
 }
 
 void Host::Send(const Json& message, NativeHandle memory) {

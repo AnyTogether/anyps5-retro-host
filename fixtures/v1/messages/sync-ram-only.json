@@ -1,0 +1,14 @@
+{
+  "description": "A sync of a game asked for the RAM hash alone (lockstep hashes): the others are null.",
+  "from": "host",
+  "message": {
+    "type": "sync",
+    "frame": 270,
+    "ram": "8f67e12ab88b0626",
+    "video": null,
+    "state": null
+  },
+  "anyValueFor": [
+    "ram"
+  ]
+}
