@@ -109,8 +109,9 @@ constexpr const char* kStartOnlyOptions[] = {"swanstation_Console_Region", "swan
                                              "swanstation_BIOS_PatchFastBoot"};
 // Options version 1 keeps at SwanStation's default and does not list:
 // - the memory card options: the host keeps memory card 1 itself (<disc>.srm, protocol.md
-//   "start"), and SwanStation's own card files are formatted and written over when it cannot read
-//   them, out of the host's reach;
+//   "start"), or, in a game started in lockstep, leaves it the empty card SwanStation formats in
+//   memory, and SwanStation's own card files are formatted and written over when it cannot read
+//   them, out of the host's reach. Card 2 stays at its default, no card;
 // - multitap, which moves controller port 2 away from the two ports protocol.md defines;
 // - the log level, since the host finds a missing BIOS in SwanStation's information messages.
 constexpr const char* kFixedOptions[] = {"swanstation_MemoryCards_Card1Type", "swanstation_MemoryCards_Card2Type",
@@ -351,9 +352,11 @@ void Game::RunGame() {
   set_port(0, PadDevice());
   set_port(1, RETRO_DEVICE_NONE);
 
+  // A game started in lockstep keeps the card the core made: the same on every host with the same
+  // core, so no player's own card reaches the match (protocol.md "Lockstep").
   void* card = Get<void* (*)(unsigned)>("retro_get_memory_data")(RETRO_MEMORY_SAVE_RAM);
   const size_t card_size = Get<size_t (*)(unsigned)>("retro_get_memory_size")(RETRO_MEMORY_SAVE_RAM);
-  if (card && card_size) {
+  if (card && card_size && !config_.lockstep) {
     const std::string path = CardPath();
     if (const auto saved = ReadWholeFile(path); saved && saved->size() == card_size) {
       std::memcpy(card, saved->data(), card_size);
@@ -592,7 +595,7 @@ std::string Game::CardPath() const {
 bool Game::SaveCard(bool always) {
   void* card = Get<void* (*)(unsigned)>("retro_get_memory_data")(RETRO_MEMORY_SAVE_RAM);
   const size_t card_size = Get<size_t (*)(unsigned)>("retro_get_memory_size")(RETRO_MEMORY_SAVE_RAM);
-  if (!card || !card_size || card_unreadable_) return true;
+  if (!card || !card_size || card_unreadable_ || config_.lockstep) return true;
   std::string now(static_cast<const char*>(card), card_size);
   if (now == card_ && !always) return true;
   if (!CreateDirectories(config_.saves) || !WriteFileAtomically(CardPath(), now)) return false;
@@ -1265,21 +1268,27 @@ Game::NextStep Game::TakeStep(int64_t wait_ms) {
 }
 
 void Game::FinishStep(uint64_t frame) {
+  LockstepConfig config;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!lockstep_ || frame % lockstep_->check != 0) return;
+    config = *lockstep_;
   }
   SyncPoint point;
   point.frame = frame;
-  point.video = VideoHash();
-  const auto ram = Get<void* (*)(unsigned)>("retro_get_memory_data")(RETRO_MEMORY_SYSTEM_RAM);
-  const size_t ram_size = Get<size_t (*)(unsigned)>("retro_get_memory_size")(RETRO_MEMORY_SYSTEM_RAM);
-  if (ram && ram_size) point.ram = Fnv(ram, ram_size);
-  savestate_context_ = RETRO_SAVESTATE_CONTEXT_ROLLBACK_NETPLAY;
-  if (const std::string* state = Serialize()) {
-    point.state = FnvZeros(state->size() - serialized_used_, Fnv(state->data(), serialized_used_));
+  if (config.video) point.video = VideoHash();
+  if (config.ram) {
+    const auto ram = Get<void* (*)(unsigned)>("retro_get_memory_data")(RETRO_MEMORY_SYSTEM_RAM);
+    const size_t ram_size = Get<size_t (*)(unsigned)>("retro_get_memory_size")(RETRO_MEMORY_SYSTEM_RAM);
+    if (ram && ram_size) point.ram = Fnv(ram, ram_size);
   }
-  savestate_context_ = RETRO_SAVESTATE_CONTEXT_NORMAL;
+  if (config.state) {
+    savestate_context_ = RETRO_SAVESTATE_CONTEXT_ROLLBACK_NETPLAY;
+    if (const std::string* state = Serialize()) {
+      point.state = FnvZeros(state->size() - serialized_used_, Fnv(state->data(), serialized_used_));
+    }
+    savestate_context_ = RETRO_SAVESTATE_CONTEXT_NORMAL;
+  }
   events_.OnSync(point);
 }
 

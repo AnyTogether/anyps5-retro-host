@@ -9,8 +9,9 @@
  * directory) or for none. Setting fake_hang to "yes" makes retro_run never return, as a stuck core
  * would.
  *
- * For lockstep tests its "system RAM" is four 32-bit words: the frame count, a mix of every
- * controller input it has read, and the last buttons of ports 1 and 2. Its serialized state holds
+ * For lockstep tests its "system RAM" is four 32-bit words: the frame count, a mix of the memory
+ * card as it was at the first frame (as a PS1 game reads the card at boot) and of every controller
+ * input it has read, and the last buttons of ports 1 and 2. Its serialized state holds
  * those, the rumble state and the memory card, so a sync's state hash changes when any of them
  * does.
  *
@@ -766,6 +767,9 @@ RETRO_API void retro_run(void) {
       rumbling[port] = cross;
       rumble.set_rumble_state(port, RETRO_RUMBLE_STRONG, cross ? 0xFFFF : 0);
     }
+  }
+  if (frame_count == 0) {
+    for (i = 0; i < sizeof card; ++i) memory[1] = memory[1] * 31u + card[i];
   }
   memory[2] = (uint16_t)input_state(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
   memory[3] = (uint16_t)input_state(1, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);

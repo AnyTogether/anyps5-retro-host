@@ -500,7 +500,12 @@ needs updating. This is not the crash message.
 ### Capabilities
 
 A capability names a group of methods and messages. The launcher MUST NOT use
-a method whose capability the host did not list.
+a method whose capability the host did not list, and MUST NOT send a field or
+a message that a capability adds to a host that did not list it: an older
+host ignores an unknown field and an unknown message type, so it would go on
+as if they had not been sent. In particular, a launcher MUST NOT send
+`start.lockstep` or `step` to a host without `ps1Lockstep`, which would run
+the game on its own while the launcher thinks it is in lockstep.
 
 | Capability | Adds |
 | --- | --- |
@@ -684,10 +689,10 @@ Loads and starts a PS1 game, or, with the `ps2` capability and `console`
 | `core` | path | The SwanStation library the launcher checked; for a PS2 game, LRPS2 (`pcsx2_libretro`) |
 | `disc` | path | A `.cue`, `.chd`, `.pbp` or `.m3u` file; for a PS2 game a `.iso`, `.chd`, `.cso`, `.zso`, `.cue` or `.elf` file, and no `.m3u` |
 | `system` | path | The core's system directory (BIOS files). LRPS2 looks for the PS2 BIOS in `pcsx2/bios` in it ([ps2.md](ps2.md) "The BIOS") |
-| `saves` | path | Where memory cards are kept; the host creates it if needed. Memory card 1 is the file `<disc's name without its extension>.srm` in it, as libretro frontends name it, and is checked for changes every 5 seconds between frames, also while paused, and written whenever the game ends: to a file beside it, flushed to the disk, then renamed over it, so a crash or power cut leaves the old card or the new one. A card file the host cannot read is left as it is and never written over, and `status.cardUnreadable` is `true` |
+| `saves` | path | Where memory cards are kept; the host creates it if needed. Memory card 1 is the file `<disc's name without its extension>.srm` in it, as libretro frontends name it, and is checked for changes every 5 seconds between frames, also while paused, and written whenever the game ends: to a file beside it, flushed to the disk, then renamed over it, so a crash or power cut leaves the old card or the new one. A card file the host cannot read is left as it is and never written over, and `status.cardUnreadable` is `true`. A game started with `lockstep` neither reads nor writes the file ([Lockstep](#lockstep), "The memory card") |
 | `options` | object of strings, optional | Core option values saved by the player, by key, including the internal resolution (`swanstation_GPU_ResolutionScale`). Unknown keys and values are ignored |
 | `initialDisc` | integer 0 to 127, optional | Only for an `.m3u`: the index of the playlist entry to insert at boot. With any other `disc`, and for a PS2 game, it is an `argument` error |
-| `lockstep` | object, optional | Capability `ps1Lockstep`: the game starts in [lockstep](#lockstep), as the `lockstep` method's argument says, and runs not even its first frame before a `step`. For a PS2 game it is an `argument` error |
+| `lockstep` | object, optional | Capability `ps1Lockstep`: the game starts in [lockstep](#lockstep), as the `lockstep` method's argument says, on the host's empty memory card rather than the player's, and runs not even its first frame before a `step`. For a PS2 game it is an `argument` error |
 
 A PS2 game's memory card is the core's own: per LRPS2's source, not yet seen
 in a running game, it keeps card 1 as `<disc's name without its
@@ -927,13 +932,38 @@ launcher does not show an error, and it starts a new host for the next game.
 
 Capability `ps1Lockstep`, for PS1 games only: a PS2 game cannot enter
 lockstep. A game in lockstep runs one frame for each `step` the launcher
-sends, with exactly the input in it, and runs no frame without one. Two
-hosts that start the same game with the same core (the same `status.core`,
-capability `coreIdentity`), BIOS and options, and are given the same steps,
-stay alike frame for frame. Each sends a [`sync`](#sync) with hashes of what
-the frame left behind, so the launchers can compare them. The host opens no
-socket ("Network" above); how a match would use lockstep, and what would
-carry it between players, is part of [netplay.md](netplay.md)'s proposal.
+sends, with exactly the input in it, and runs no frame without one. Each
+sends a [`sync`](#sync) with hashes of what the frame left behind, so the
+launchers can compare them. The host opens no socket ("Network" above); how
+a match would use lockstep, and what would carry it between players, is part
+of [netplay.md](netplay.md)'s proposal.
+
+Two hosts that start a game with `start.lockstep` stay alike frame for frame
+when everything that reaches the console is the same on both. The launchers
+must see that both have the same:
+
+- core: `status.core` (capability `coreIdentity`);
+- BIOS file;
+- `start.options` and `initialDisc`;
+- disc image file, byte for byte. The same game is not enough: a `.chd`
+  and a `.cue` and `.bin` of the same disc, or two rips of it, need not read
+  alike;
+- `step` for each frame.
+
+The host decides the memory card itself, as below.
+
+**The memory card.** Most PS1 games read the memory card at boot, so it is
+an input too. A game started with `start.lockstep` does not load card 1 from
+`saves`, and never writes card 1 there, not even after it leaves lockstep:
+it keeps the card the core makes when the frontend gives it none, in memory
+only, and drops it when the game ends. For SwanStation, whose card options
+the host keeps at their defaults, that is an empty, formatted 128 KiB card 1
+and no card 2, so it is the same byte for byte on two hosts with the same
+`status.core`. A player's own card therefore never reaches a match, and a
+match never writes over it; what a game saves during a match is not kept.
+`status.cardUnreadable` is `false`. A game that enters lockstep through the
+`lockstep` method keeps the card it has, the player's own, and keeps writing
+it to `saves` as before.
 
 Lockstep frames count up from 0, from the moment the game enters lockstep
 (`start.lockstep`, or the `lockstep` method on a running game), and are
@@ -944,14 +974,15 @@ run for a step, so:
   game leaves lockstep;
 - `connectedPorts`, `changeDisc` and `option` return `false`;
 - `pause` still works. A paused game takes steps but runs none until it is
-  resumed;
+  resumed. Since at most 600 steps wait, a launcher stops sending steps
+  while its game is paused;
 - time spent waiting for the next step does not count toward the stall and
   first-frame [game limits](#timeouts), just as time paused does not.
 
 ### lockstep
 
-Argument: `{"check":<integer 1 to 3600>,"paced":<boolean, optional>}`, or
-`false`.
+Argument: `{"check":<integer 1 to 3600>,"paced":<boolean, optional>,
+"hashes":<array, optional>}`, or `false`.
 
 - With an object, the game enters lockstep, or, when it already is in
   lockstep, keeps its frame count and takes the new settings. `check` is how
@@ -959,7 +990,10 @@ Argument: `{"check":<integer 1 to 3600>,"paced":<boolean, optional>}`, or
   `paced` (default `true`) keeps the game to its core's frame rate
   (`status.timing.fps`, capability `gameTiming`) even when steps queue up;
   `false` runs queued steps as fast as the machine can, as a player catching
-  up does. The change takes effect between two frames: the
+  up does. `hashes` (default `["ram","video","state"]`) names the hashes a
+  `sync` carries: one to three of `"ram"`, `"video"` and `"state"`, each at
+  most once; any other value is an `argument` error. The change takes effect
+  between two frames: the
   host waits for the frame being run to end before it replies. Returns
   `{"frame":<integer>}`, the frame the next `step` is for, which is 0 when the
   game has just entered lockstep. Returns `false` for a PS2 game, when the
@@ -1001,7 +1035,8 @@ game that has ended is ignored.
 
 Sent after each lockstep frame whose number is a multiple of `check`, in
 frame order. Each hash is the 64-bit FNV-1a hash of some bytes, as 16
-lowercase hexadecimal digits, or `null` when the core cannot give them:
+lowercase hexadecimal digits, or `null` when the core cannot give them or
+`hashes` left it out:
 
 | Field | The hash of |
 | --- | --- |
@@ -1021,6 +1056,17 @@ only between hosts with the same `hardware`. `state` also differs when the
 core keeps something of the machine in it: SwanStation's state names the disc's path, so two players'
 `state` match only when both keep the disc at the same path
 ([netplay.md](netplay.md) "Lockstep first, rollback after").
+
+**The cost of a check.** The hashes are made on the game's thread, after the
+frame and before the next one, so they take time from it. `ram` reads 2 MiB.
+`video` reads the picture once. `state` serializes the whole console first,
+and with the OpenGL renderer SwanStation's `GPU::DoState` then reads all of
+VRAM back from the GPU, so it costs the most; on a slow PC a check with all
+three can take a large share of a 16.7 ms frame. A desync seldom goes away,
+so a launcher need not check every frame: a `check` of 30 finds one within
+half a second, and `hashes` `["ram"]`, the one hash that must match on
+every machine, spares the state. A `check` of 1 with every hash is for
+tests.
 
 ## Frame ring
 
@@ -1277,4 +1323,8 @@ or a different one.
 in the fixtures against the fields, types, ranges and order in this document.
 In a session, every `status` the host sends has the fields of the
 capabilities its `welcome` listed: `core` with `coreIdentity`, `timing`
-with `gameTiming` and `console` with `ps2`.
+with `gameTiming` and `console` with `ps2`. A launcher sends `start.lockstep`,
+`lockstep` and `step` only to a host that listed `ps1Lockstep`; each `step`
+is for the next lockstep frame, counting from 0 after `start.lockstep` or
+from the frame a `lockstep` reply named; and each `sync` follows the step for
+its frame, in frame order, for a frame that is a multiple of `check`.

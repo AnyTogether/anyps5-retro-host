@@ -1,0 +1,23 @@
+{
+  "description": "A game in lockstep keeps its frame count and from now on sends only the RAM hash in each sync, every 30 frames, as fast as steps come.",
+  "from": "launcher",
+  "message": {
+    "type": "call",
+    "id": 12,
+    "method": "lockstep",
+    "args": {
+      "check": 30,
+      "paced": false,
+      "hashes": [
+        "ram"
+      ]
+    }
+  },
+  "reply": {
+    "type": "reply",
+    "id": 12,
+    "result": {
+      "frame": 240
+    }
+  }
+}

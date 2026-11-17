@@ -88,6 +88,19 @@ LockstepConfig NeedLockstep(const Json& args, const std::string& where) {
     Need(paced->IsBool(), where + ".paced must be true or false.");
     config.paced = paced->AsBool();
   }
+  if (const Json* hashes = args.Find("hashes")) {
+    const std::string wrong = where + ".hashes must list one to three of \"ram\", \"video\" and \"state\", each once.";
+    Need(hashes->IsArray() && !hashes->AsArray().empty(), wrong);
+    config.ram = config.video = config.state = false;
+    for (const Json& name : hashes->AsArray()) {
+      bool* wanted = nullptr;
+      if (name.IsString() && name.AsString() == "ram") wanted = &config.ram;
+      else if (name.IsString() && name.AsString() == "video") wanted = &config.video;
+      else if (name.IsString() && name.AsString() == "state") wanted = &config.state;
+      Need(wanted != nullptr && !*wanted, wrong);
+      *wanted = true;
+    }
+  }
   return config;
 }
 

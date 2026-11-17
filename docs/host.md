@@ -167,8 +167,10 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   start. An option counts toward `graphicsPending` only once the core has asked
   for it.
 - **Options kept at SwanStation's default and not listed:** the memory card
-  options (the host keeps memory card 1 itself, and SwanStation formats and
-  writes over its own card files when it cannot read them), multitap (version 1
+  options (the host keeps memory card 1 itself, or in a game started in
+  lockstep leaves it the empty card SwanStation formats in memory, card 2 is
+  none, and SwanStation formats and writes over its own card files when it
+  cannot read them), multitap (version 1
   has controller ports 1 and 2 only), and the log level (the host finds a
   missing BIOS in SwanStation's information messages).
 - **activeValue** is the value the host gives the core. SwanStation's own
@@ -401,9 +403,13 @@ A crash gives none of these, so the tests expect the exact code.
   ([netplay.md](netplay.md) "Tests"): both start the game with
   `start.lockstep` and are fed the same input, every button and the left stick
   changing every frame on both ports, and every frame's `sync` must match.
+  Each player's saves folder holds a memory card of their own, different from
+  the other's, which the games must not load and which must be as it was, the
+  only file there, once the hosts have exited.
   With the fake core it also checks that a different input on port 2 changes
-  the next `sync.ram`, that lockstep refuses `option`, `connectedPorts` and
-  `lockstep` arguments out of range, and its protocol errors; and, holding the
+  the next `sync.ram`, that a sync can carry `ram` alone (`hashes`), that
+  lockstep refuses `option`, `connectedPorts` and `lockstep` arguments out of
+  range, and its protocol errors; and, holding the
   fake core inside a frame (`fake-hold-run`), that leaving lockstep is
   answered only once that frame has ended, that nothing of the old frame count
   follows, and that after entering again the console publishes no frame until
@@ -423,9 +429,10 @@ A crash gives none of these, so the tests expect the exact code.
   printed as a warning, since other GPUs and drivers may round differently
   ([netplay.md](netplay.md) "Lockstep first, rollback after" says why Windows'
   picture differs there). For lockstep the fake core keeps four words of
-  "system RAM" (the frame count, a mix of every input it read, and the last
-  buttons of each port) and serializes them with its rumble state and memory
-  card.
+  "system RAM" (the frame count, a mix of its memory card at the first frame,
+  as a PS1 game reads the card at boot, and of every input it read, and the
+  last buttons of each port) and serializes them with its rumble state and
+  memory card.
 - [`tests/ring_access.c`](../tests/ring_access.c) gives the fake launcher the
   sequentially consistent loads and stores of `latest` and `reading` that
   protocol.md asks for; Python cannot make them on shared memory itself. It

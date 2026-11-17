@@ -35,10 +35,14 @@ namespace retro_host {
 enum class Console { kPs1, kPs2 };
 
 // How a game in lockstep runs (protocol.md "lockstep"): one frame per step the launcher sends, a
-// sync message every check frames, and, when paced, no faster than the core's frame rate.
+// sync message every check frames with the hashes asked for, and, when paced, no faster than the
+// core's frame rate.
 struct LockstepConfig {
   uint32_t check = 1;
   bool paced = true;
+  bool ram = true;
+  bool video = true;
+  bool state = true;
 };
 
 struct GameConfig {
@@ -66,7 +70,8 @@ struct StepInput {
 };
 
 // What a lockstep frame left behind, as 64-bit FNV-1a hashes: the console's main RAM, the last
-// picture published and the core's serialized state. An absent hash is one the core cannot give.
+// picture published and the core's serialized state. An absent hash is one the core cannot give,
+// or one the launcher did not ask for.
 struct SyncPoint {
   uint64_t frame = 0;
   std::optional<uint64_t> ram;
@@ -194,7 +199,8 @@ class Game {
   void Finish(const std::string& error, const std::string& code);
   void ApplyPendingWork();
   // Writes memory card 1 when it changed since the last write, or always; false when it could
-  // not be written. A card file the host could not read is never written over.
+  // not be written. A card file the host could not read is never written over, and a game started
+  // in lockstep, whose card was never read from the file, never writes it.
   bool SaveCard(bool always = false);
   std::string ResolutionError() const;
   // Offers only the internal resolutions whose frames fit the ring and the GPU's framebuffer, given

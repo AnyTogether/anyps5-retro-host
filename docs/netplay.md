@@ -22,8 +22,8 @@ own tests. [protocol.md](protocol.md) is the contract for each capability once
 it is built.
 
 Built so far: the core build identity (capability `coreIdentity`, `core` in
-protocol.md "status"), which two players' launchers compare before a match;
-the frame rate the host paces the game to and the console's region
+protocol.md "status"), which two players' launchers would compare before a
+match; the frame rate the host paces the game to and the console's region
 (capability `gameTiming`, `timing` in protocol.md "status"), which a
 launcher may use, for example to pace a match; and lockstep (capability
 `ps1Lockstep`, protocol.md "Lockstep"), in which two hosts given the same
@@ -64,10 +64,11 @@ need the same emulator build; and desyncs are found by comparing hashes.
 
 **Proposed: the launcher owns the network. The host never opens a socket.**
 
-- The launcher already has what a match would need: the signed-in account,
-  the friend list, invitations, the lobby, and AnyTogether's WebRTC
-  connection with its TURN relay. PS2 and PS3 online play could use the same
-  transport, so it would stay in one place.
+- The launcher already has the signed-in account and AnyTogether's WebRTC
+  data channels, which today carry PS4 and PS5 online play and Share Play.
+  Neither launcher has PS1 or PS2 online play on its main branch. A PS1
+  match's invitation, lobby and input, and PS2 and PS3 online play later,
+  could use the same transport, so it would stay in one place.
 - The host runs third-party emulator code. Keeping it off the network keeps
   protocol.md's rule ("Network"), which CI enforces by tracing the host's
   network calls, and means a flaw in a core cannot be reached from the
@@ -86,9 +87,9 @@ deterministic machine it feeds:
 
 ```
  Player A's PC                                        Player B's PC
- ┌───────────────────────────┐   AnyTogether rooms,   ┌───────────────────────────┐
- │ launcher                  │   WebRTC data channel, │ launcher                  │
- │  lobby, seats, input wire ├────── TURN relay ──────┤  lobby, seats, input wire │
+ ┌───────────────────────────┐                        ┌───────────────────────────┐
+ │ launcher                  │        network         │ launcher                  │
+ │  lobby, seats, input wire ├─── (open question) ────┤  lobby, seats, input wire │
  │        │ step   ▲ sync    │                        │        │ step   ▲ sync    │
  │        ▼        │         │                        │        ▼        │         │
  │ anyps5-retro-host         │                        │ anyps5-retro-host         │
@@ -268,17 +269,18 @@ again on each wrong guess.
 
 The host's lockstep comes first because:
 
-- it needs the fewest new parts: the host waits, the launcher's input wire
-  can stay as it is, and nothing is undone;
+- it needs the fewest new parts: the host waits, the launcher only passes
+  each frame's input on, and nothing is undone;
 - it is the control a rollback would be checked against: a rollback run
   would have to reach the same hashes as a lockstep run of the same input;
 - it needs no state at all when both games start from a cold boot with
   `start.lockstep`, and the stock SwanStation boots alike on every system,
   so it needs no SwanStation patch. Rollback, and a friend joining a running
-  game, would need states the core saves and loads exactly and quickly; the
-  launcher's own harness found that stock SwanStation's are not exact (it
-  reschedules the sound unit's sample event with timing from the discarded
-  timeline), so states would come with their patches in step 4.
+  game, would need states the core saves and loads exactly and quickly; a
+  test harness in our unmerged launcher proposal work found that stock
+  SwanStation's are not exact (it reschedules the sound unit's sample event
+  with timing from the discarded timeline), so states would come with their
+  patches in step 4.
 
 A match could pick *d* from the round trip it measures before it starts:
 *d* = ⌈(round trip ÷ 2) ÷ frame⌉ + 1, at most 8, where a frame lasts
@@ -290,6 +292,33 @@ whether a relayed connection meets it, belong to the transport and relay
 question that is still open ("Frame clock" under [Steps](#steps)). Rollback,
 if agreed, would lower the delay players feel to 1 or 2 frames, with the
 rest predicted.
+
+**What both players must have alike.** A host computes each frame from
+what it was given, so two hosts stay alike only when everything they were
+given is the same (protocol.md "Lockstep" lists it):
+
+- the core: the same `status.core` ("Core build identity" above);
+- the BIOS file;
+- the options sent at `start`, and the same `initialDisc`;
+- the disc image file itself, byte for byte, not only the same game: a
+  `.chd` and a `.cue` and `.bin` of the same disc, or two rips of it, need
+  not read alike;
+- the memory card, which the host now decides: a game started with
+  `start.lockstep` runs on the empty card the core makes in memory, never
+  on a player's own card from `saves`, and never writes it back, so a match
+  neither reads a player's saves nor writes over them; and
+- the steps.
+
+Most PS1 games read the memory card at boot, so two players' own cards,
+one with years of saves and one empty, would make `ram` differ within
+seconds. Others handle the card the same way: DuckStation's rollback
+netplay (its unmerged pull request 3000) gives every player a
+non-persistent card 1 and no card 2, "We want all players to have the same
+memory card contents"; RetroArch's netplay instead sends the server's save
+RAM to each client when it connects and gives the client a separate
+`.netplay` save folder, so the client's own saves are not written over.
+Bringing a player's saves into a match, as RetroArch does, would need the
+card handed to both hosts, and is left for later ([Steps](#steps)).
 
 **What a `sync` compares.** Every `check` frames the host hashes the
 console's main RAM, the last picture and the core's serialized state
@@ -368,6 +397,10 @@ held by one controller on one PC. For a PS1 game:
 - Pausing from the PS menu during a match would pause for both players: the
   launcher would stop sending steps and tell the friend's launcher, which
   would do the same. The host itself needs nothing more; it simply waits.
+  A launcher stops handing steps on while its game is paused, the friend's
+  included: a paused host keeps the steps it is sent, at most 600, and the
+  601st waiting is a protocol error that ends the host (protocol.md
+  "step").
 
 ## NAT and relays
 
@@ -376,14 +409,15 @@ held by one controller on one PC. For a PS1 game:
 > touch AnyTogether's online service and relay traffic and are for the
 > maintainers to decide.
 
-If agreed, the launcher would reuse AnyTogether's rooms for the invitation
-and the WebRTC data channel it already uses for PS1 and PS2 online play: a
-direct path when the two PCs can reach each other, and the TURN relay when
-they cannot. The lobby would show which one it got. Input is small (one
-frame's input for two ports is under 30 bytes, and the input wire sends up
-to eight frames in one 108-byte packet), so the traffic a match would add to
-a relay is small; whether a relayed connection's round trip is good enough
-for a match is part of the same open question. The one large transfer, the
+If agreed, a match could use AnyTogether's rooms for the invitation and a
+WebRTC data channel like those the launcher opens for PS4 and PS5 online
+play: a direct path when the two PCs can reach each other, and a TURN relay
+when they cannot. The lobby would show which one it got. Neither launcher
+carries PS1 or PS2 input today; an input wire for it exists only in our
+unmerged proposal branches. Input is small (one frame's input for two ports
+is under 30 bytes), so the traffic a match would add to a relay would be
+small; whether a relayed connection's round trip is good enough for a match
+is part of the same open question. The one large transfer, the
 state a friend would join a running game from (step 4), would be sent once
 over the reliable channel. Relay use and its traffic policy remain
 AnyTogether's decision, as for the launcher's existing online play.
@@ -410,7 +444,15 @@ identity when it adds a SwanStation patch:
 5. `ps1Rollback`: the host runs frames on predicted input and, when the real
    input differs, loads the state before the first wrong frame and runs
    again, between two frames.
-6. `syncXxh3`: cheaper `sync` hashes, and checks that leave the state out.
+6. `syncXxh3`: cheaper `sync` hashes. A check can already leave the state
+   and the picture out (`hashes`, protocol.md "lockstep").
+7. Disc changes in a match: `changeDisc` is refused in lockstep, so a
+   multi-disc game cannot reach its next disc in a match without leaving
+   lockstep, which would desync it. A `step` could carry a disc change that
+   both hosts make at the same frame.
+8. A player's own memory card in a match, handed to both hosts at `start`
+   as RetroArch's netplay shares its server's save RAM, instead of the
+   empty card, and still never written back to anyone's `saves`.
 
 ### Frame clock
 
@@ -460,10 +502,15 @@ and relay question that is still open.
   players' hosts. Both start in lockstep from a cold boot and are fed the
   same input, which changes every frame on both ports; every frame's `sync`
   must match.
-  - With the test core (`tests/fake_core.c`, whose "RAM" mixes every input
-    it reads, and whose state holds that RAM) `ram`, `video` and `state` must
-    match. It also checks that a different input on port 2 changes the next
-    `sync.ram`; that lockstep refuses option and port changes and arguments
+  - Each player's saves folder holds a memory card of their own, different
+    from the other's. Both games must run on the host's empty card instead,
+    and when the hosts have exited both cards must be as they were, with
+    nothing else in the folders.
+  - With the test core (`tests/fake_core.c`, whose "RAM" mixes the card it
+    has at the first frame and every input it reads, and whose state holds
+    that RAM and the card) `ram`, `video` and `state` must match. It also
+    checks that a different input on port 2 changes the next `sync.ram`;
+    that a sync can carry the `ram` hash alone; that lockstep refuses option and port changes and arguments
     out of range; that leaving lockstep while a frame is being run is
     answered only once that frame has ended, with nothing of the old frame
     count after it, and that a game entering lockstep again runs no frame
@@ -474,7 +521,8 @@ and relay question that is still open.
     ThreadSanitizer.
   - With `--bios` and `--program`, it runs real SwanStation on the OpenBIOS
     and psyqo `hello` disc that `tests/make_test_disc.py` makes, each player
-    with their own copy of the disc in a different folder. Every frame's
+    with their own copy of the disc in a different folder and their own
+    card, which must be left as it was. Every frame's
     main RAM and picture must match; the state is not compared ("What a
     `sync` compares"). The `real-core` workflow runs it on Linux, macOS and
     Windows for 600 frames, and its `same-core` job compares those syncs

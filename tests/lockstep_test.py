@@ -4,10 +4,12 @@
 """Two hosts on one machine in lockstep (protocol.md "Lockstep"), as two players' hosts would be in an
 online match: both boot the same game from a cold boot with start.lockstep, are fed the same input
 frame by frame, and must report the same RAM and picture hashes after every frame, and the same
-state hashes when both keep the disc at the same path.
+state hashes when both keep the disc at the same path. Each player's saves folder holds a memory card
+of their own, different from the other's: the game must run on the host's empty card instead, and
+both players' cards must be left as they were.
 
-With the test core the inputs reach its RAM, so the test also checks that a different input shows
-up as a different hash, the refusals of lockstep, that leaving and entering it falls between two
+With the test core the inputs and the card reach its RAM, so the test also checks that a different
+input shows up as a different hash, that a sync can carry the RAM hash alone, the refusals of lockstep, that leaving and entering it falls between two
 frames, and its protocol errors. With --bios and --program it runs the real SwanStation core on a
 disc made by make_test_disc.py, each player with their own copy in a folder of its own.
 
@@ -183,6 +185,14 @@ def advance(peers, first, count, inputs=scripted, batch=120, timeout=120):
     return {peer.name: [peer.syncs[f] for f in range(first, first + count)] for peer in peers}
 
 
+CARD_BYTES = 128 * 1024
+
+
+def card(name):
+    """A memory card of a player's own, different for each name, as two players' saves would be."""
+    return random.Random(name).randbytes(CARD_BYTES)
+
+
 def hashes(sync, state=True):
     return sync['ram'], sync['video'], sync['state'] if state else None
 
@@ -222,6 +232,25 @@ class Match:
         else:
             self.paths = c.place(self.work, Path(options.core).resolve())
 
+    def card_path(self, name):
+        disc = self.discs['host' if name == 'host' else 'guest'] if self.real else Path(self.paths['disc'])
+        return self.work / f'saves-{name}' / f'{disc.stem}.srm'
+
+    def give_card(self, name):
+        """Puts a card of that player's own in their saves folder, where a game not in lockstep would
+        load it from (protocol.md "start", saves)."""
+        path = self.card_path(name)
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(card(name))
+
+    def card_untouched(self, name):
+        folder = self.card_path(name).parent
+        found = sorted(entry.name for entry in folder.iterdir())
+        if found != [self.card_path(name).name]:
+            raise c.Failed(f'{name}: the saves folder holds {found}, not only the card')
+        if self.card_path(name).read_bytes() != card(name):
+            raise c.Failed(f"{name}: the player's own memory card was written over by a game started in lockstep")
+
     def start_args(self, name, lockstep):
         if self.real:
             disc = self.discs['host' if name == 'host' else 'guest']
@@ -258,12 +287,13 @@ def play(options):
     try:
         first, second = match.peer('host'), match.peer('guest')
         for peer in (first, second):
+            match.give_card(peer.name)
             peer.call('start', match.start_args(peer.name, lockstep=True))
         began = time.monotonic()
         boot = advance([first, second], 0, frames)
         compared = same('cold boot', boot['host'], boot['guest'], not match.real)
         print(f'cold boot: {compared} frames in lockstep match in RAM and picture'
-              f'{"" if match.real else " and state"} '
+              f'{"" if match.real else " and state"}, with a different memory card in each saves folder '
               f'({time.monotonic() - began:.1f} s); last {boot["host"][-1]}')
         if options.syncs_out:
             hardware = first.call('status')['hardware']
@@ -286,6 +316,7 @@ def play(options):
             if split['host'][0]['ram'] == split['guest'][0]['ram']:
                 raise c.Failed('a different input on port 2 left the same RAM hash')
             print('a different input on port 2 shows up in the next sync')
+            ram_only(first, frames + 1)
             refusals(first)
             reentry(first, match)
             picture_from_outside(first, match)
@@ -295,6 +326,9 @@ def play(options):
             peer.host.send_message({'type': 'shutdown'})
             if peer.host.exits(15) != 0:
                 raise c.Failed(f'{peer.name}: the host did not exit cleanly')
+        for peer in (first, second):
+            match.card_untouched(peer.name)
+        print("both players' own memory cards are as they were, and nothing else is in their saves folders")
         print('lockstep passed')
         return 0
     except c.Failed as error:
@@ -304,6 +338,17 @@ def play(options):
         match.close()
 
 
+def ram_only(peer, frame):
+    """A launcher can ask for the RAM hash alone, which spares the host serializing the console; the
+    other hashes are then null."""
+    if peer.call('lockstep', {'check': 1, 'paced': False, 'hashes': ['ram']}) != {'frame': frame}:
+        raise c.Failed('changing the hashes did not keep the frame count')
+    sync = advance([peer], frame, 1)[peer.name][0]
+    if sync['ram'] is None or sync['video'] is not None or sync['state'] is not None:
+        raise c.Failed(f'a sync asked for RAM alone gave {sync}')
+    print('a sync can carry the RAM hash alone')
+
+
 def refusals(peer):
     """What a game in lockstep refuses, since it would change the console between agreed frames, and
     the lockstep arguments that are argument errors."""
@@ -311,7 +356,9 @@ def refusals(peer):
         raise c.Failed('option was taken in lockstep')
     if peer.call('connectedPorts', 2) is not False:
         raise c.Failed('connectedPorts was taken in lockstep')
-    for args in ({'check': 0}, {'check': 3601}, {'check': 1, 'paced': 'false'}, {}, True, None):
+    for args in ({'check': 0}, {'check': 3601}, {'check': 1, 'paced': 'false'}, {}, True, None,
+                 {'check': 1, 'hashes': []}, {'check': 1, 'hashes': ['ram', 'ram']}, {'check': 1, 'hashes': ['cpu']},
+                 {'check': 1, 'hashes': 'ram'}):
         reply = peer.call_raw('lockstep', args)
         if 'error' not in reply or reply['error']['code'] != 'argument':
             raise c.Failed(f'lockstep {args!r} was not an argument error: {reply}')

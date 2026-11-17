@@ -236,6 +236,11 @@ def lockstep_args(args, name='lockstep args'):
     integer(args.get('check'), 1, 3600, f'{name}.check')
     if 'paced' in args:
         boolean(args['paced'], f'{name}.paced')
+    if 'hashes' in args:
+        hashes = args['hashes']
+        need(isinstance(hashes, list) and 1 <= len(hashes) <= 3 and len(set(map(str, hashes))) == len(hashes) and
+             all(entry in ('ram', 'video', 'state') for entry in hashes),
+             f'{name}.hashes lists one to three of ram, video and state, each once')
 
 
 def lockstep_result(value, name=None):
@@ -477,10 +482,27 @@ def order(message, sender, calls, state, step):
     if kind == 'call':
         need(message.get('id') not in state['called'], 'call ids are unique')
         need(state['called'] or message.get('method') == 'volume', 'the first call after welcome is volume')
+        args = message.get('args')
+        if message.get('method') == 'lockstep' or (message.get('method') == 'start' and isinstance(args, dict) and
+                                                    'lockstep' in args):
+            need('ps1Lockstep' in state['capabilities'], 'start.lockstep, lockstep and step need ps1Lockstep')
         state['called'].add(message.get('id'))
         state['waiting'].append(('call', message.get('id'), message.get('method'), clock))
+        state['callArgs'][message.get('id')] = args
         if message.get('method') == 'stop':
             state['stopping'] = clock
+    elif kind == 'step':
+        need('ps1Lockstep' in state['capabilities'], 'start.lockstep, lockstep and step need ps1Lockstep')
+        lockstep = state['lockstep']
+        need(lockstep is not None, 'a step needs a game in lockstep')
+        need(message.get('frame') == lockstep['next'], 'a step is for the next lockstep frame')
+        lockstep['next'] += 1
+    elif kind == 'sync':
+        lockstep = state['lockstep']
+        need(lockstep is not None and message['frame'] < lockstep['next'], 'a sync follows the step for its frame')
+        need(lockstep['synced'] is None or message['frame'] > lockstep['synced'], 'syncs come in frame order')
+        need(message['frame'] % lockstep['check'] == 0, 'a sync is for a frame that is a multiple of check')
+        lockstep['synced'] = message['frame']
     elif kind == 'ping':
         need(message.get('id') not in state['pinged'], 'ping ids are unique')
         state['pinged'].add(message.get('id'))
@@ -494,8 +516,17 @@ def order(message, sender, calls, state, step):
         need(clock - oldest[3] <= LIMITS['answer'], f'a {kind} comes within its limit')
         state['waiting'].pop(0)
         result = message.get('result')
+        args = state['callArgs'].pop(oldest[1], None)
         if kind == 'reply' and oldest[2] == 'start' and isinstance(result, dict):
             state['epoch'] = result.get('epoch')
+            lockstep = args.get('lockstep') if isinstance(args, dict) else None
+            state['lockstep'] = {'next': 0, 'check': lockstep['check'], 'synced': None} if lockstep else None
+        if kind == 'reply' and oldest[2] == 'lockstep' and isinstance(result, dict):
+            state['lockstep'] = {'next': result.get('frame'), 'check': args['check'], 'synced': None}
+        if kind == 'reply' and oldest[2] == 'lockstep' and result is True and args is False:
+            state['lockstep'] = None
+        if kind == 'reply' and oldest[2] == 'release' and 'error' not in message:
+            state['lockstep'] = None
         if kind == 'reply' and oldest[2] == 'status' and isinstance(result, dict):
             capability_fields(result, state)
             if result.get('ended'):
@@ -651,7 +682,8 @@ def check_sessions():
 def new_state():
     return {'hello': None, 'answer': None, 'pixelFormat': None, 'waiting': [], 'called': set(), 'pinged': set(),
             'slotBytes': None, 'slots': None, 'latest': NONE, 'shown': None, 'epoch': None, 'stopping': None,
-            'shutdown': None, 'clock': 0, 'helloAt': 0, 'os': None, 'wrongArgs': set(), 'capabilities': set()}
+            'shutdown': None, 'clock': 0, 'helloAt': 0, 'os': None, 'wrongArgs': set(), 'capabilities': set(),
+            'callArgs': {}, 'lockstep': None}
 
 
 failures = []
