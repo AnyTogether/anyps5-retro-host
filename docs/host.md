@@ -512,7 +512,9 @@ SwanStation was modified on that date. Whoever changes a patch sets its
 `Last-Update` to that day and updates the notices it adds; the `real-core`
 and `release` workflows fail otherwise, because `tools/core_identity.py`
 refuses a patch without one `Last-Update` line in its header or without the
-notice, with that date and its own name, in each file it changes.
+notice, with that date and its own name, at the top of each file it changes
+(in the hunk that starts at its first line; `Added on` for a file it creates),
+or whose `Last-Update` is not a real date.
 
 | Patch | What it changes |
 | --- | --- |

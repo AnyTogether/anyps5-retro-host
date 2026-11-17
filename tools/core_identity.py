@@ -22,6 +22,7 @@ all present and alike, and prints the one identity they hold.
 """
 
 import argparse
+import datetime
 import hashlib
 import json
 import re
@@ -34,6 +35,8 @@ COMMIT = re.compile(r'^[0-9a-f]{40}$')
 OPTIONS = ('MSB_FIRST=OFF',)
 UPDATED = re.compile(r'^Last-Update: ([0-9]{4}-[0-9]{2}-[0-9]{2})$', re.M)
 FILE = re.compile(r'^diff --git a/(\S+) b/\S+$', re.M)
+TOP_HUNK = re.compile(r'^@@ -(?:0,0|1(?:,[0-9]+)?) \+1(?:,[0-9]+)? @@.*$', re.M)
+HUNK = re.compile(r'^@@ ', re.M)
 
 
 def patches():
@@ -45,21 +48,30 @@ def patches():
 
 def updated(patch, text):
     """The patch's Last-Update date, after checking that every file it changes carries the notice
-    with that date and its name."""
+    with that date and its name at its top: in the hunk that starts at the file's first line,
+    "Added on" for a file the patch creates and "Modified on" for one it changes."""
     header = text.split('\ndiff --git ', 1)[0]
     dates = UPDATED.findall(header)
     if len(dates) != 1:
         raise SystemExit(f'{patch.name} needs one Last-Update: YYYY-MM-DD line in its header')
+    try:
+        datetime.date.fromisoformat(dates[0])
+    except ValueError:
+        raise SystemExit(f'{patch.name}: Last-Update {dates[0]} is not a date') from None
     files = list(FILE.finditer(text))
     if not files:
         raise SystemExit(f'{patch.name} changes no file')
     for index, match in enumerate(files):
         end = files[index + 1].start() if index + 1 < len(files) else len(text)
-        notice = re.compile(rf"^\+.*(Modified|Added) on {dates[0]} by anyps5-retro-host's {re.escape(patch.name)}",
-                            re.M)
-        if not notice.search(text, match.end(), end):
-            raise SystemExit(f'{patch.name} adds no notice "Modified on {dates[0]} by anyps5-retro-host\'s '
-                             f'{patch.name}" to {match.group(1)}')
+        section = text[match.end():end]
+        word = 'Added' if '\nnew file mode ' in section[:section.find('\n@@')] else 'Modified'
+        top = TOP_HUNK.search(section)
+        following = HUNK.search(section, top.end()) if top else None
+        hunk = section[top.end():following.start() if following else len(section)] if top else ''
+        notice = re.compile(rf"^\+.*{word} on {dates[0]} by anyps5-retro-host's {re.escape(patch.name)}", re.M)
+        if not notice.search(hunk):
+            raise SystemExit(f'{patch.name} adds no notice "{word} on {dates[0]} by anyps5-retro-host\'s '
+                             f'{patch.name}" at the top of {match.group(1)}')
     return dates[0]
 
 
