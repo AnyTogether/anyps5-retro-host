@@ -23,7 +23,9 @@ namespace retro_host {
 class AudioStream {
  public:
   // The fill the cushion is kept at between two reads of the device, and played from again after
-  // running dry. A frame up to about this late leaves no gap (host.md "Sound").
+  // running dry. A frame's samples arrive in one burst, so the fill swings by about a frame around
+  // it, and a frame up to about this less one frame (60 ms at 60 fps) late leaves no gap
+  // (host.md "Sound").
   static constexpr double kTargetSeconds = 0.080;
   // The most the resampler moves the rate (and the pitch) away from the core's: 0.5%.
   static constexpr double kMaxRateChange = 0.005;
@@ -33,8 +35,9 @@ class AudioStream {
   static constexpr double kFadeSeconds = 0.0025;
   // How long the fill is averaged over before it moves the rate.
   static constexpr double kAverageSeconds = 0.25;
-  // The integral term's gain, per second: kMaxRateChange^2 / (4 kTargetSeconds), critical damping.
-  static constexpr double kIntegralGain = kMaxRateChange * kMaxRateChange / (4 * kTargetSeconds);
+  // The integral term's gain, per second: kMaxRateChange^2 / (2 kTargetSeconds), a damping ratio
+  // of 1/sqrt(2), which learns the clocks' difference about twice as fast as critical damping.
+  static constexpr double kIntegralGain = kMaxRateChange * kMaxRateChange / (2 * kTargetSeconds);
 
   // Interleaved stereo 16-bit samples in at input_rate, out at output_rate. Null when
   // miniaudio's resampler cannot be made.
@@ -64,6 +67,7 @@ class AudioStream {
   void Cut(uint64_t read, uint64_t write);
   void SteerRate(uint64_t buffered, uint32_t frames);
   uint64_t InputFor(uint32_t frames) const;
+  uint32_t Tail(int16_t* out, uint32_t frames);
 
   const double input_rate_;
   const uint32_t output_rate_;
@@ -81,6 +85,9 @@ class AudioStream {
   std::unique_ptr<Resampler> resampler_;
   bool playing_ = false;
   uint32_t fade_in_left_ = 0;
+  uint32_t tail_left_ = 0;
+  int16_t tail_from_[2] = {0, 0};
+  int16_t last_[2] = {0, 0};
   double average_ = 0;
   double bias_ = 0;
   uint32_t rate_in_ = 0;

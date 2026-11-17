@@ -2,15 +2,17 @@
 // SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
 // Drives AudioStream, the host's sound cushion, with a simulated device clock and simulated frame
-// timing, and no sound device (host.md "Sound"). The core plays a 440 Hz tone; the test counts
-// the gaps and clicks in what the device would have played, the cushion's fill after each read,
-// and the tone's pitch against the device's own clock, which moves only by the rate control.
+// timing, and no sound device (host.md "Sound"). The core plays a 440 Hz tone on the left and a
+// 330 Hz tone on the right; the test counts the gaps and clicks in what the device would have
+// played, the cushion's fill after each read, and the left tone's pitch against the device's own
+// clock, which moves only by the rate control.
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <random>
+#include <utility>
 #include <vector>
 
 #include "audio.h"
@@ -27,10 +29,18 @@ void Expect(bool condition, const char* name, const char* what) {
 }
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kTone = 440;
 constexpr double kAmplitude = 8000;
+// Each channel plays its own tone, so a channel mixed up with the other shows as a click.
+constexpr double kTone[2] = {440, 330};
 // The tone's pitch is measured over spans this long without a gap, cut or pause.
 constexpr double kPitchWindow = 0.25;
+
+int16_t ToneAt(int channel, uint64_t sample, double rate) {
+  return static_cast<int16_t>(std::lround(kAmplitude * std::sin(2 * kPi * kTone[channel] * sample / rate)));
+}
+
+// A step a channel's tone can take at a rate, with room for the cushion's fades and cuts.
+double ClickStep(int channel, double rate) { return 1.5 * 2 * kPi * kTone[channel] * kAmplitude / rate; }
 
 struct Case {
   const char* name;
@@ -46,6 +56,8 @@ struct Case {
   double late_share = 0;
   double late_min = 0.025;
   double late_max = 0.065;
+  // Reads of the device are 20 ms, or when set any length from 1 frame to 40 ms.
+  bool varied_reads = false;
   // Spells in true time during which the game is paused.
   std::vector<std::pair<double, double>> pauses = {};
 };
@@ -54,6 +66,8 @@ struct Result {
   int gaps = 0;
   double gap_seconds = 0;
   int clicks = 0;
+  int late_frames = 0;
+  uint64_t paused_sound = 0;
   uint64_t dropped = 0;
   uint64_t underruns = 0;
   double fill_min = 1e9;
@@ -79,11 +93,10 @@ Result Run(const Case& test) {
   const double frame_time = 1 / (test.fps * test.speed);
   const double work = 0.004;
   const uint32_t period = test.output_rate / 50;
-  const double period_time = period / (test.output_rate * (1 + test.drift));
+  const double device_rate = test.output_rate * (1 + test.drift);
   const double samples_per_frame = test.input_rate / test.fps;
-  // Steps a sine of the tone's amplitude can take, with room for the cushion's fades and cuts.
-  const double click_step = 1.5 * 2 * kPi * kTone * kAmplitude / test.output_rate;
   const uint32_t gap_frames = test.output_rate / 1000;
+  const double fade = retro_host::AudioStream::kFadeSeconds;
 
   auto paused_at = [&](double time) {
     for (const auto& pause : test.pauses)
@@ -97,51 +110,66 @@ Result Run(const Case& test) {
     return false;
   };
 
+  // The game's thread: a frame starts at game_now, its samples are written when its work is done
+  // (ready), and the next starts at the later of that and its paced time, as game.cpp runs them.
   double game_now = 0;
   double next = 0;
+  double ready = -1;
   uint64_t frame = 0;
   uint64_t sample = 0;
   std::vector<int16_t> burst;
-  std::vector<int16_t> out(period * 2);
+  std::vector<int16_t> out(period * 4);
 
+  uint64_t device_frames = 0;
   bool sounding = false;
   uint64_t zeros = 0;
   double zeros_from = 0;
-  int16_t previous = 0;
+  int16_t previous[2] = {0, 0};
   double window_start = -1;
   int window_crossings = 0;
 
-  const uint64_t reads = static_cast<uint64_t>(test.seconds / period_time);
-  for (uint64_t r = 0; r < reads; ++r) {
-    const double device_now = r * period_time;
-    while (game_now <= device_now) {
-      if (paused_at(game_now)) {
-        game_now += 0.01;
-        next = game_now;
-        continue;
+  auto close_gap = [&](double time) {
+    if (sounding && zeros >= gap_frames && !quiet_allowed(zeros_from)) {
+      ++result.gaps;
+      result.gap_seconds += time - zeros_from;
+    }
+  };
+
+  while (device_frames / device_rate < test.seconds) {
+    const double device_now = device_frames / device_rate;
+    while (true) {
+      if (ready < 0) {
+        if (game_now > device_now) break;
+        if (paused_at(game_now)) {
+          game_now += 0.01;
+          next = game_now;
+          continue;
+        }
+        double run = work;
+        if (test.late_share > 0 && Uniform(random) < test.late_share) {
+          run += test.late_min + (test.late_max - test.late_min) * Uniform(random);
+          ++result.late_frames;
+        }
+        ready = game_now + run;
       }
-      double run = work;
-      if (test.late_share > 0 && Uniform(random) < test.late_share)
-        run += test.late_min + (test.late_max - test.late_min) * Uniform(random);
-      game_now += run;
+      if (ready > device_now) break;
       const uint64_t end = static_cast<uint64_t>(std::floor((frame + 1) * samples_per_frame));
       burst.resize((end - sample) * 2);
-      for (size_t i = 0; sample < end; ++sample, ++i) {
-        const auto value = static_cast<int16_t>(std::lround(kAmplitude * std::sin(2 * kPi * kTone * sample / test.input_rate)));
-        burst[i * 2] = value;
-        burst[i * 2 + 1] = value;
-      }
+      for (size_t i = 0; sample < end; ++sample, ++i)
+        for (int c = 0; c < 2; ++c) burst[i * 2 + c] = ToneAt(c, sample, test.input_rate);
       stream->Write(burst.data(), burst.size() / 2);
       ++frame;
       next += frame_time;
-      if (next < game_now - 0.25) next = game_now;
-      game_now = std::max(game_now, next);
+      if (next < ready - 0.25) next = ready;
+      game_now = std::max(ready, next);
+      ready = -1;
     }
 
+    const uint32_t frames = test.varied_reads ? 1 + static_cast<uint32_t>(Uniform(random) * (2 * period)) : period;
     const uint64_t dropped = stream->Dropped();
     const uint64_t underruns = stream->Underruns();
     const bool paused = paused_at(device_now);
-    stream->Read(out.data(), period, paused);
+    stream->Read(out.data(), frames, paused);
     if (sounding && !paused) {
       const double fill = 1000.0 * stream->Buffered() / test.input_rate;
       result.fill_min = std::min(result.fill_min, fill);
@@ -153,25 +181,23 @@ Result Run(const Case& test) {
     const bool disturbed = stream->Dropped() != dropped || stream->Underruns() != underruns || paused;
     if (disturbed) window_start = -1;
 
-    for (uint32_t i = 0; i < period; ++i) {
-      const int16_t left = out[i * 2];
-      const int16_t right = out[i * 2 + 1];
-      const double time = device_now + i / (test.output_rate * (1 + test.drift));
-      const double device_time = (static_cast<double>(r) * period + i) / test.output_rate;
-      if (left == 0 && right == 0) {
+    for (uint32_t i = 0; i < frames; ++i, ++device_frames) {
+      const int16_t* played = out.data() + i * 2;
+      const double time = device_frames / device_rate;
+      const double device_time = device_frames / static_cast<double>(test.output_rate);
+      if (paused_at(time - fade) && paused_at(time) && (played[0] != 0 || played[1] != 0)) ++result.paused_sound;
+      if (played[0] == 0 && played[1] == 0) {
         if (zeros++ == 0) zeros_from = time;
       } else {
-        if (sounding && zeros >= gap_frames && !quiet_allowed(zeros_from)) {
-          ++result.gaps;
-          result.gap_seconds += time - zeros_from;
-        }
+        close_gap(time);
         if (zeros >= gap_frames) window_start = -1;
         zeros = 0;
         sounding = true;
       }
-      if (sounding && std::abs(left - previous) > click_step) ++result.clicks;
-      if (previous < 0 && left >= 0 && sounding && !disturbed) {
-        const double crossing = device_time - (left / static_cast<double>(left - previous)) / test.output_rate;
+      for (int c = 0; c < 2; ++c)
+        if (sounding && std::abs(played[c] - previous[c]) > ClickStep(c, test.output_rate)) ++result.clicks;
+      if (previous[0] < 0 && played[0] >= 0 && sounding && !disturbed) {
+        const double crossing = device_time - (played[0] / static_cast<double>(played[0] - previous[0])) / test.output_rate;
         if (window_start < 0) {
           window_start = crossing;
           window_crossings = 0;
@@ -184,9 +210,10 @@ Result Run(const Case& test) {
           window_crossings = 0;
         }
       }
-      previous = left;
+      for (int c = 0; c < 2; ++c) previous[c] = played[c];
     }
   }
+  close_gap(device_frames / device_rate);
   result.dropped = stream->Dropped();
   result.underruns = stream->Underruns();
   return result;
@@ -194,7 +221,7 @@ Result Run(const Case& test) {
 
 void Report(const Case& test, const Result& result) {
   const double mean = result.fill_reads ? result.fill_sum / result.fill_reads : 0;
-  std::printf("%-22s gaps %5d (%7.3f s)  clicks %5d  underruns %5llu  dropped %8llu  fill ms min %6.1f mean %6.1f max %6.1f  pitch %8.3f..%8.3f Hz (%d windows)\n",
+  std::printf("%-24s gaps %5d (%7.3f s)  clicks %5d  underruns %5llu  dropped %8llu  fill ms min %6.1f mean %6.1f max %6.1f  pitch %8.3f..%8.3f Hz (%d windows)\n",
               test.name, result.gaps, result.gap_seconds, result.clicks,
               static_cast<unsigned long long>(result.underruns), static_cast<unsigned long long>(result.dropped),
               result.fill_reads ? result.fill_min : 0, mean, result.fill_max, result.pitch_windows ? result.pitch_low : 0,
@@ -203,10 +230,80 @@ void Report(const Case& test, const Result& result) {
 
 // The tone stays within the rate control's bound, with room for the zero-crossing count.
 void ExpectPitch(const Case& test, const Result& result) {
-  const double bound = kTone * (retro_host::AudioStream::kMaxRateChange + 0.0005);
+  const double bound = kTone[0] * (retro_host::AudioStream::kMaxRateChange + 0.0005);
   Expect(result.pitch_windows > 0, test.name, "the pitch is measured");
-  Expect(result.pitch_low >= kTone - bound && result.pitch_high <= kTone + bound, test.name,
+  Expect(result.pitch_low >= kTone[0] - bound && result.pitch_high <= kTone[0] + bound, test.name,
          "the pitch moves no more than the rate control allows");
+}
+
+// Counts steps between two frames the device plays, across reads and gaps alike, larger than
+// each channel's tone can take.
+struct Steps {
+  int16_t previous[2] = {0, 0};
+  int clicks = 0;
+  void Add(const int16_t* out, uint32_t frames, double rate) {
+    for (uint32_t i = 0; i < frames; ++i)
+      for (int c = 0; c < 2; ++c) {
+        if (std::abs(out[i * 2 + c] - previous[c]) > ClickStep(c, rate)) ++clicks;
+        previous[c] = out[i * 2 + c];
+      }
+  }
+};
+
+void WriteTone(retro_host::AudioStream& stream, uint64_t& sample, size_t frames, double rate) {
+  std::vector<int16_t> samples(frames * 2);
+  for (size_t i = 0; i < frames; ++i, ++sample)
+    for (int c = 0; c < 2; ++c) samples[i * 2 + c] = ToneAt(c, sample, rate);
+  stream.Write(samples.data(), frames);
+}
+
+// Reads of one frame drain the cushion, so one read takes exactly what is left and the next
+// finds nothing: the sound still ramps down from the last frame played, and is then silent.
+void ExpectDrainedOneFrameAtATime() {
+  const char* name = "drained frame by frame";
+  auto stream = retro_host::AudioStream::Make(48000, 48000);
+  uint64_t sample = 0;
+  WriteTone(*stream, sample, 48000 / 10, 48000);
+  Steps steps;
+  int16_t out[2] = {0, 0};
+  bool sounded = false;
+  for (int i = 0; i < 48000 / 2; ++i) {
+    stream->Read(out, 1, false);
+    sounded = sounded || out[0] != 0;
+    steps.Add(out, 1, 48000);
+  }
+  std::printf("%-24s clicks %5d  underruns %5llu\n", name, steps.clicks, static_cast<unsigned long long>(stream->Underruns()));
+  Expect(sounded, name, "the tone plays");
+  Expect(steps.clicks == 0, name, "no click as it runs dry");
+  Expect(stream->Underruns() == 1 && out[0] == 0 && out[1] == 0, name, "runs dry once, then is silent");
+}
+
+// A device that stops reading lets the ring fill. When it reads again, the last frame it played
+// ramps down, what was queued is dropped, and the sound starts again from a full cushion.
+void ExpectStoppedDeviceRecovers() {
+  const char* name = "device stops and resumes";
+  auto stream = retro_host::AudioStream::Make(44100, 48000);
+  uint64_t sample = 0;
+  Steps steps;
+  std::vector<int16_t> out(960 * 2);
+  for (int i = 0; i < 100; ++i) {
+    WriteTone(*stream, sample, 882, 44100);
+    stream->Read(out.data(), 960, false);
+    steps.Add(out.data(), 960, 48000);
+  }
+  for (int i = 0; i < 100; ++i) WriteTone(*stream, sample, 882, 44100);
+  const uint64_t dropped = stream->Dropped();
+  bool sounded = false;
+  for (int i = 0; i < 100; ++i) {
+    WriteTone(*stream, sample, 882, 44100);
+    stream->Read(out.data(), 960, false);
+    steps.Add(out.data(), 960, 48000);
+    if (i >= 10) sounded = sounded || out[0] != 0;
+  }
+  std::printf("%-24s clicks %5d  dropped %8llu\n", name, steps.clicks, static_cast<unsigned long long>(stream->Dropped()));
+  Expect(dropped > 0, name, "the full ring drops the write in hand");
+  Expect(steps.clicks == 0, name, "no click as it stops and starts again");
+  Expect(sounded, name, "the tone plays again");
 }
 
 }  // namespace
@@ -218,6 +315,9 @@ int main() {
   Case same_rate{"2% late, 48 kHz core"};
   same_rate.input_rate = 48000;
   same_rate.late_share = 0.02;
+  Case varied{"2% late, varied reads"};
+  varied.late_share = 0.02;
+  varied.varied_reads = true;
   Case slow{"90% speed"};
   slow.speed = 0.9;
   Case fast{"110% speed"};
@@ -241,10 +341,11 @@ int main() {
 
   const Result exact_result = Run(exact);
   Report(exact, exact_result);
-  Expect(exact_result.gaps == 0 && exact_result.clicks == 0 && exact_result.dropped == 0, exact.name, "plays without a gap, click or drop");
+  Expect(exact_result.gaps == 0 && exact_result.clicks == 0 && exact_result.dropped == 0, exact.name,
+         "plays without a gap, click or drop");
   ExpectPitch(exact, exact_result);
 
-  for (const Case* test : {&late, &same_rate}) {
+  for (const Case* test : {&late, &same_rate, &varied}) {
     const Result result = Run(*test);
     Report(*test, result);
     Expect(result.gaps <= 1, test->name, "at most one gap");
@@ -270,16 +371,23 @@ int main() {
   for (const Case* test : {&drift_fast, &drift_slow, &drift_late}) {
     const Result result = Run(*test);
     Report(*test, result);
-    Expect(result.gaps <= (test->late_share > 0 ? 5 : 0), test->name, "no gaps as the clocks drift apart");
+    // Over 10 minutes the reads and frames meet at every phase, so a few of the latest frames
+    // (65 ms, longer than the target less a frame) find the cushion low.
+    Expect(result.gaps * 50 <= result.late_frames, test->name, "no gaps as the clocks drift apart, but for 2% of late frames");
     Expect(result.clicks == 0, test->name, "no clicks");
-    if (test->late_share == 0) Expect(result.dropped == 0 && result.underruns == 0, test->name, "the rate control holds the fill");
+    if (test->late_share == 0)
+      Expect(result.dropped == 0 && result.underruns == 0, test->name, "the rate control holds the fill");
     ExpectPitch(*test, result);
   }
 
   const Result paused_result = Run(paused);
   Report(paused, paused_result);
   Expect(paused_result.gaps == 0 && paused_result.clicks == 0, paused.name, "pausing and resuming fade, with no other gap");
+  Expect(paused_result.paused_sound == 0, paused.name, "silent while paused");
   ExpectPitch(paused, paused_result);
+
+  ExpectDrainedOneFrameAtATime();
+  ExpectStoppedDeviceRecovers();
 
   if (failures) std::fprintf(stderr, "%d failure(s)\n", failures);
   return failures ? 1 : 0;

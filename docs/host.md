@@ -232,12 +232,15 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   - **A cushion of 80 ms.** The reader keeps about 80 ms queued after each
     read of the device, and after running dry plays again only once the whole
     80 ms (and the read in hand) is queued, so the next late frame does not
-    cause another gap at once. A frame up to about 80 ms late leaves no gap.
-    A launcher run on a busy machine measured frame intervals with a p99 of
-    62 to 72 ms, frames 45 to 55 ms late; 64 ms, RetroArch's default, still
-    left gaps in the test below (25 in 10 minutes, against 3 at 80 ms) once
-    the device's and the game's timing slid past each other.
-    DuckStation's default is 50 ms plus a 20 ms device buffer.
+    cause another gap at once. A frame's samples arrive in one burst, so the
+    fill swings by about a frame around the target: a frame up to about 60 ms
+    late (the target less one frame at 60 fps) leaves no gap at any phase of
+    the device's reads. A launcher run on a busy machine measured frame
+    intervals with a p99 of 62 to 72 ms, frames 45 to 55 ms late. In
+    `audio_test`, with 2% of frames 25 to 65 ms late and the device's clock
+    0.3% fast for 10 minutes, a 64 ms target (RetroArch's default) left 79
+    gaps, 72 ms left 31, and 80 ms left 11. DuckStation's default is 50 ms
+    plus a 20 ms device buffer.
   - **The device's buffer.** The device is asked for periods of 20 ms, two of
     them (miniaudio's default, 10 ms, is for low latency, and PulseAudio then
     holds one period: about 19 ms in all, measured). Backends round this as
@@ -246,33 +249,43 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
     plays about 80 ms plus that buffer after the frame that made it: around
     100 ms with PulseAudio, up to 120 ms where both periods are queued.
   - **One resampler.** The device runs at its own rate, and miniaudio's linear
-    resampler (`ma_resampler`) converts from the core's rate in one step.
-    Rates are given to it in units of `output rate / ceil(output rate /
-    65536)`: its 16-bit path multiplies the position within an output frame
-    by 4096, and by the output rate it was given when the rate changes, in
-    32-bit integers, so a larger output rate (`ma_resampler_set_rate_ratio`
-    uses 1000 units per hertz; a rate in thousandths of a hertz was tried
-    first) overflows and clicks on every rate change. `audio_test` found this.
-    Its low-pass filter is off when the two rates are within 2% of each other.
+    resampler (`ma_resampler`) converts from the core's rate in one step. The
+    host gives it the two rates with `ma_resampler_set_rate` as a pair of
+    integers whose output side is `output rate / ceil(output rate / 65536)`
+    (48000 for 48 kHz). Its 16-bit path multiplies the position within an
+    output frame by 4096, and by that output integer when the rate changes, in
+    32-bit integers, so a larger one overflows and clicks on every rate
+    change; rates in thousandths of a hertz were tried first, and
+    `audio_test` found the clicks. A step of the ratio is then at most
+    1/65536, about 0.002%. (`ma_resampler_set_rate_ratio` takes a fraction
+    and cuts it to thousandths, 0.1%, too coarse for this.) Its low-pass
+    filter is off when the two rates are within 2% of each other.
   - **Dynamic rate control.** As RetroArch does it (Arntzen, "Dynamic Rate
     Control for Retro Game Emulators", 2012), the ratio moves in proportion to
     how far the fill, averaged over 0.25 s, is from the target, by at most
     0.5%, so the pitch moves by at most 0.5% (unheard). The proportional term
     alone leaves the fill off the target by the clocks' difference over 0.5%
-    (60% of the cushion for a 0.3% difference), so a slow integral term, held
-    within the same 0.5%, learns that difference, as RetroArch's measured
-    sink bias does. Its gain, 0.5%² / (4 × 80 ms) per second, makes the loop
-    critically damped; it settles in about a minute.
+    (60% of the cushion for a 0.3% difference), so this host adds a slow
+    integral term, held within the same 0.5%, that learns that difference.
+    Its gain, 0.5% squared over (2 times 80 ms) per second, gives a damping
+    ratio of 1/sqrt(2). With the device's clock 0.3% fast the fill sags to
+    about 40 ms at first and is back at 80 ms after about 90 s; differences
+    of a real sound card's crystal (around 0.01%) move it by a millisecond or
+    two.
   - **Fades.** 2.5 ms fades (DuckStation's are 128 frames) end the sound
-    before a gap and start it after one, and end it when the game pauses. What
-    is queued is kept over a pause and played after it, faded in.
+    before a gap and start it after one, and end it when the game pauses.
+    When less than 2.5 ms is left to fade, or a read took exactly what was
+    queued and the next finds nothing, the last frame played ramps down to
+    silence over 2.5 ms instead, and the sound starts again only after that
+    ramp. What is queued is kept over a pause and played after it, faded in.
   - **Too much sound.** A fill above twice the target (a game running fast,
     or a burst after a stall) is cut back to the target: the oldest queued
     frames are dropped, and the first frames kept are crossfaded over 2.5 ms
     with those that would have played next, so the cut has no edge. A full
     ring (1 s, which only a device that has stopped reading allows) drops the
-    write in hand, and the reader starts again from an empty cushion. Nothing
-    ever cuts the sound off in the middle of a write.
+    write in hand; when the device reads again, the last frame it played
+    ramps down, what is queued is dropped, and the sound starts again from a
+    full cushion. Nothing ever cuts the sound off in the middle of a write.
   - **Below full speed** nothing removes the holes: the core makes less sound
     than the device plays. They become a few gaps of about 80 ms, faded,
     instead of constant crackle.
@@ -302,18 +315,26 @@ A crash gives none of these, so the tests expect the exact code.
 - `resolution_test` checks which scales [`src/resolution.cpp`](../src/resolution.cpp)
   offers for a geometry and a limit, and which value it moves to.
 - `audio_test` ([`tests/audio_test.cpp`](../tests/audio_test.cpp)) drives
-  `AudioStream` with a simulated device clock (20 ms reads) and simulated
-  frame timing (4 ms of work, then `steady_clock` pacing and catch-up as in
-  `game.cpp`), with no device, so it is silent on every system. The core
-  plays a 440 Hz tone at 44.1 kHz to a 48 kHz device (and once 48 to 48).
-  It counts gaps (exact zeros for 1 ms or more), clicks (a step larger than
-  1.5 times the tone's largest), the fill after each read, and the tone's
-  pitch over 0.25 s spans against the device's clock, for: exact rate; 2% of
-  frames 25 to 65 ms late; 90% and 110% speed; the device's clock 0.3% fast
-  and slow for 10 minutes, and 0.3% fast with late frames; and a pause and
-  resume. It expects no gap, click or drop at exact rate, at most one gap
-  with late frames, none as the clocks drift, no clicks anywhere, and a pitch
-  within 0.5% (plus 0.05% for the count) of 440 Hz.
+  `AudioStream` with a simulated device clock and simulated frame timing,
+  with no device, so it is silent on every system. Each frame takes 4 ms of
+  work, its samples are written only when that work is done, and the next
+  frame starts at its paced time or at once to catch up, as in `game.cpp`.
+  The device reads 20 ms at a time (or, in one case, any length from one
+  frame to 40 ms). The core plays a 440 Hz tone on the left and a 330 Hz
+  tone on the right at 44.1 kHz to a 48 kHz device (and once 48 to 48). It
+  counts gaps (exact zeros for 1 ms or more, including at the end), clicks
+  (a step on either channel larger than 1.5 times its tone's largest), sound
+  while paused, the fill after each read, and the left tone's pitch over
+  0.25 s spans against the device's clock, for: exact rate; 2% of frames 25
+  to 65 ms late, with 20 ms and with varied reads; 90% and 110% speed; the
+  device's clock 0.3% fast and slow for 10 minutes, and 0.3% fast with late
+  frames; and a pause and resume. It expects no gap, click or drop at exact
+  rate, at most one gap in a minute of late frames, none as the clocks drift
+  (and gaps from at most 2% of the late frames when both happen for 10
+  minutes), no clicks anywhere, silence while paused, and a pitch within
+  0.5% (plus 0.05% for the count) of 440 Hz. Two more checks read the
+  cushion one frame at a time until it runs dry, and stop the device's reads
+  until the ring is full and then resume them; neither may click.
 - [`tests/conformance.py`](../tests/conformance.py) is the fake launcher of
   protocol.md "Fixtures". It starts the host as a launcher would (a
   socketpair at descriptor 3, or two pipes passed with a handle list on

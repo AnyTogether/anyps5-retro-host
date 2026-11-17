@@ -125,9 +125,9 @@ void AudioStream::Cut(uint64_t read, uint64_t write) {
 // Dynamic rate control, after Arntzen's "Dynamic Rate Control for Retro Game Emulators" as
 // RetroArch does it: the rate moves in proportion to how far the averaged fill is from the
 // target, by at most kMaxRateChange. On its own that leaves the fill off the target by the
-// clocks' difference over kMaxRateChange (60% of the target for 0.3%), so a slow integral term
-// learns that difference, as RetroArch's measured sink bias does, and brings the fill back to
-// the target. Its gain makes the loop critically damped, and it is held within the bound.
+// clocks' difference over kMaxRateChange (60% of the target for 0.3%), so a slow integral term,
+// this host's own addition, learns that difference and brings the fill back to the target. Its
+// gain gives the loop a damping ratio of 1/sqrt(2), and it is held within the bound.
 void AudioStream::SteerRate(uint64_t buffered, uint32_t frames) {
   const double seconds = frames / static_cast<double>(output_rate_);
   average_ += (static_cast<double>(buffered) - average_) * std::min(1.0, seconds / kAverageSeconds);
@@ -151,11 +151,19 @@ void AudioStream::Read(int16_t* out, uint32_t frames, bool paused) {
     const uint64_t write = write_.load(std::memory_order_acquire);
     dropped_.fetch_add(write - read_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     read_.store(write, std::memory_order_release);
+    if (playing_) {
+      // The device stopped reading mid-sound: the last frame it played ramps down first.
+      for (int c = 0; c < 2; ++c) tail_from_[c] = last_[c];
+      tail_left_ = fade_frames_;
+    }
     playing_ = false;
   }
+  // A ramp still running from the last read plays out before anything else, and the sound starts
+  // again only in a read that has none left.
+  uint32_t done = !playing_ && tail_left_ > 0 ? Tail(out, frames) : 0;
   const uint64_t read = read_.load(std::memory_order_relaxed);
   const uint64_t write = write_.load(std::memory_order_acquire);
-  if (!playing_ && !paused && write - read >= target_ + InputFor(frames)) {
+  if (!playing_ && done == 0 && !paused && write - read >= target_ + InputFor(frames)) {
     // Played again only once the whole target is queued, so a late frame after a gap does not
     // make another gap straight away.
     playing_ = true;
@@ -163,35 +171,53 @@ void AudioStream::Read(int16_t* out, uint32_t frames, bool paused) {
     average_ = static_cast<double>(target_);
     ma_resampler_reset(&resampler_->resampler);
   }
-  uint32_t done = 0;
+  uint32_t produced = 0;
   bool fade_out = false;
   if (playing_ && paused) {
-    done = Produce(out, std::min(frames, fade_frames_));
+    produced = Produce(out, std::min(frames, fade_frames_));
     fade_out = true;
     playing_ = false;
   } else if (playing_) {
     if (write - read > high_water_) Cut(read, write);
-    done = Produce(out, frames);
-    SteerRate(write - read_.load(std::memory_order_relaxed), frames);
-    if (done < frames) {
+    produced = Produce(out, frames);
+    // The writer may have written since the snapshot above, and Produce may have read some of it.
+    SteerRate(write_.load(std::memory_order_acquire) - read_.load(std::memory_order_relaxed), frames);
+    if (produced < frames) {
       fade_out = true;
       playing_ = false;
       underruns_.fetch_add(1, std::memory_order_relaxed);
     }
   }
-  for (uint32_t i = 0; i < done && fade_in_left_ > 0; ++i, --fade_in_left_) {
+  for (uint32_t i = 0; i < produced && fade_in_left_ > 0; ++i, --fade_in_left_) {
     const float gain = static_cast<float>(fade_frames_ - fade_in_left_ + 1) / static_cast<float>(fade_frames_ + 1);
     for (int c = 0; c < 2; ++c) out[i * 2 + c] = static_cast<int16_t>(std::lround(out[i * 2 + c] * gain));
   }
-  if (fade_out) {
-    const uint32_t length = std::min(done, fade_frames_);
-    for (uint32_t i = 0; i < length; ++i) {
-      const float gain = static_cast<float>(length - i) / static_cast<float>(length + 1);
-      int16_t* frame = out + (done - length + i) * 2;
+  if (playing_ || produced > 0) done = produced;
+  if (fade_out && produced >= fade_frames_) {
+    for (uint32_t i = 0; i < fade_frames_; ++i) {
+      const float gain = static_cast<float>(fade_frames_ - i) / static_cast<float>(fade_frames_ + 1);
+      int16_t* frame = out + (produced - fade_frames_ + i) * 2;
       for (int c = 0; c < 2; ++c) frame[c] = static_cast<int16_t>(std::lround(frame[c] * gain));
     }
+  } else if (fade_out) {
+    // Too little sound is left to fade (none when the last read took exactly what was queued):
+    // the last frame played ramps down to silence instead, over the same length.
+    for (int c = 0; c < 2; ++c) tail_from_[c] = produced > 0 ? out[(produced - 1) * 2 + c] : last_[c];
+    tail_left_ = fade_frames_;
+    done = produced + Tail(out + produced * 2, frames - produced);
   }
+  if (done > 0)
+    for (int c = 0; c < 2; ++c) last_[c] = out[(done - 1) * 2 + c];
   std::memset(out + done * 2, 0, (frames - done) * 2 * sizeof(int16_t));
+}
+
+uint32_t AudioStream::Tail(int16_t* out, uint32_t frames) {
+  const uint32_t count = std::min(frames, tail_left_);
+  for (uint32_t i = 0; i < count; ++i, --tail_left_) {
+    const float gain = static_cast<float>(tail_left_) / static_cast<float>(fade_frames_ + 1);
+    for (int c = 0; c < 2; ++c) out[i * 2 + c] = static_cast<int16_t>(std::lround(tail_from_[c] * gain));
+  }
+  return count;
 }
 
 struct AudioOutput::Device {
