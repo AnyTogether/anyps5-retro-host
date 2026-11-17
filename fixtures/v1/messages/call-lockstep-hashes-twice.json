@@ -1,0 +1,28 @@
+{
+  "description": "A lockstep hashes list that names a hash twice is an argument error.",
+  "from": "launcher",
+  "invalid": "lockstep args.hashes lists one to three of ram, video and state, each once",
+  "message": {
+    "type": "call",
+    "id": 13,
+    "method": "lockstep",
+    "args": {
+      "check": 1,
+      "hashes": [
+        "ram",
+        "ram"
+      ]
+    }
+  },
+  "reply": {
+    "type": "reply",
+    "id": 13,
+    "error": {
+      "code": "argument",
+      "message": "lockstep.hashes must list one to three of \"ram\", \"video\" and \"state\", each once."
+    }
+  },
+  "anyValueFor": [
+    "error.message"
+  ]
+}
