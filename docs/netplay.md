@@ -3,15 +3,24 @@
 
 # PS1 online play through the host
 
-This is the design for playing a PS1 game online with a friend when the
-game runs in `anyps5-retro-host`. It says which program owns what and what
-the host adds for it, one capability at a time, each with its own tests.
-[protocol.md](protocol.md) is the contract for each capability once it is
-built.
+> **Status: a proposal, except for the core build identity.** The core build
+> identity (capability `coreIdentity`, "Core build identity" below) is decided
+> and built. The rest of this document, in particular the launcher carrying
+> online play over AnyTogether's WebRTC connection and its TURN relay, and a
+> friend joining a running game from the other player's state, is a proposal
+> the maintainers have not agreed on yet. It touches AnyTogether's online
+> service and relay traffic, and it changes only after that discussion.
+> Sections that are part of the proposal say so.
+
+This is a proposed design for playing a PS1 game online with a friend when
+the game runs in `anyps5-retro-host`. It says which program would own what
+and what the host would add for it, one capability at a time, each with its
+own tests. [protocol.md](protocol.md) is the contract for each capability once
+it is built.
 
 Built so far: the core build identity (capability `coreIdentity`, `core` in
 protocol.md "status"), which two players' launchers compare before a match.
-The steps after it are in [Steps](#steps).
+The proposed steps after it are in [Steps](#steps).
 
 ## What others do
 
@@ -40,20 +49,26 @@ need the same emulator build; and desyncs are found by comparing hashes.
 
 ## Who owns the network
 
-**The launcher owns the network. The host never opens a socket.**
+> **Proposal, not agreed.** Only the rule that the host never opens a socket
+> is decided (protocol.md "Network"). Carrying a match over AnyTogether's
+> WebRTC connection and TURN relay is a proposal for the maintainers to
+> discuss, since it touches AnyTogether's online service and relay traffic.
 
-- The launcher already has everything a match needs: the signed-in account,
+**Proposed: the launcher owns the network. The host never opens a socket.**
+
+- The launcher already has what a match would need: the signed-in account,
   the friend list, invitations, the lobby, and AnyTogether's WebRTC
-  connection with its TURN relay. PS2 and PS3 online play use the same
-  transport, so it stays in one place.
+  connection with its TURN relay. PS2 and PS3 online play could use the same
+  transport, so it would stay in one place.
 - The host runs third-party emulator code. Keeping it off the network keeps
   protocol.md's rule ("Network"), which CI enforces by tracing the host's
   network calls, and means a flaw in a core cannot be reached from the
   internet.
 - The host owns what only it can do well: telling the launcher which core
-  build it loaded, and, in the later steps, running exactly one frame per
-  input, saving and loading the core's state between frames, and hashing
-  what each frame left behind. These need the core and the game's thread.
+  build it loaded (decided), and, in the proposed later steps, running
+  exactly one frame per input, saving and loading the core's state between
+  frames, and hashing what each frame left behind. These need the core and
+  the game's thread.
 
 ## Core build identity
 
@@ -160,6 +175,10 @@ players need the same host release to play together.
 
 ## Steps
 
+> **Proposal, not agreed** beyond step 1. The later steps are the proposed
+> order; step 4's joining a running game from the other player's state is
+> part of the proposal the maintainers have not agreed on.
+
 Each step is a capability of its own, with its tests, and changes the
 identity when it adds a SwanStation patch:
 
@@ -171,9 +190,9 @@ identity when it adds a SwanStation patch:
    with exactly the input in it, and sends hashes of what chosen frames left
    behind (`sync`), so two players' launchers can compare them.
 4. `saveState` and `loadState`, with the SwanStation patches a state needs
-   to bring back everything that affects later frames, so a friend can join
-   a running game from the other player's state, and the launcher can keep
-   states in memory.
+   to bring back everything that affects later frames, so that the launcher
+   can keep states in memory and, if the maintainers agree to it, a friend
+   can join a running game from the other player's state (proposal).
 5. `ps1Rollback`: the host runs frames on predicted input and, when the real
    input differs, loads the state before the first wrong frame and runs
    again, between two frames.
