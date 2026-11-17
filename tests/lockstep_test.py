@@ -18,7 +18,9 @@ and
 
 compares the files several systems wrote, as two players' launchers compare syncs
 (docs/netplay.md "Lockstep first, rollback after"): every frame's ram must be the same on all of
-them, and its video on all of them that report the same hardware."""
+them, and its video on all of them that draw in software. Systems that draw with OpenGL may round
+differently on other GPUs and drivers, so a picture that differs between them is printed as a
+warning, not a failure."""
 
 import argparse
 import json
@@ -432,6 +434,7 @@ def same_systems(paths):
     for name, value in sorted(written.items()):
         groups.setdefault(value['hardware'], []).append(name)
         print(f'{name}: hardware={value["hardware"]} last={value["syncs"][-1]}')
+    opengl_differs = None
     for index, frame in enumerate(next(iter(frames.values()))):
         rams = {value['syncs'][index]['ram'] for value in written.values()}
         if len(rams) != 1 or None in rams:
@@ -440,12 +443,19 @@ def same_systems(paths):
             return 1
         for hardware, names in groups.items():
             videos = {written[name]['syncs'][index]['video'] for name in names}
-            if len(videos) != 1:
-                print(f'FAILED: frame {frame}: systems with hardware={hardware} have different pictures: '
-                      f'{ {name: written[name]["syncs"][index]["video"] for name in names} }')
+            if len(videos) == 1:
+                continue
+            pictures = {name: written[name]['syncs'][index]['video'] for name in names}
+            if not hardware:
+                print(f'FAILED: frame {frame}: systems that draw in software have different pictures: {pictures}')
                 return 1
+            if opengl_differs is None:
+                opengl_differs = frame
+                print(f'warning: frame {frame}: systems that draw with OpenGL have different pictures: {pictures}')
     count = len(next(iter(frames.values())))
-    print(f'{count} frames: the same RAM on all {len(written)} systems; the same picture within each renderer '
+    alike = 'differs from frame ' + str(opengl_differs) if opengl_differs is not None else 'is the same'
+    print(f'{count} frames: the same RAM on all {len(written)} systems; the picture is the same in software '
+          f'and {alike} with OpenGL '
           f'({", ".join(f"hardware={hardware}: {len(names)}" for hardware, names in sorted(groups.items()))})')
     return 0
 

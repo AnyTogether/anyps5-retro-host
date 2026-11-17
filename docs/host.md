@@ -393,8 +393,10 @@ A crash gives none of these, so the tests expect the exact code.
   since SwanStation's state names the disc's path. `--syncs-out` writes that
   cold boot's syncs and `status.hardware`, and `real-core.yml`'s `same-core`
   job compares the four systems' files with `--same`: every frame's `ram`
-  on all of them, and its `video` between the systems with the same
-  `hardware` ([netplay.md](netplay.md) "Lockstep first, rollback after" says
+  on all of them must match, and its `video` between the systems that draw
+  in software; a `video` that differs between systems drawing with OpenGL is
+  printed as a warning, since other GPUs and drivers may round differently
+  ([netplay.md](netplay.md) "Lockstep first, rollback after" says
   why Windows' picture differs there). For lockstep the fake
   core keeps four words of "system RAM" (the frame count, a mix of every
   input it read, and the last buttons of each port) and serializes them with

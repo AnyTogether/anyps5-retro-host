@@ -343,7 +343,9 @@ So a sync check must:
 
 The `real-core` workflow's `same-core` job checks this across systems: it
 compares the cold-boot syncs each system's lockstep test wrote, `ram` for
-all four and `video` between the systems that report the same `hardware`.
+all four and `video` between the systems that draw in software, and prints a
+warning when `video` differs between systems that draw with OpenGL. At
+3578052 the three OpenGL runners matched in every frame.
 
 ## Lobby, seats and controller ports
 
@@ -456,4 +458,5 @@ identity when it adds a SwanStation patch:
     `sync` compares"). The `real-core` workflow runs it on Linux, macOS and
     Windows for 600 frames, and its `same-core` job compares those syncs
     across the four systems (`--syncs-out`, `--same`): `ram` on all of
-    them, `video` between the systems that report the same `hardware`.
+    them, `video` between the systems that draw in software, and a warning
+    when it differs between systems that draw with OpenGL.
