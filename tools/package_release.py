@@ -259,6 +259,8 @@ def dependency_notices(folder, prefix, option):
 
 
 COPYRIGHT_LINE = re.compile(r'\bCopyright\s+(?:\([Cc]\)\s*)?[0-9][0-9, -]*[0-9]\s+\S.*$')
+SPDX_COPYRIGHT = re.compile(r'\bSPDX-FileCopyrightText:\s*(\S.*)$')
+SPDX_MIT = re.compile(r'\bSPDX-License-Identifier:\s*MIT\s*$', re.M)
 COMMENT_MARK = re.compile(r'^\s*(?:/\*+|\*+/|\*+|//+|#+)?\s?')
 MIT_GRANT = re.compile(r'Permission\s+is\s+hereby\s+granted,\s+free\s+of\s+charge,.*?'
                        r'DEALINGS\s+IN\s+THE\s+(?:SOFTWARE|MATERIALS)\.', re.DOTALL)
@@ -275,22 +277,39 @@ def source_files(path):
                                                if item.is_file() and item.suffix in SOURCE_SUFFIXES)
 
 
+def copyright_lines(text):
+    """Each copyright line of a file: "Copyright <years> <holder>" lines, and SPDX-FileCopyrightText
+    lines written as "Copyright <what they say>"."""
+    lines = set()
+    for line in text.splitlines():
+        match = COPYRIGHT_LINE.search(line)
+        spdx = SPDX_COPYRIGHT.search(line)
+        if match:
+            lines.add(' '.join(match.group(0).split()))
+        elif spdx:
+            holder = ' '.join(spdx.group(1).split())
+            lines.add(holder if holder.startswith('Copyright') else f'Copyright {holder}')
+    return lines
+
+
 def mit_notice(name, path):
     """licenses/NAME for MIT code built into the zip whose notice is only in its source files: each
     distinct MIT grant those files state, after every distinct copyright line of the files that
-    state it, so the zip carries the notice the licence asks for without the source."""
+    state it (SPDX-FileCopyrightText lines included), so the zip carries the notice the licence asks
+    for without the source. A file that names MIT only by its SPDX identifier gets the MIT grant of
+    the host's LICENSES/MIT.txt."""
     grants = {}
+    standard = MIT_GRANT.search((ROOT / 'LICENSES' / 'MIT.txt').read_text('utf-8')).group(0)
     for file in source_files(path):
         text = plain_comment(file.read_text('utf-8', errors='replace'))
         found = MIT_GRANT.search(text)
-        if not found:
+        if found:
+            grant = found.group(0)
+        elif SPDX_MIT.search(text):
+            grant = standard
+        else:
             continue
-        grant = ' '.join(found.group(0).split())
-        lines = grants.setdefault(grant, set())
-        for line in text.splitlines():
-            match = COPYRIGHT_LINE.search(line)
-            if match:
-                lines.add(' '.join(match.group(0).split()))
+        grants.setdefault(' '.join(grant.split()), set()).update(copyright_lines(text))
     if not grants or not all(grants.values()):
         raise SystemExit(f'--mit-notice {name}: {path} states no MIT grant with a copyright line')
     parts = [f'{name.removesuffix(".txt")}: the MIT notices its source files state.\n']

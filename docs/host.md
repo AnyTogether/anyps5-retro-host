@@ -748,7 +748,9 @@ release can be packed and checked by hand the same way.
 - **Licences in a zip.** Licence files are copied as they are; code whose
   notice is only in its source files gets a notice the packer gathers:
   `--mit-notice` writes each distinct MIT grant the files state, after the
-  distinct copyright lines of the files that state it, and `--bsd-notice`
+  distinct copyright lines of the files that state it (`SPDX-FileCopyrightText`
+  lines too, written as `Copyright <text>`; a file that names MIT only by its
+  SPDX identifier gets the MIT text of the host's `LICENSES/MIT.txt`), and `--bsd-notice`
   writes each distinct BSD licence the files state, from the copyright lines
   just above it to the end of its disclaimer, with the files' own line breaks.
   `--core-notices` and `--ps2-core-notices` copy every licence, copying,
@@ -766,11 +768,11 @@ release can be packed and checked by hand the same way.
   | SwanStation's `dep/` (libchdr, LZMA SDK, OpenBIOS, VIXL, xbyak, xxHash) | their own | `licenses/swanstation-dep/` (`--core-notices`) |
   | SwanStation's Vulkan headers | Apache-2.0 | `licenses/swanstation-vulkan-headers-Apache-2.0.txt` (fetched) |
   | SwanStation's libretro-common, glad (Khronos' `khrplatform.h`) and stb | MIT | `licenses/swanstation-libretro-common-MIT.txt`, `-glad-MIT.txt`, `-stb-MIT.txt` (`--mit-notice`) |
-  | LRPS2's own code (`libretro/`, FireWire, the Python 2 and Perfect Pool USB devices, EyeToy) | GPL-3.0 (some files GPL-3.0-or-later or GPL-2.0-or-later) | `licenses/lrps2-GPL-3.0.txt` (its `COPYING.GPLv3`) |
+  | LRPS2's own code (`libretro/`, FireWire, the Python 2 and Perfect Pool USB devices, EyeToy, and the GPL-2.0-or-later USB files `bus.c`, `desc.c`, `usb-ohci.c`) | GPL-3.0 (some files GPL-3.0-or-later or GPL-2.0-or-later, taken as GPL-3.0) | `licenses/lrps2-GPL-3.0.txt` (its `COPYING.GPLv3`) |
   | LRPS2's PCSX2 files and paraLLEl-GS | LGPL-3.0-or-later | `licenses/lrps2-LGPL-3.0-or-later.txt` (fetched; SPDX's copy holds the GPL-3.0 text too) |
   | Granite, in paraLLEl-GS | MIT | `licenses/lrps2-granite-MIT.txt` (`--mit-notice`) |
   | libretro-common, in LRPS2 | MIT | `licenses/lrps2-libretro-common-MIT.txt` (`--mit-notice`) |
-  | QEMU's USB core and HID code (`pcsx2/USB/libretro-usb`) | MIT | `licenses/lrps2-usb-qemu-MIT.txt` (`--mit-notice`) |
+  | QEMU's USB core and HID code and `qusb.h` (`core.c`, `hid.c`, `qusb.h` in `pcsx2/USB/libretro-usb`; QEMU's and the PCSX2 Dev Team's copyright) | MIT | `licenses/lrps2-usb-qemu-MIT.txt` (`--mit-notice` over the folder, which takes only its MIT files) |
   | QEMU's copy of BSD `queue.h` | BSD-3-Clause | `licenses/lrps2-usb-queue-BSD-3-Clause.txt` (`--bsd-notice`) |
   | xxHash (`3rdparty/include/xxhash.h`) | BSD-2-Clause | `licenses/lrps2-xxhash-BSD-2-Clause.txt` (`--bsd-notice`) |
   | Khronos' `khrplatform.h` (`3rdparty/GL`, and the same file in `3rdparty/glad`) | MIT | `licenses/lrps2-khrplatform-MIT.txt` (`--mit-notice`) |

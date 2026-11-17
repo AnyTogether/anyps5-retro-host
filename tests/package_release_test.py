@@ -439,6 +439,17 @@ with tempfile.TemporaryDirectory() as folder:
     check('an MIT notice carries the grant the files state', ' '.join(notice.split()).endswith(grant), True)
     check('an MIT notice of one file', [line for line in p.mit_notice('a', mit / 'a.c').decode().splitlines()
                                         if line.startswith('Copyright')], ['Copyright (C) 2010-2020 The A team'])
+    spdx = folder / 'mit-spdx'
+    spdx.mkdir()
+    (spdx / 'core.c').write_text(f'/* SPDX-FileCopyrightText: 2002-2026 The C team */\n/* SPDX-License-Identifier: MIT */\n'
+                                 f'/*\n * Copyright (c) 2005 D\n *\n{wrapped}\n */\n')
+    (spdx / 'only.h').write_text('/* SPDX-FileCopyrightText: 2020 The E team */\n/* SPDX-License-Identifier: MIT */\n')
+    (spdx / 'other.h').write_text('/* SPDX-FileCopyrightText: 2020 The F team */\n'
+                                  '/* SPDX-License-Identifier: MIT-0 */\n')
+    notice = p.mit_notice('spdx-MIT.txt', spdx).decode('utf-8')
+    check('an MIT notice keeps SPDX copyright lines, and gives an SPDX-only MIT file the MIT grant',
+          [line for line in notice.splitlines() if line.startswith('Copyright')],
+          ['Copyright 2020 The E team', 'Copyright (c) 2005 D', 'Copyright 2002-2026 The C team'])
     (folder / 'no-mit').mkdir()
     (folder / 'no-mit' / 'c.c').write_text('/* Copyright (c) 2019 Other */\n')
     try:
