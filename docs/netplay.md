@@ -10,8 +10,10 @@ the host adds for it, one capability at a time, each with its own tests.
 built.
 
 Built so far: the core build identity (capability `coreIdentity`, `core` in
-protocol.md "status"), which two players' launchers compare before a match.
-The steps after it are in [Steps](#steps).
+protocol.md "status"), which two players' launchers compare before a match,
+and the game's frame rate and region (capability `gameTiming`, `timing` in
+protocol.md "status"), which a match's frame clock follows. The steps after
+them are in [Steps](#steps).
 
 ## What others do
 
@@ -151,15 +153,44 @@ above 1x, is what the hashes compared during a match are for. When a patch is
 added or changed, or the SwanStation commit moves, the identity changes, and
 players need the same host release to play together.
 
+## Frame rate
+
+Once the host runs one frame per input (step 3 in [Steps](#steps)), the
+launcher's frames are the game's frames, and in rollback (step 5) the
+launcher's frame clock is the game's only clock: the host runs each step as
+it comes. That clock must run at the game's own rate. A PS1 game does not
+always run at 60 frames a second: SwanStation gives the vertical frequency
+of the video mode the game set, about 60 for NTSC and 50 for PAL (a European
+game sets PAL), and gives a new one when the game changes its mode. At
+631f0fb `real_core.py` measured 59.817 for a progressive NTSC mode and
+49.747 for a PAL mode, the same on Windows, Linux and macOS. A clock fixed
+at 60 would run a PAL game a fifth too fast, and an NTSC game slightly off
+its console's rate.
+
+RetroArch paces its main loop to the core's `retro_system_av_info`
+`timing.fps` and follows `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO`; GGPO leaves
+the frame rate to the game, which advances its own clock. The host already
+does the first when it keeps its own time, and with capability `gameTiming`
+it reports that rate, and the core's `retro_get_region`, as `status.timing`
+([protocol.md](protocol.md) "status"), so the launcher's clock can be the
+second: it steps a frame every 1 ÷ `fps` seconds and takes a new `fps` from
+the next `status`. The value comes from the emulated console, so both
+players' hosts report the same rate at the same frame; it is not a measure
+of either machine's speed.
+
+The input delay, the round trip in frames and whether a rollback fits in a
+frame are all counted in frames of that length: 16.7 ms in an NTSC game and
+20 ms in a PAL one. With an input delay of half the round trip in frames
+plus one, at most 8, the longest round trip a match takes is about 230 ms in
+an NTSC game and 280 ms in a PAL one.
+
 ## Steps
 
 Each step is a capability of its own, with its tests, and changes the
 identity when it adds a SwanStation patch:
 
 1. `coreIdentity`: built (above).
-2. `gameTiming`: `status.timing`, the frame rate the host paces the game to
-   and the game's region, so a launcher's frame clock can follow a PAL game
-   at 50 frames a second.
+2. `gameTiming`: built ("Frame rate", above).
 3. `ps1Lockstep`: the game runs one frame for each `step` the launcher sends,
    with exactly the input in it, and sends hashes of what chosen frames left
    behind (`sync`), so two players' launchers can compare them.
@@ -178,6 +209,15 @@ identity when it adds a SwanStation patch:
   passes `library_name` and `library_version` on as protocol.md says, `""`
   for a value that is not printable ASCII of at most 256 bytes, and `null`
   for a core that did not load.
+- `host_test.py` `game_timing` checks with the test core that
+  `status.timing` is 60 and `ntsc` for its NTSC game, 50 and `pal` for its
+  PAL game, and 50 and `ntsc` once a game has switched to 50 while it runs;
+  that a game runs no faster than that rate; and that it is `null` for a
+  core that did not load.
+- `real_core.py` checks SwanStation's `status.timing` on an auto-detected
+  console (`ntsc` or `pal`, about 50 or 60) and on a PAL console running a
+  program that sets a PAL video mode (`pal`, about 50), and that the game
+  publishes no more frames than that rate allows.
 - `real_core.py --expect-core-version` checks that the real SwanStation,
   built with the patches, reports the identity `tools/core_identity.py`
   computes, in the `real-core` workflow on every system and in the `release`
