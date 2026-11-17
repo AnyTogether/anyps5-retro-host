@@ -64,8 +64,10 @@ killing. It never uses the `pid` in [`welcome`](#welcome) for those. A
 
 **Network.** In version 1, the host and the core MUST NOT open any network
 connection or listening socket. The only channel the host has is the one the
-launcher hands it. Reading a game or BIOS file that the operating system
-serves from a network share (SMB, NFS) is ordinary file access, not a
+launcher hands it. LRPS2 can emulate the PS2's ethernet adapter with real
+sockets, so the host fixes its `pcsx2_dev9_eth` option at `disabled` (see
+[start](#start)), whatever the launcher sends. Reading a game or BIOS file
+that the operating system serves from a network share (SMB, NFS) is ordinary file access, not a
 network connection under this rule, and neither is playing sound through the
 system's sound service over its local socket (PulseAudio or PipeWire on
 Linux). The host repository's CI traces the host's network calls with
@@ -669,14 +671,25 @@ Loads and starts a PS1 game, or, with the `ps2` capability and `console`
 | `options` | object of strings, optional | Core option values saved by the player, by key, including the internal resolution (`swanstation_GPU_ResolutionScale`). Unknown keys and values are ignored |
 | `initialDisc` | integer 0 to 127, optional | Only for an `.m3u`: the index of the playlist entry to insert at boot. With any other `disc`, and for a PS2 game, it is an `argument` error |
 
-A PS2 game's memory card is the core's own: LRPS2 keeps card 1 as `<disc's
-name without its extension>.ps2` in `saves`, creating it formatted when it is
-missing, and writes it itself, so the `.srm` rules above and
-`cardUnreadable` do not cover it. The host gives LRPS2 fixed values for
-`pcsx2_shared_memory_cards` (`disabled`, which makes that per-game card),
-`pcsx2_renderer` (`Auto`) and `pcsx2_multitap` (`disabled`), whatever
-`options` says, and leaves them out of `status.options` ([ps2.md](ps2.md)
-"What the protocol gains").
+A PS2 game's memory card is the core's own: per LRPS2's source, not yet seen
+in a running game, it keeps card 1 as `<disc's name without its
+extension>.ps2` in `saves`, creating it formatted when it is missing, and
+writes it itself, so the `.srm` rules above and `cardUnreadable` do not cover
+it. The host gives LRPS2 fixed values for `pcsx2_shared_memory_cards`
+(`disabled`, which makes that per-game card), `pcsx2_renderer` (`Auto`),
+`pcsx2_multitap` (`disabled`), `pcsx2_usb_camera` (`disabled`, so the core
+opens no webcam or microphone), `pcsx2_dev9_eth` (`disabled`, so it opens no
+network connection; see "Network" above), `pcsx2_dev9_hdd` (`disabled`, so it
+creates no hard disk image) and `pcsx2_dev9_hdd_size` (`40 GiB`, its default,
+which does nothing with no hard disk), whatever `options` says, and leaves
+them out of `status.options` ([ps2.md](ps2.md) "What the protocol gains").
+`pcsx2_bios` has `restart` `true`: LRPS2 reads it only when it loads a game.
+
+The host knows the `library_name` of the cores it is built with: `SwanStation`
+and `SwanStation Debug` for PS1, `ParaLLEl PS2` for PS2. A core that reports
+one of them for the other console (for example LRPS2 with `console` `"ps1"`)
+ends the game with `errorCode` `core` and `status.core` `null`, before the
+host gives it the game or any option. The host does not judge any other name.
 
 The result is `{"epoch":<integer>}`. The epoch identifies this game's frames
 in the ring (see [Frame ring](#frame-ring)). It is 1 for the host's first
@@ -1112,3 +1125,5 @@ or a different one.
 
 [`tools/check_fixtures.py`](../tools/check_fixtures.py) checks every message
 in the fixtures against the fields, types, ranges and order in this document.
+In a session, every `status` the host sends has the fields of the
+capabilities its `welcome` listed: `console` with `ps2`.

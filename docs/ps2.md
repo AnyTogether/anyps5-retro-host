@@ -117,9 +117,10 @@ workflow checks every system's build against it and against each other
 A PS2 BIOS is Sony's code, so it is **never shipped, downloaded or put in a
 test**. The player dumps it from their own console.
 
-**Where the launcher puts it.** Settings › Emulators gets a PS2 row beside the
-PS1 one. The player picks their BIOS file there, and the launcher copies it
-into `pcsx2/bios` under the system directory it already sends as
+**Where the launcher puts it (a proposal).** The launchers have not planned
+this yet; this is one way it could work. Settings › Emulators gets a PS2 row
+beside the PS1 one. The player picks their BIOS file there, and the launcher
+copies it into `pcsx2/bios` under the system directory it already sends as
 `start.system` (the PS1 BIOS lives at the top of that same folder), keeping
 its file name, with the `.nvm` and `.mec` files of the same name when they sit
 beside the picked file. LRPS2 keeps the console's settings in that `.nvm` and
@@ -127,8 +128,8 @@ writes new default `.nvm` and `.mec` files beside the BIOS when they are
 missing (`pcsx2/CDVD/CDVD.c`). It never looks for a BIOS anywhere else, and the
 host never sends one anywhere.
 
-**How the launcher checks it.** The way LRPS2 does (`pcsx2/ps2/BiosTools.c`,
-`IsBIOS`, with its scan's size limits): it is 4 MiB to 8 MiB; somewhere in its
+**How the launcher checks it (a proposal).** The way LRPS2 does
+(`pcsx2/ps2/BiosTools.c`, `IsBIOS`, with its scan's size limits): it is 4 MiB to 8 MiB; somewhere in its
 first 8 MiB, on a 16-byte boundary, is the ROM directory entry `RESET` (ten
 bytes, padded with zeros); and the table that follows has a `ROMVER` entry
 whose 14 bytes are in the file. The launcher shows what `ROMVER` says and
@@ -138,8 +139,10 @@ format, not a list of known dumps.
 **How the host finds it.** It does not judge it. LRPS2 looks in
 `<system>/pcsx2/bios` itself when it is initialised: every file it accepts
 becomes a value of its `pcsx2_bios` option, the first is the default, and the
-launcher may name another. With none, `retro_load_game` logs
-`Could not find any valid PS2 BIOS File in "<folder>".` and fails, and the
+launcher may name another. LRPS2 reads that option only when it loads a game,
+though its title has no "(Restart)", so the host lists it with `restart`
+`true` and a change takes effect at the next start. With none,
+`retro_load_game` logs `Could not find any valid PS2 BIOS File in "<folder>".` and fails, and the
 host, which reads the core's log as it does SwanStation's for PS1, ends the
 game with `errorCode` `bios` and `error` `No PS2 BIOS was found.`. Any other
 failed load ends with `errorCode` `core` (`The core could not start the
@@ -165,11 +168,14 @@ So [`tests/ps2_core.py`](../tests/ps2_core.py) checks what can be checked with
 the real core: the host lists `ps2`; with a system directory that has no
 `pcsx2` folder, and with one whose `pcsx2/bios` holds a 4 MiB file that is not
 a BIOS, the game ends with `bios`, `console` `ps2` and LRPS2's name and
-identity before a first frame; the core loads again for a third game; and the
-host exits cleanly. The game is a small PS2 ELF the test writes (a loop at its
+identity before a first frame, and `status.options` lists none of the options
+the host fixes; the core loads again for a third game; and the host exits
+cleanly. The game is a small PS2 ELF the test writes (a loop at its
 entry point), which the core refuses before reading. `host_test.py ps2_game`
 covers the host's side with the fake core: the disc kinds, `console`, the
-`bios` and `core` endings, the fixed options and the DualShock 2.
+`bios` and `core` endings, the fixed and start-only options and the DualShock
+2, and `host_test.py core_for_other_console` a core started for the other
+console.
 
 ## Drawing
 
@@ -221,15 +227,45 @@ All of it is behind the `ps2` capability ([protocol.md](protocol.md)
 - **Memory cards**: one card per game, as for PS1. With
   `pcsx2_shared_memory_cards` fixed off, LRPS2 keeps card 1 as `<disc's name
   without its extension>.ps2` in `saves` (and creates it, formatted, when it
-  is missing) and has no card 2. Unlike PS1's `.srm`, the core reads and
+  is missing) and has no card 2. That name and format are per LRPS2's source,
+  not yet seen in a running game. Unlike PS1's `.srm`, the core reads and
   writes this file itself, so the host's rule that a card it cannot read is
   never written over does not cover it yet. Shared cards are not used: they
   would live in the system directory, and one card holding every game's saves
   is harder to keep.
-- **Options** the host sets itself and leaves out of `status.options`:
-  `pcsx2_shared_memory_cards` (`disabled`), `pcsx2_renderer` (`Auto`) and
-  `pcsx2_multitap` (`disabled`), whatever `start.options` says. SwanStation's
-  fixed and start-only option lists do not apply to a PS2 game.
+- **Options** the host sets itself and leaves out of `status.options`,
+  whatever `start.options` says:
+  - `pcsx2_shared_memory_cards` (`disabled`), `pcsx2_renderer` (`Auto`) and
+    `pcsx2_multitap` (`disabled`), for the reasons above.
+  - `pcsx2_dev9_eth` (`disabled`). Turned on, LRPS2 emulates the ethernet
+    adapter through its Sockets backend, which opens real TCP and UDP sockets
+    on the player's machine (`pcsx2/DEV9/Sessions`); protocol.md "Network"
+    forbids that.
+  - `pcsx2_usb_camera` (`disabled`). Turned on, LRPS2 takes pictures and
+    sound from the frontend's camera, and the host offers none, so on Linux it
+    opens the first webcam (`/dev/video*`) and an ALSA capture device itself
+    (`pcsx2/USB/usb-eyetoy`), without the launcher knowing.
+  - `pcsx2_dev9_hdd` (`disabled`). Turned on, LRPS2 creates
+    `pcsx2/DEV9hdd.raw` in the system directory at `pcsx2_dev9_hdd_size` (40
+    GiB by default) on first use. `pcsx2_dev9_hdd_size` is fixed at its
+    default, `40 GiB`, since it does nothing with no hard disk.
+
+  These were found by reading every option in `libretro_core_options.h` at
+  `LRPS2_COMMIT` for one that opens the network, a camera, a microphone or
+  another device, or creates a large file. The rest read files or write small
+  ones the way any libretro frontend allows: cheats and an external
+  `GameIndex.yaml` are read from the system directory when turned on, and the
+  shader cache is written to `pcsx2/cache` there unless
+  `pcsx2_disable_shader_cache` is on.
+  [`tests/ps2_core.py`](../tests/ps2_core.py) checks with the real core that
+  none of the fixed options is listed.
+
+  SwanStation's fixed and start-only option lists do not apply to a PS2 game.
+  LRPS2 has its own start-only option, `pcsx2_bios` ("The BIOS").
+- **The core for the console**: LRPS2 started as `"ps1"`, or SwanStation as
+  `"ps2"`, ends the game with `errorCode` `core` before it gets the game
+  (protocol.md "start"), so a launcher's mistake cannot run a core without the
+  options the host fixes for it.
 
 ## PS2 online play
 
@@ -269,7 +305,10 @@ loads and reports a missing BIOS.
 - Booting anything: drawing, sound, input, pacing and memory cards of a running
   PS2 game.
 - Release packaging (above).
-- The launcher side: the Settings › Emulators PS2 row, the BIOS check and copy,
-  starting PS2 games with `console`, and showing `bios`.
+- The launcher side, not yet planned by the launchers: the proposed Settings ›
+  Emulators PS2 row, BIOS check and copy, starting PS2 games with `console`,
+  and showing `bios`.
+- A camera for EyeToy games, the DEV9 ethernet adapter and the DEV9 hard
+  disk, all fixed off for now (above).
 - Vulkan, `.m3u` playlists for PS2, the host's resolution limits for
   `pcsx2_upscale_multiplier`, and protecting a memory card the core cannot read.

@@ -7,7 +7,9 @@ BIOS, and LRPS2 has no built-in one). It checks that the host lists ps2, loads t
 its name and core build identity in status.core (with --expect-core-version, and writes it with
 --core-identity-out so CI can compare systems), and ends the game with errorCode bios both when
 the system directory has no BIOS folder and when that folder holds only a file of a BIOS's size
-that is not one, that the core loads again for a later game, and that the host exits cleanly.
+that is not one, that status.options leaves out every option the host fixes for LRPS2, that the
+core loads again for a later game, and that the host exits cleanly. It prints LRPS2's entries for
+two options as status gives them, which the fixture call-status-ps2-no-bios.json shows.
 
 The game is a small PS2 program in an ELF file this test writes itself (a loop at its entry
 point); LRPS2 refuses the game before it reads the file, so it only has to be a well-formed ELF."""
@@ -36,6 +38,11 @@ options = parser.parse_args()
 CORE_NAME = 'ParaLLEl PS2'
 # The smallest and largest BIOS image LRPS2 looks at (pcsx2/ps2/BiosTools.c, MIN_BIOS_SIZE).
 BIOS_BYTES = 4 * 1024 * 1024
+# The options the host fixes for LRPS2 and leaves out of status (src/game.cpp, kPs2ForcedOptions).
+FIXED = {'pcsx2_shared_memory_cards', 'pcsx2_renderer', 'pcsx2_multitap', 'pcsx2_usb_camera', 'pcsx2_dev9_eth',
+         'pcsx2_dev9_hdd', 'pcsx2_dev9_hdd_size'}
+# Options whose status entries this test prints for the fixture.
+SHOWN = ('pcsx2_fastboot', 'pcsx2_enable_cheats')
 
 
 def loop_elf():
@@ -106,6 +113,11 @@ def ended(system, what):
         time.sleep(0.2)
     shown = {key: status.get(key) for key in ('ready', 'ended', 'errorCode', 'error', 'console', 'core')}
     print(f'{what}: {json.dumps(shown, sort_keys=True)}, {len(status.get("options", {}))} options listed')
+    for key in SHOWN:
+        print(f'{what}: {key}: {json.dumps(status.get("options", {}).get(key), sort_keys=True)}')
+    listed = sorted(FIXED & set(status.get('options', {})))
+    if listed:
+        raise c.Failed(f'{what}: status lists options the host fixes: {listed}')
     if not status or not status['ended'] or status['ready']:
         raise c.Failed(f'{what}: the game did not end before its first frame; last status {status}')
     if status['errorCode'] != 'bios' or status['error'] != 'No PS2 BIOS was found.':

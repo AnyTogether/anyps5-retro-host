@@ -277,9 +277,12 @@ A crash gives none of these, so the tests expect the exact code.
   (a binding of the old framebuffer must have moved to the new one), and when
   the host changed any it logs `[fake] The host changed the core's OpenGL
   state ...` and asks the host to shut the game down, which every OpenGL test
-  then sees as a game that ended by itself. With a `fake-ps2` file it also
-  offers LRPS2's `pcsx2_shared_memory_cards`, `pcsx2_renderer` and
-  `pcsx2_multitap` at LRPS2's defaults, writes each port's device to
+  then sees as a game that ended by itself. Its `library_name` is `fake`, or
+  the environment variable `FAKE_CORE_NAME`. With a `fake-ps2` file it also
+  offers LRPS2's `pcsx2_bios` (one value, `fake-ps2-bios.bin`),
+  `pcsx2_shared_memory_cards`, `pcsx2_usb_camera`, `pcsx2_dev9_hdd`,
+  `pcsx2_dev9_hdd_size`, `pcsx2_dev9_eth`, `pcsx2_renderer` and
+  `pcsx2_multitap` with LRPS2's titles and defaults, writes each port's device to
   `fake-ps2-ports.txt`, and loads a `.iso` or `.elf` as LRPS2 loads a PS2
   game: without `pcsx2/bios/fake-ps2-bios.bin` it logs LRPS2's message for a
   missing BIOS and fails, with `fake-ps2-fail` it fails without it, and a
@@ -332,10 +335,16 @@ A crash gives none of these, so the tests expect the exact code.
     PS1; a PS2 game with no BIOS ends with `bios` and `No PS2 BIOS was
     found.`, one the core cannot load with `core`, both with `console`
     `ps2`; a running one gets LRPS2's DualShock 2 on each connected port and
-    the host's own memory card, renderer and multitap values whatever
-    `start.options` asks, none of which `status.options` lists; and a PS1 game
-    after it in the same host is `console` `ps1` with SwanStation's analog
-    controller;
+    the host's own memory card, renderer, multitap, USB camera, DEV9 hard
+    disk, hard disk size and DEV9 ethernet values whatever `start.options`
+    asks, none of which `status.options` lists, and `pcsx2_bios` is listed
+    with `restart` `true`; and a PS1 game after it in the same host is
+    `console` `ps1` with SwanStation's analog controller;
+  - a core for the other console (`core_for_other_console`): the test core
+    reporting `ParaLLEl PS2` for a PS1 game, or `SwanStation` or
+    `SwanStation Debug` for a PS2 game, ends with `core` and no `status.core`;
+    a name the host does not know, and each known name for its own console,
+    loads;
   - eight games in a row with `volume`, `pause` and `stop` calls in between,
     each an OpenGL game (`fake-gpu`) that must draw five frames (the first
     also goes from 1x to 2x, so the framebuffer is made again under the core
@@ -445,8 +454,8 @@ A crash gives none of these, so the tests expect the exact code.
 ## SwanStation patches
 
 The host's SwanStation is upstream SwanStation at `SWANSTATION_COMMIT` with
-the patches in [`cores/patches`](../cores/patches), applied in the byte order
-of their names by
+the `swanstation-*` patches in [`cores/patches`](../cores/patches), applied in
+the byte order of their names by
 [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh),
 which runs [`cores/apply-core-patches.sh`](../cores/apply-core-patches.sh)
 `swanstation` (it keeps its name because the patch
@@ -700,7 +709,7 @@ release can be packed and checked by hand the same way.
   the one libretro-common file the host uses) and
   `licenses/swanstation-libretro-common-MIT.txt`, `-glad-MIT.txt` (Khronos'
   `khrplatform.h`) and `-stb-MIT.txt` (stb's MIT choice), and `SOURCE.txt` naming the repository
-  and commit the host is built from, the SwanStation commit, the patches and
+  and commit the host is built from, the SwanStation commit, its `swanstation-*` patches and
   the date they last modified SwanStation ("SwanStation patches"), and the source
   archive. Everything sits at the
   top of the zip except the licences. The zip is the same bytes for the same

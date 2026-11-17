@@ -116,13 +116,33 @@ constexpr const char* kFixedOptions[] = {"swanstation_MemoryCards_Card1Type", "s
 //   is <disc>.srm there, instead of cards shared by every game in the system directory;
 // - the renderer, which LRPS2 then picks by the context the host offers (OpenGL), since the host
 //   makes no Direct3D or Vulkan context;
-// - the multitap, which moves controllers away from the two ports protocol.md defines.
+// - the multitap, which moves controllers away from the two ports protocol.md defines;
+// - the USB camera, which with no camera from the frontend opens the first webcam and its
+//   microphone on Linux, and the DEV9 ethernet adapter, which opens TCP and UDP sockets: the host
+//   offers no camera and must open no network connection (protocol.md "Network");
+// - the DEV9 hard disk, whose image LRPS2 creates in the system directory at its size option
+//   (40 GiB by default) on first use, and that size, which then does nothing.
 struct ForcedOption {
   const char* key;
   const char* value;
 };
 constexpr ForcedOption kPs2ForcedOptions[] = {
-    {"pcsx2_shared_memory_cards", "disabled"}, {"pcsx2_renderer", "Auto"}, {"pcsx2_multitap", "disabled"}};
+    {"pcsx2_shared_memory_cards", "disabled"}, {"pcsx2_renderer", "Auto"},     {"pcsx2_multitap", "disabled"},
+    {"pcsx2_usb_camera", "disabled"},          {"pcsx2_dev9_eth", "disabled"}, {"pcsx2_dev9_hdd", "disabled"},
+    {"pcsx2_dev9_hdd_size", "40 GiB"}};
+// LRPS2 options it reads only when the game is loaded, though their titles have no "(Restart)":
+// the BIOS (libretro/main.c, check_variables, under first_run).
+constexpr const char* kPs2StartOnlyOptions[] = {"pcsx2_bios"};
+
+// The library_name of each core the host is built with, and its console. A core reporting one of
+// these for the other console ends the game with errorCode core; the host does not judge any other
+// name, so a launcher's or a test's own core still loads.
+struct KnownCore {
+  const char* name;
+  Console console;
+};
+constexpr KnownCore kKnownCores[] = {
+    {"SwanStation", Console::kPs1}, {"SwanStation Debug", Console::kPs1}, {"ParaLLEl PS2", Console::kPs2}};
 
 // What LRPS2 logs when it finds no BIOS (libretro/main.c, retro_load_game, at LRPS2_COMMIT;
 // docs/ps2.md "The BIOS").
@@ -226,6 +246,14 @@ bool Game::LoadCore(std::string& error) {
   }
   retro_system_info info{};
   Get<void (*)(retro_system_info*)>("retro_get_system_info")(&info);
+  for (const KnownCore& known : kKnownCores) {
+    if (info.library_name && std::strcmp(info.library_name, known.name) == 0 && known.console != config_.console) {
+      error = std::string("The core is ") + known.name + ", which is not for " +
+              (config_.console == Console::kPs2 ? "PS2" : "PS1") + " games.";
+      library_.Close();
+      return false;
+    }
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   core_identity_.emplace(IdentityText(info.library_name), IdentityText(info.library_version));
   return true;
@@ -567,7 +595,8 @@ bool Game::Environment(unsigned command, void* data) {
         const bool ps1 = config_.console == Console::kPs1;
         const ForcedOption* forced = Forced(config_.console, option.key);
         option.restart = (text.size() >= 9 && text.compare(text.size() - 9, 9, "(Restart)") == 0) ||
-                         (ps1 && Listed(kStartOnlyOptions, std::size(kStartOnlyOptions), option.key));
+                         (ps1 && Listed(kStartOnlyOptions, std::size(kStartOnlyOptions), option.key)) ||
+                         (!ps1 && Listed(kPs2StartOnlyOptions, std::size(kPs2StartOnlyOptions), option.key));
         option.fixed = forced || (ps1 && Listed(kFixedOptions, std::size(kFixedOptions), option.key));
         for (const retro_core_option_value* value = definition->values;
              value != definition->values + RETRO_NUM_CORE_OPTION_VALUES_MAX && value->value; ++value) {

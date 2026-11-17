@@ -1,5 +1,5 @@
 {
-  "description": "Status of a PS2 game whose system directory holds no BIOS LRPS2 takes: it ended before its first frame, with the core loaded.",
+  "description": "Status of a PS2 game whose system directory holds no BIOS LRPS2 takes: it ended before its first frame, with the core loaded. options shows two of the options LRPS2 lists at LRPS2_COMMIT as tests/ps2_core.py prints them; the real core lists about 70, and none the host fixes.",
   "from": "launcher",
   "message": {
     "type": "call",
@@ -20,7 +20,36 @@
       "graphicsPending": false,
       "progressLabel": null,
       "progressPercent": null,
-      "options": {},
+      "options": {
+        "pcsx2_fastboot": {
+          "title": "System > Fast Boot (Restart)",
+          "values": [
+            "enabled",
+            "disabled"
+          ],
+          "labels": [
+            "enabled",
+            "disabled"
+          ],
+          "selected": 0,
+          "activeValue": "enabled",
+          "restart": true
+        },
+        "pcsx2_enable_cheats": {
+          "title": "System > Enable Cheats",
+          "values": [
+            "enabled",
+            "disabled"
+          ],
+          "labels": [
+            "enabled",
+            "disabled"
+          ],
+          "selected": 1,
+          "activeValue": "disabled",
+          "restart": false
+        }
+      },
       "cardUnreadable": false,
       "console": "ps2",
       "core": {

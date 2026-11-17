@@ -199,7 +199,8 @@
               "activeValue": "4",
               "restart": false
             }
-          }
+          },
+          "console": "ps1"
         }
       },
       "anyValueFor": [
@@ -278,7 +279,8 @@
               "activeValue": "4",
               "restart": false
             }
-          }
+          },
+          "console": "ps1"
         }
       },
       "anyValueFor": [

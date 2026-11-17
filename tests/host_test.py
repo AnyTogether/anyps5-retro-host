@@ -4,7 +4,8 @@
 """Host behaviour the fixtures do not cover: a stuck core, the core's names in status.core, the
 memory card, ring growth, epochs across games, how the host leaves when the launcher goes, many
 start, volume and stop calls in a row, the internal resolutions a GPU game is offered, an OpenGL
-game's network calls, and a PS2 game (capability ps2, docs/ps2.md) as the host runs LRPS2."""
+game's network calls, a PS2 game (capability ps2, docs/ps2.md) as the host runs LRPS2, and a core
+started for the other console."""
 
 import argparse
 import os
@@ -854,8 +855,9 @@ def ps2_game(program, core, log):
     """A PS2 game (protocol.md "start", console; docs/ps2.md): the host takes only PS2 discs for it,
     reports the console, a missing BIOS as errorCode bios the way LRPS2 says it found none, and any
     other failed load as core; it gives the core LRPS2's DualShock 2 and its own memory card,
-    renderer and multitap values whatever the launcher asks, and keeps them out of status. A PS1
-    game after it in the same host is a PS1 game again."""
+    renderer, multitap, USB camera, DEV9 hard disk and DEV9 ethernet values whatever the launcher
+    asks, and keeps them out of status; it lists the BIOS as applied at the next start. A PS1 game
+    after it in the same host is a PS1 game again."""
     session = Session(program, core, log)
     try:
         work = session.work
@@ -865,7 +867,9 @@ def ps2_game(program, core, log):
         iso.write_bytes(b'\0' * 2048)
         ps2 = {'console': 'ps2', 'core': session.paths['core'], 'disc': str(iso), 'system': str(system),
                'saves': session.paths['saves']}
-        asked = {'pcsx2_shared_memory_cards': 'enabled', 'pcsx2_renderer': 'Vulkan', 'pcsx2_multitap': 'port 1'}
+        asked = {'pcsx2_shared_memory_cards': 'enabled', 'pcsx2_renderer': 'Vulkan', 'pcsx2_multitap': 'port 1',
+                 'pcsx2_usb_camera': 'eyetoy', 'pcsx2_dev9_eth': 'enabled', 'pcsx2_dev9_hdd': 'enabled',
+                 'pcsx2_dev9_hdd_size': '120 GiB'}
 
         refused = [dict(ps2, console='ps3'), dict(ps2, console=2), dict(ps2, console=None),
                    dict(ps2, disc=str(work / 'discs' / 'game.pbp')), dict(ps2, disc=session.paths['playlist']),
@@ -898,10 +902,13 @@ def ps2_game(program, core, log):
             ports.unlink()
         session.start(str(iso), console='ps2', options=asked)
         status = session.wait(lambda s: s and s['ready'], 10)
-        if status.get('console') != 'ps2' or set(asked) & set(status['options']):
+        if (status.get('console') != 'ps2' or set(asked) & set(status['options']) or
+                status['options'].get('pcsx2_bios', {}).get('restart') is not True):
             raise c.Failed(f'a running PS2 game gave {status}')
-        given = (system / 'fake-ps2-options.txt').read_text(encoding='utf-8').split()
-        if given != ['pcsx2_shared_memory_cards=disabled', 'pcsx2_renderer=Auto', 'pcsx2_multitap=disabled']:
+        given = (system / 'fake-ps2-options.txt').read_text(encoding='utf-8').splitlines()
+        if given != ['pcsx2_bios=fake-ps2-bios.bin', 'pcsx2_shared_memory_cards=disabled', 'pcsx2_usb_camera=disabled',
+                     'pcsx2_dev9_hdd=disabled', 'pcsx2_dev9_hdd_size=40 GiB', 'pcsx2_dev9_eth=disabled',
+                     'pcsx2_renderer=Auto', 'pcsx2_multitap=disabled']:
             raise c.Failed(f'the core was given {given}')
         if session.call('connectedPorts', 2) is not True:
             raise c.Failed('a PS2 game did not take a second controller')
@@ -925,6 +932,47 @@ def ps2_game(program, core, log):
         session.close()
 
 
+def core_for_other_console(program, core, log):
+    """A core whose library_name is one the host is built with for the other console (protocol.md
+    "start") ends the game with errorCode core and no status.core before it loads a game; a name
+    the host does not know loads for either console."""
+    saved = os.environ.get('FAKE_CORE_NAME')
+    try:
+        for name, console, loads in (('ParaLLEl PS2', 'ps1', False), ('SwanStation', 'ps2', False),
+                                     ('SwanStation Debug', 'ps2', False), ('ParaLLEl PS2', 'ps2', True),
+                                     ('SwanStation', 'ps1', True), ('ParaLLEl PS2 ', 'ps1', True)):
+            os.environ['FAKE_CORE_NAME'] = name
+            session = Session(program, core, log)
+            try:
+                system = Path(session.paths['system'])
+                (system / 'fake-ps2').write_bytes(b'')
+                (system / 'pcsx2' / 'bios').mkdir(parents=True)
+                (system / 'pcsx2' / 'bios' / 'fake-ps2-bios.bin').write_bytes(b'')
+                disc = session.paths['disc']
+                if console == 'ps2':
+                    disc = str(session.work / 'discs' / 'game.iso')
+                    Path(disc).write_bytes(b'\0' * 2048)
+                session.call('start', {'console': console, 'core': session.paths['core'], 'disc': disc,
+                                       'system': session.paths['system'], 'saves': session.paths['saves']})
+                status = session.wait(lambda s: s and (s['ready'] or s['ended']), 10)
+                if loads:
+                    if not status['ready'] or status.get('core', {}).get('name') != name:
+                        raise c.Failed(f'{name!r} as a {console} core gave {status}')
+                    session.call('stop')
+                    session.wait(lambda s: s['ended'], 5)
+                elif (status['errorCode'] != 'core' or status['ready'] or status.get('core', 'missing') is not None or
+                      status.get('console') != console):
+                    raise c.Failed(f'{name!r} as a {console} core gave {status}')
+                session.call('release')
+            finally:
+                session.close()
+    finally:
+        if saved is None:
+            os.environ.pop('FAKE_CORE_NAME', None)
+        else:
+            os.environ['FAKE_CORE_NAME'] = saved
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', required=True, type=Path)
@@ -943,7 +991,7 @@ def main():
     tests = {test.__name__: test for test in (
         stuck_core, unloadable, core_identity, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
         launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, option_keys_not_utf8,
-        rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory, ps2_game)}
+        rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory, ps2_game, core_for_other_console)}
     for test in (many_games, gpu_limits, gpu_network):
         tests[test.__name__] = lambda program, core, log, test=test: test(program, core, log, options.require_gpu)
     chosen = [(name, test) for name, test in tests.items() if not options.names or name in options.names]

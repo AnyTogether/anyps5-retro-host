@@ -28,9 +28,13 @@
  *
  * Its library_version is "1", or the environment variable FAKE_CORE_VERSION when it is set, so a
  * test can give the host a core build identity it must not pass on (protocol.md "status", core).
+ * Its library_name is "fake", or FAKE_CORE_NAME when it is set, so a test can make it report the
+ * name of a core for the other console (protocol.md "start").
  *
- * While the system directory holds fake-ps2, it also offers LRPS2's memory card, renderer and
- * multitap options (pcsx2_shared_memory_cards, pcsx2_renderer and pcsx2_multitap, at LRPS2's
+ * While the system directory holds fake-ps2, it also offers LRPS2's BIOS (with the one value
+ * fake-ps2-bios.bin), memory card, USB camera, DEV9 hard disk and ethernet, renderer and multitap
+ * options (pcsx2_bios, pcsx2_shared_memory_cards, pcsx2_usb_camera, pcsx2_dev9_hdd,
+ * pcsx2_dev9_hdd_size, pcsx2_dev9_eth, pcsx2_renderer and pcsx2_multitap, with LRPS2's titles and
  * defaults) and writes each controller port's device to fake-ps2-ports.txt there, a line a call.
  * A game whose disc is a .iso or .elf is then loaded as LRPS2 loads a PS2 game (docs/ps2.md "The
  * BIOS"): with no file fake-ps2-bios.bin in pcsx2/bios of the system directory it logs LRPS2's
@@ -230,6 +234,14 @@ static struct retro_core_option_v2_definition resolution = {
      {"16", "16x"}, {NULL, NULL}},
     "1"};
 static struct retro_core_option_v2_definition ps2_definitions[] = {
+    {"pcsx2_bios",
+     "System > BIOS",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"fake-ps2-bios.bin", "Fake PS2 BIOS"}, {NULL, NULL}},
+     "fake-ps2-bios.bin"},
     {"pcsx2_shared_memory_cards",
      "System > Shared Memory Cards (Restart)",
      NULL,
@@ -238,6 +250,39 @@ static struct retro_core_option_v2_definition ps2_definitions[] = {
      NULL,
      {{"disabled", NULL}, {"enabled", NULL}, {NULL, NULL}},
      "enabled"},
+    {"pcsx2_usb_camera",
+     "System > USB Camera (Restart)",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"disabled", NULL}, {"eyetoy", "Sony EyeToy"}, {"capture_eye", "Konami Capture Eye"}, {NULL, NULL}},
+     "disabled"},
+    {"pcsx2_dev9_hdd",
+     "System > HDD (DEV9)",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"disabled", NULL}, {"enabled", NULL}, {NULL, NULL}},
+     "disabled"},
+    {"pcsx2_dev9_hdd_size",
+     "System > HDD Size",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"8 GiB", NULL}, {"16 GiB", NULL}, {"20 GiB", NULL}, {"40 GiB", NULL}, {"80 GiB", NULL}, {"120 GiB", NULL},
+      {NULL, NULL}},
+     "40 GiB"},
+    {"pcsx2_dev9_eth",
+     "System > Ethernet (DEV9)",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"disabled", NULL}, {"enabled", NULL}, {NULL, NULL}},
+     "disabled"},
     {"pcsx2_renderer",
      "Video > Renderer",
      NULL,
@@ -344,7 +389,8 @@ RETRO_API void retro_deinit(void) {
 
 RETRO_API void retro_get_system_info(struct retro_system_info* info) {
   memset(info, 0, sizeof *info);
-  info->library_name = "fake";
+  const char* name = getenv("FAKE_CORE_NAME");
+  info->library_name = name ? name : "fake";
   const char* version = getenv("FAKE_CORE_VERSION");
   info->library_version = version ? version : "1";
   info->valid_extensions = "cue|chd|pbp|m3u";
