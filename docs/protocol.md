@@ -23,17 +23,23 @@ The words MUST, MUST NOT and SHOULD are used as in RFC 2119.
 | --- | --- |
 | This document, the fixtures and the fixture checker | MIT |
 | `anyps5-retro-host` | GPL-2.0-or-later |
-| SwanStation (the only core version 1 loads) | GPL-3.0, [libretro/swanstation](https://github.com/libretro/swanstation), unmodified |
+| SwanStation (the only core version 1 loads) | GPL-3.0, [libretro/swanstation](https://github.com/libretro/swanstation), modified by the host's patches in [`cores/patches`](../cores/patches) |
 
 The launcher never links the host or a core, and shares no code with the
 host. A launcher MAY copy code from this document or the fixtures. Each host
 release names the SwanStation commit it was tested with, and the distributed
-SwanStation build is made from that commit's source.
+SwanStation build is made from that commit's source with the patches in
+[`cores/patches`](../cores/patches) applied ([host.md](host.md) "SwanStation
+patches"). Releases ship this patched SwanStation, not an unmodified one.
 
 The host is GPL-2.0-or-later so that one host can later run GPL-3.0 cores
 (SwanStation, LRPS2) and GPL-2.0-only cores (RPCS3). It only ever loads one
-core at a time. Before a modified core is added, its patches and the
-repository and commit they apply to are published with the host.
+core at a time. A core's patches are published with the host, in
+[`cores/patches`](../cores/patches), with the repository and commit they
+apply to. As GPL-3.0 section 5(a) asks, each patch, and each file it changes,
+carries a dated notice that it was modified, and a release's `SOURCE.txt` and
+the `anyps5-core-source.txt` in its source archive give the date the patches
+last modified the core. The release's source archive holds the patched source.
 
 ## Processes
 
