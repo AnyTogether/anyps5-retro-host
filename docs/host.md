@@ -396,7 +396,7 @@ A crash gives none of these, so the tests expect the exact code.
   `wait`, a launcher that never ends the host, and a launcher that ends it
   one step early (before the breaking message of a protocol error session,
   and at the start of a `wait`). A launcher whose raster thread draws a
-  frame that breaks a frame check before its `frame` message arrives must
+  frame that breaks a frame check before it reads the `frame` message must
   pass. The self-test cuts each `silence` or `wait` before an end to 1
   second, so before it ends the fake it waits for the report to show
   `awaitingKill`; ending it on its own clock would race the fake's pause and
@@ -406,9 +406,11 @@ A crash gives none of these, so the tests expect the exact code.
   ring": the host never waits); the `frame` step checks the rest. The
   self-test starts the fake with `--resume` and moves it past each
   `launcherDraws` and `launcherReports` step only after checking it, so a
-  later `publish` cannot overtake that check. The cases that end the fake
-  one step early give it a 5 second `--kill-pause`, so a self-test that the
-  runner holds up still ends it inside the pause. Run it with
+  later `publish` cannot overtake that check. An early end can only be
+  told apart by time, so the cases that end the fake one step early give it
+  a 5 second `--kill-pause`: the self-test ends it about 0.15 seconds into
+  the pause, and only a runner that holds the self-test up for nearly 5
+  seconds could still make it arrive late. Run it with
   `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
   supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
