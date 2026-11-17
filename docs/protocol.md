@@ -740,6 +740,9 @@ script keeps SwanStation's own `version` (`1.0.0 ` and a git description).
 Before a match each launcher compares both strings with its friend's, and
 plays online only when both are equal and `version` has the `anyps5-1-`
 form; anything else is a different core. The host does not judge the value.
+A host without the `coreIdentity` capability sends no `core`; a launcher
+plays local games with it as before and does not play online with it
+(session `older-host-without-core`).
 
 Each option has `title` (string), `values` (array of strings), `labels`
 (array of strings, the same length as `values`), `selected` (index into
