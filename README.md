@@ -59,5 +59,5 @@ against it rather than SwanStation, which needs a BIOS and a game.
 | `cores/patches` | GPL-3.0-only ([LICENSES/GPL-3.0-only.txt](LICENSES/GPL-3.0-only.txt)), patches to [libretro/swanstation](https://github.com/libretro/swanstation) that the host's SwanStation is built with ([docs/host.md](docs/host.md) "SwanStation patches") |
 | `cores/apply-swanstation-patches.sh` | MIT |
 
-The JSON fixtures and the patches cannot hold a comment, so
-[REUSE.toml](REUSE.toml) gives their licences. A launcher may copy anything that is MIT here.
+The JSON fixtures cannot hold a comment, and the patches' headers hold only
+DEP-3 fields, so [REUSE.toml](REUSE.toml) gives their licences. A launcher may copy anything that is MIT here.

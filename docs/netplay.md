@@ -3,11 +3,23 @@
 
 # PS1 online play through the host
 
-This is the design for playing a PS1 game online with a friend when the
-game runs in `anyps5-retro-host`. It says which program owns what and what
-the host adds for it, one capability at a time, each with its own tests.
-[protocol.md](protocol.md) is the contract for each capability once it is
-built.
+> **Status: a proposal, except for what the host already does.** The core
+> build identity (capability `coreIdentity`, "Core build identity" below) is
+> decided and built. The host also reports the game's frame rate and region
+> (capability `gameTiming`, "Frame rate") and runs and hashes frames in
+> lockstep (capability `ps1Lockstep`, protocol.md "Lockstep"). The rest of
+> this document, in particular the launcher carrying
+> online play over AnyTogether's WebRTC connection and its TURN relay, and a
+> friend joining a running game from the other player's state, is a proposal
+> the maintainers have not agreed on yet. It touches AnyTogether's online
+> service and relay traffic, and it changes only after that discussion.
+> Sections that are part of the proposal say so.
+
+This is a proposed design for playing a PS1 game online with a friend when
+the game runs in `anyps5-retro-host`. It says which program would own what
+and what the host would add for it, one capability at a time, each with its
+own tests. [protocol.md](protocol.md) is the contract for each capability once
+it is built.
 
 Built so far: the core build identity (capability `coreIdentity`, `core` in
 protocol.md "status"), which two players' launchers compare before a match;
@@ -15,7 +27,7 @@ the game's frame rate and region (capability `gameTiming`, `timing` in
 protocol.md "status"), which a match's frame clock follows; and lockstep
 (capability `ps1Lockstep`, protocol.md "Lockstep"), in which two players'
 hosts run the same frames on the same input from a cold boot and hash what
-each frame left behind. The steps after them are in [Steps](#steps).
+each frame left behind. The proposed steps after them are in [Steps](#steps).
 
 ## What others do
 
@@ -44,26 +56,32 @@ need the same emulator build; and desyncs are found by comparing hashes.
 
 ## Who owns the network
 
-**The launcher owns the network. The host never opens a socket.**
+> **Proposal, not agreed.** Only the rule that the host never opens a socket
+> is decided (protocol.md "Network"). Carrying a match over AnyTogether's
+> WebRTC connection and TURN relay is a proposal for the maintainers to
+> discuss, since it touches AnyTogether's online service and relay traffic.
 
-- The launcher already has everything a match needs: the signed-in account,
+**Proposed: the launcher owns the network. The host never opens a socket.**
+
+- The launcher already has what a match would need: the signed-in account,
   the friend list, invitations, the lobby, and AnyTogether's WebRTC
-  connection with its TURN relay. PS2 and PS3 online play use the same
-  transport, so it stays in one place.
+  connection with its TURN relay. PS2 and PS3 online play could use the same
+  transport, so it would stay in one place.
 - The host runs third-party emulator code. Keeping it off the network keeps
   protocol.md's rule ("Network"), which CI enforces by tracing the host's
   network calls, and means a flaw in a core cannot be reached from the
   internet.
 - The host owns what only it can do well: telling the launcher which core
-  build it loaded, running exactly one frame per input, hashing what each
-  frame left behind, and, in the later steps, saving and loading the core's
-  state between frames. These need the core and the game's thread.
+  build it loaded, running exactly one frame per input and hashing what
+  each frame left behind (all three built), and, in the proposed later
+  steps, saving and loading the core's state between frames. These need the
+  core and the game's thread.
 - The cost is one more local hop for each frame's input, over a pipe or
   socket on the same machine. It is far below a frame's 16.7 ms (20 ms in a
   PAL game).
 
-So each launcher is the network peer and the host is a deterministic
-machine it feeds:
+So, as proposed, each launcher is the network peer and the host is a
+deterministic machine it feeds:
 
 ```
  Player A's PC                                        Player B's PC
@@ -116,24 +134,43 @@ is of this manifest, one line each, with LF endings:
 ```
 anyps5-retro-host core source 1
 swanstation <SwanStation commit, 40 hex digits>
+modified <YYYY-MM-DD, the latest Last-Update of the patches>
 patch <SHA-256 of the patch file> <patch file name>     (one per patch, in the order applied)
 option MSB_FIRST=OFF
 ```
 
 - `cores/apply-swanstation-patches.sh` writes the first lines as
   `anyps5-core-source.txt` into the SwanStation checkout after applying the
-  patches: the commit checked out and each patch's bytes, which are LF in
-  every checkout (`.gitattributes`). The release's source archive holds that
-  file, so building it again gives the same identity.
-- The patch `swanstation-1-core-build-identity` adds the `option` lines in
+  patches: the commit checked out, the date the patches last modified
+  SwanStation, and each patch's bytes, which are LF in every checkout
+  (`.gitattributes`). The patches are applied and listed in the byte order
+  of their names (`LC_ALL=C`, two-digit numbers), as `tools/core_identity.py`
+  sorts them. The date is the `Last-Update` written in each patch's header
+  (host.md "SwanStation patches"), never the clock or a git date, so it is
+  the same on every machine and changes only with a patch. The release's
+  source archive holds that file, so building it again gives the same
+  identity.
+- The patch `swanstation-01-core-build-identity` adds the `option` lines in
   SwanStation's CMake, from the values the build is configured with, and
   hashes the whole. The only build option of SwanStation that changes what
-  the core computes is `MSB_FIRST` (the byte order). Compiler, build type
-  among the release ones, MSVC runtime and macOS deployment target change
-  how fast it runs, not what it computes; a Debug build already reports
-  another `library_name`. The CPU recompiler SwanStation builds for x64 or
-  arm64 is meant to compute exactly as its interpreter does, and a fault in
-  one shows as a desync in a match's hashes, not as a different identity.
+  the core computes is `MSB_FIRST` (the byte order). Build type among the
+  release ones, MSVC runtime and macOS deployment target change how fast it
+  runs, not what it computes; a Debug build already reports another
+  `library_name`. The compiler could change what it computes through
+  floating-point contraction: GCC (`-ffp-contract=fast` for the GNU dialects
+  CMake picks) and Clang (`-ffp-contract=on`) may fuse a multiply and an add
+  into one FMA instruction where the target has one, as arm64 always does,
+  and the result is rounded once instead of twice. The patch
+  `swanstation-02-no-fp-contraction` therefore builds with
+  `-ffp-contract=off` on GCC and Clang. It is not an `option` line, because
+  no build can turn it off without changing the patch, and the patch's hash
+  is already in the identity. MSVC needs no flag: from Visual Studio 2022
+  (the `windows-2022` runner's), `/fp:precise`, its default, does not
+  contract unless `/fp:contract` is given; earlier versions could, and
+  SwanStation sets no `/fp` option. The CPU recompiler SwanStation builds
+  for x64 or arm64 is meant to compute exactly as its interpreter does, and
+  a fault in one shows as a desync in a match's hashes, not as a different
+  identity.
 - The script refuses a SwanStation checkout that differs from its commit in
   any way (a staged or unstaged change, an untracked file), so the manifest
   names the source it patched exactly, as Dolphin's `-dirty` mark is meant
@@ -168,13 +205,20 @@ option MSB_FIRST=OFF
 **What it does not cover.** The core options are not in the identity: they
 are chosen per match, the launcher sends both players the same at `start`,
 and `status.options` shows each one's `activeValue`. Nor are the BIOS and the
-disc, which the launchers compare by content. Everything else that can still
-differ between two machines, such as a GPU's rounding at a resolution scale
-above 1x, is what the hashes compared during a match are for. When a patch is
+disc, which the launchers compare by content. Nor is the renderer: a host
+draws with SwanStation's OpenGL renderer when it can make an OpenGL context
+and in software otherwise (`status.hardware`), and the two draw different
+pictures from the same emulation, even at 1x; GPUs can round differently too.
+Everything else that can still differ between two machines is what the hashes
+compared during a match are for. When a patch is
 added or changed, or the SwanStation commit moves, the identity changes, and
 players need the same host release to play together.
 
 ## Frame rate
+
+> What the host reports, `status.timing`, and the paced lockstep that keeps
+> to it are built. How a match's clock would use them (rollback, round trips,
+> input delay) belongs to the proposal.
 
 In lockstep the host runs one frame per input, so the launcher's frames are
 the game's frames, and in rollback (step 5 in [Steps](#steps)) the
@@ -207,6 +251,10 @@ plus one, at most 8, the longest round trip a match takes is about 230 ms in
 an NTSC game and 280 ms in a PAL one.
 
 ## Lockstep first, rollback after
+
+> The host's lockstep (`ps1Lockstep`) and its `sync` hashes are built. How a
+> match would use them, the input delay a launcher picks, the lobby's
+> connection limit and rollback, is part of the proposal.
 
 **Lockstep with input delay** (capability `ps1Lockstep`, built). A frame
 runs only when every player's input for it is known. Each launcher sends its
@@ -258,6 +306,9 @@ give a state for netplay no path. Until then a launcher compares `ram`, and
 
 ## Lobby, seats and controller ports
 
+> **Proposal, not agreed.** This is how the launcher's lobby could seat
+> players; the host's part, two ports in each `step`, is built.
+
 The launcher's lobby has seats for Player 1 to 4. Each seat is held by one
 controller on one PC. For a PS1 game:
 
@@ -281,10 +332,15 @@ controller on one PC. For a PS1 game:
 
 ## NAT and relays
 
-Nothing new is needed. The launcher reuses AnyTogether's rooms for the
+> **Proposal, not agreed.** Using AnyTogether's rooms, WebRTC data channel
+> and TURN relay for PS1 matches, and sending a state to a joining friend,
+> touch AnyTogether's online service and relay traffic and are for the
+> maintainers to decide.
+
+If agreed, nothing new would be needed. The launcher would reuse AnyTogether's rooms for the
 invitation and the WebRTC data channel it already uses for PS1 and PS2 online
 play: a direct path when the two PCs can reach each other, and the TURN relay
-when they cannot. The lobby shows which one it got. Input is small (one
+when they cannot. The lobby would show which one it got. Input is small (one
 frame's input for two ports is under 30 bytes, and the input wire sends up to
 eight frames in one 108-byte packet), so a relay carries it easily. The one
 large transfer, the state a friend joins a running game from (step 4), is
@@ -292,6 +348,10 @@ sent once over the reliable channel. Relay use and its traffic policy remain
 AnyTogether's decision, as for the launcher's existing online play.
 
 ## Steps
+
+> **Proposal, not agreed** beyond steps 1 to 3. The later steps are the proposed
+> order; step 4's joining a running game from the other player's state is
+> part of the proposal the maintainers have not agreed on.
 
 Each step is a capability of its own, with its tests, and changes the
 identity when it adds a SwanStation patch:
@@ -303,9 +363,9 @@ identity when it adds a SwanStation patch:
    in it, and sends hashes of what chosen frames left behind (`sync`), so two
    players' launchers can compare them.
 4. `saveState` and `loadState`, with the SwanStation patches a state needs
-   to bring back everything that affects later frames, so a friend can join
-   a running game from the other player's state, and the launcher can keep
-   states in memory.
+   to bring back everything that affects later frames, so that the launcher
+   can keep states in memory and, if the maintainers agree to it, a friend
+   can join a running game from the other player's state (proposal).
 5. `ps1Rollback`: the host runs frames on predicted input and, when the real
    input differs, loads the state before the first wrong frame and runs
    again, between two frames.
