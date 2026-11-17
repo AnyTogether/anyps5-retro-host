@@ -65,6 +65,7 @@ struct Case {
 struct Result {
   int gaps = 0;
   double gap_seconds = 0;
+  double gap_longest = 0;
   int clicks = 0;
   int late_frames = 0;
   uint64_t paused_sound = 0;
@@ -132,6 +133,7 @@ Result Run(const Case& test) {
     if (sounding && zeros >= gap_frames && !quiet_allowed(zeros_from)) {
       ++result.gaps;
       result.gap_seconds += time - zeros_from;
+      result.gap_longest = std::max(result.gap_longest, time - zeros_from);
     }
   };
 
@@ -185,7 +187,7 @@ Result Run(const Case& test) {
       const int16_t* played = out.data() + i * 2;
       const double time = device_frames / device_rate;
       const double device_time = device_frames / static_cast<double>(test.output_rate);
-      if (paused_at(time - fade) && paused_at(time) && (played[0] != 0 || played[1] != 0)) ++result.paused_sound;
+      if (paused && time - device_now >= fade && (played[0] != 0 || played[1] != 0)) ++result.paused_sound;
       if (played[0] == 0 && played[1] == 0) {
         if (zeros++ == 0) zeros_from = time;
       } else {
@@ -221,8 +223,8 @@ Result Run(const Case& test) {
 
 void Report(const Case& test, const Result& result) {
   const double mean = result.fill_reads ? result.fill_sum / result.fill_reads : 0;
-  std::printf("%-24s gaps %5d (%7.3f s)  clicks %5d  underruns %5llu  dropped %8llu  fill ms min %6.1f mean %6.1f max %6.1f  pitch %8.3f..%8.3f Hz (%d windows)\n",
-              test.name, result.gaps, result.gap_seconds, result.clicks,
+  std::printf("%-24s gaps %5d (%7.3f s, longest %4.0f ms)  clicks %5d  underruns %5llu  dropped %8llu  fill ms min %6.1f mean %6.1f max %6.1f  pitch %8.3f..%8.3f Hz (%d windows)\n",
+              test.name, result.gaps, result.gap_seconds, 1000 * result.gap_longest, result.clicks,
               static_cast<unsigned long long>(result.underruns), static_cast<unsigned long long>(result.dropped),
               result.fill_reads ? result.fill_min : 0, mean, result.fill_max, result.pitch_windows ? result.pitch_low : 0,
               result.pitch_high, result.pitch_windows);
@@ -335,6 +337,9 @@ int main() {
   Case paused{"pause and resume"};
   paused.seconds = 30;
   paused.pauses = {{10, 12}, {20, 20.5}};
+  Case paused_varied = paused;
+  paused_varied.name = "pause, varied reads";
+  paused_varied.varied_reads = true;
 
   const double target_ms = retro_host::AudioStream::kTargetSeconds * 1000;
   const double high_ms = target_ms * retro_host::AudioStream::kHighWater;
@@ -348,7 +353,8 @@ int main() {
   for (const Case* test : {&late, &same_rate, &varied}) {
     const Result result = Run(*test);
     Report(*test, result);
-    Expect(result.gaps <= 1, test->name, "at most one gap");
+    Expect(result.gaps <= 1 && result.gap_longest <= retro_host::AudioStream::kTargetSeconds, test->name,
+           "at most one gap, no longer than the target");
     Expect(result.clicks == 0, test->name, "no clicks");
     ExpectPitch(*test, result);
   }
@@ -374,17 +380,20 @@ int main() {
     // Over 10 minutes the reads and frames meet at every phase, so a few of the latest frames
     // (65 ms, longer than the target less a frame) find the cushion low.
     Expect(result.gaps * 50 <= result.late_frames, test->name, "no gaps as the clocks drift apart, but for 2% of late frames");
+    Expect(result.gap_longest <= retro_host::AudioStream::kTargetSeconds, test->name, "no gap longer than the target");
     Expect(result.clicks == 0, test->name, "no clicks");
     if (test->late_share == 0)
       Expect(result.dropped == 0 && result.underruns == 0, test->name, "the rate control holds the fill");
     ExpectPitch(*test, result);
   }
 
-  const Result paused_result = Run(paused);
-  Report(paused, paused_result);
-  Expect(paused_result.gaps == 0 && paused_result.clicks == 0, paused.name, "pausing and resuming fade, with no other gap");
-  Expect(paused_result.paused_sound == 0, paused.name, "silent while paused");
-  ExpectPitch(paused, paused_result);
+  for (const Case* test : {&paused, &paused_varied}) {
+    const Result result = Run(*test);
+    Report(*test, result);
+    Expect(result.gaps == 0 && result.clicks == 0, test->name, "pausing and resuming fade, with no other gap");
+    Expect(result.paused_sound == 0, test->name, "silent within a fade of the pause");
+    ExpectPitch(*test, result);
+  }
 
   ExpectDrainedOneFrameAtATime();
   ExpectStoppedDeviceRecovers();

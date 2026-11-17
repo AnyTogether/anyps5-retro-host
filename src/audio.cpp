@@ -28,7 +28,7 @@ constexpr ma_uint32 kDevicePeriods = 2;
 // 16-bit linear resampler multiplies its position within an output frame, which is below the
 // output rate it is given, by 4096 when it interpolates and by that rate again when the rate
 // changes, in 32-bit integers, so the output rate it is given stays at or below 65536. A step of
-// the rate is then 1 / 65536 at most, about 0.002%.
+// the rate is then one over that rate: 1 / 48000 at 48 kHz, about 0.002%.
 ma_uint32 OutputUnits(uint32_t output_rate) { return output_rate / ((output_rate + 65535) / 65536); }
 
 ma_uint32 InputUnits(double input_rate, uint32_t output_rate) {
@@ -174,7 +174,8 @@ void AudioStream::Read(int16_t* out, uint32_t frames, bool paused) {
   uint32_t produced = 0;
   bool fade_out = false;
   if (playing_ && paused) {
-    produced = Produce(out, std::min(frames, fade_frames_));
+    // A read shorter than the fade plays nothing more: the last frame played ramps down instead.
+    produced = frames >= fade_frames_ ? Produce(out, fade_frames_) : 0;
     fade_out = true;
     playing_ = false;
   } else if (playing_) {

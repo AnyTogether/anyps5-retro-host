@@ -235,7 +235,8 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
     cause another gap at once. A frame's samples arrive in one burst, so the
     fill swings by about a frame around the target: a frame up to about 60 ms
     late (the target less one frame at 60 fps) leaves no gap at any phase of
-    the device's reads. A launcher run on a busy machine measured frame
+    the device's reads once the fill has settled (see the rate control
+    below for how a clock difference moves it at first). A launcher run on a busy machine measured frame
     intervals with a p99 of 62 to 72 ms, frames 45 to 55 ms late. In
     `audio_test`, with 2% of frames 25 to 65 ms late and the device's clock
     0.3% fast for 10 minutes, a 64 ms target (RetroArch's default) left 79
@@ -257,13 +258,14 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
     32-bit integers, so a larger one overflows and clicks on every rate
     change; rates in thousandths of a hertz were tried first, and
     `audio_test` found the clicks. A step of the ratio is then at most
-    1/65536, about 0.002%. (`ma_resampler_set_rate_ratio` takes a fraction
+    one over that integer, 1/48000 at 48 kHz, about 0.002%. (`ma_resampler_set_rate_ratio` takes a fraction
     and cuts it to thousandths, 0.1%, too coarse for this.) Its low-pass
     filter is off when the two rates are within 2% of each other.
   - **Dynamic rate control.** As RetroArch does it (Arntzen, "Dynamic Rate
     Control for Retro Game Emulators", 2012), the ratio moves in proportion to
     how far the fill, averaged over 0.25 s, is from the target, by at most
-    0.5%, so the pitch moves by at most 0.5% (unheard). The proportional term
+    0.5%, so the pitch moves by at most 0.5% (8.6 cents, under a tenth of a
+    semitone). The proportional term
     alone leaves the fill off the target by the clocks' difference over 0.5%
     (60% of the cushion for a 0.3% difference), so this host adds a slow
     integral term, held within the same 0.5%, that learns that difference.
@@ -273,7 +275,9 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
     of a real sound card's crystal (around 0.01%) move it by a millisecond or
     two.
   - **Fades.** 2.5 ms fades (DuckStation's are 128 frames) end the sound
-    before a gap and start it after one, and end it when the game pauses.
+    before a gap and start it after one, and end it when the game pauses (a
+    read shorter than the fade plays nothing more, and the last frame played
+    ramps down).
     When less than 2.5 ms is left to fade, or a read took exactly what was
     queued and the next finds nothing, the last frame played ramps down to
     silence over 2.5 ms instead, and the sound starts again only after that
@@ -319,7 +323,7 @@ A crash gives none of these, so the tests expect the exact code.
   with no device, so it is silent on every system. Each frame takes 4 ms of
   work, its samples are written only when that work is done, and the next
   frame starts at its paced time or at once to catch up, as in `game.cpp`.
-  The device reads 20 ms at a time (or, in one case, any length from one
+  The device reads 20 ms at a time (or, in two cases, any length from one
   frame to 40 ms). The core plays a 440 Hz tone on the left and a 330 Hz
   tone on the right at 44.1 kHz to a 48 kHz device (and once 48 to 48). It
   counts gaps (exact zeros for 1 ms or more, including at the end), clicks
@@ -328,10 +332,11 @@ A crash gives none of these, so the tests expect the exact code.
   0.25 s spans against the device's clock, for: exact rate; 2% of frames 25
   to 65 ms late, with 20 ms and with varied reads; 90% and 110% speed; the
   device's clock 0.3% fast and slow for 10 minutes, and 0.3% fast with late
-  frames; and a pause and resume. It expects no gap, click or drop at exact
+  frames; and a pause and resume, with 20 ms and with varied reads. It expects no gap, click or drop at exact
   rate, at most one gap in a minute of late frames, none as the clocks drift
   (and gaps from at most 2% of the late frames when both happen for 10
-  minutes), no clicks anywhere, silence while paused, and a pitch within
+  minutes), no gap longer than the target with late frames, no clicks
+  anywhere, silence from 2.5 ms into a paused read, and a pitch within
   0.5% (plus 0.05% for the count) of 440 Hz. Two more checks read the
   cushion one frame at a time until it runs dry, and stop the device's reads
   until the ring is full and then resume them; neither may click.
