@@ -196,16 +196,20 @@ changes nothing in those checks.
   else it fetched, then the zip and the `.files` against `SHA256SUMS`, and
   only then unpacks the zip. It keeps
   `SHA256SUMS`, `SHA256SUMS.sig` and the `.files` beside the unpacked host.
-- *Before each start*: it checks the signature again, the `.files` against
-  `SHA256SUMS`, and the host executable and the library of the core the game
-  starts on (SwanStation for PS1, LRPS2 for PS2) against the `.files`.
+- *Before it starts the host*: it checks the signature again, the `.files`
+  against `SHA256SUMS`, and the host executable and every core library the
+  `.files` lists against the `.files`, and on Windows holds them all
+  (below). It does not check only the core of the first game: a launcher
+  can keep one host for several games, and the host loads a core for each
+  `start`, so a PS2 game started on a host that was started for a PS1 game
+  loads LRPS2 too.
 - *Minimum version*: each launcher release has a minimum host version built
   in. It does not use an older host, even a signed one, so an old signed
   host with a known fault cannot be put back in its place.
 
 On Windows the launcher hashes each file from a handle it opened without
 `FILE_SHARE_WRITE` or `FILE_SHARE_DELETE`, and keeps those handles open
-until the host has exited. The host loads the core library again for each
+until the host has exited. The host loads a core library again for each
 game it starts, so a handle closed after the first game would leave the next
 game's load unprotected. Holding the handles does not stop the host loading
 the library, and no other program can write, rename or delete the file while
@@ -221,9 +225,9 @@ descriptor (`/proc/self/fd/<n>` as the path given to `posix_spawn`; the
 kernel opens it before close-on-exec descriptors are closed, so the
 descriptor itself never reaches the host), so the file
 it checked is the file that runs. On macOS the system itself checks the code
-signature of the host and of the core library as they are loaded (see
-macOS signing below), so a changed file does not run. The core library on
-Linux is checked by path in the launcher's own storage (its own
+signature of the host and of each core library as they are loaded (see
+macOS signing below), so a changed file does not run. The core libraries on
+Linux are checked by path in the launcher's own storage (its own
 directory or its data folder, as above), which only the user can write.
 
 These checks protect against a damaged download and a changed mirror, not

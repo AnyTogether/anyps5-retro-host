@@ -46,7 +46,9 @@ each zip and .files with their digests (and at most one source archive), all of 
 --version, that one), and every file it lists is in the folder with that digest; every zip holds
 exactly the files its .files lists, with those digests, each once, as a plain file with the
 packer's permissions and no larger than 256 MiB, which is checked before it is read, and its
-.files lists the host and both cores under the names of its system. With --swanstation-commit and
+.files lists the host and SwanStation under the names of its system. Either every .files lists
+LRPS2 too or none does, and with --lrps2-commit every one must, so a release from before LRPS2
+shipped, such as v1.0.0, can still be checked without it. With --swanstation-commit and
 --lrps2-commit, each zip's SwanStation and LRPS2 must hold the core build identity
 tools/core_identity.py computes for that commit, found in the same bytes that were hashed. Each name is relative, and
 each part of it is letters, digits and ._+-, does not start or end with a dot and is no Windows
@@ -543,6 +545,7 @@ def check(folder, version=None, host_repository=None, host_commit=None, swanstat
     sums = parse_sums(read_list(folder / 'SHA256SUMS', 'SHA256SUMS'), allow_slash=False)
     stems = {}
     sources = 0
+    ps2 = set()
     versions = set()
     for name, digest in sums.items():
         match = RELEASE_NAME.match(name)
@@ -569,8 +572,12 @@ def check(folder, version=None, host_repository=None, host_commit=None, swanstat
             raise SystemExit(f'{stem} needs both its .zip and its .files')
         listed = parse_sums(read_list(folder / f'{stem}.files', f'{stem}.files'), allow_slash=True)
         names = SYSTEMS[RELEASE_NAME.match(f'{stem}.zip').group(2)]
-        if not all(name in listed for name in names):
-            raise SystemExit(f'{stem}.files does not list {", ".join(names)}')
+        required = names if lrps2_commit is not None else names[:2]
+        if not all(name in listed for name in required):
+            raise SystemExit(f'{stem}.files does not list {", ".join(required)}')
+        ps2.add(names[2] in listed)
+        if len(ps2) > 1:
+            raise SystemExit(f'some .files list {names[2].split(".")[0]} and others do not')
         needles = {names[index]: identity for index, identity in identities}
         found = {}
         held = {}

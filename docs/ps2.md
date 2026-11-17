@@ -19,11 +19,19 @@ console, and ends a game with `errorCode` `bios` when LRPS2 finds no BIOS. The `
 `LRPS2_COMMIT` with the host's patch on Windows, Linux and macOS and checks,
 with the real core, that it loads, reports `ps2`, its name and identity, and
 the missing BIOS; the controller and option handling is checked with the
-host's fake core (`host_test.py ps2_game`). **No PS2 program has been booted**: LRPS2
+host's fake core (`host_test.py ps2_game`). **CI boots no PS2 program**: LRPS2
 boots nothing without a Sony BIOS, and none may be used here (see "The BIOS").
-Drawing, sound, input and memory cards of a running PS2 game are therefore
-coded but not yet seen working. Releases ship this LRPS2 beside SwanStation,
-with no BIOS (see "Releases").
+**Seen working outside CI, on Windows only**: a tester drove the host through
+the protocol with their own discs of Jak and Daxter, Grand Theft Auto: Vice
+City and TimeSplitters: Future Perfect and their own dumps of four USA BIOS
+versions (SCPH-39001, SCPH-70012, SCPH-77001 and SCPH-90001), each of which
+booted at least one of the games. All three games drew correctly, ran at full
+speed (but for one Vice City reading taken while the whole GPU was busy),
+played sound and took controller input, and the memory cards of Jak and
+Daxter and TimeSplitters kept their saves across a host restart. None of this
+is in CI. **Not seen yet**: PS2 games on Linux and macOS, save states, and
+the core options other than `pcsx2_upscale_multiplier`. "Releases" below says
+whether the release zips hold LRPS2.
 
 ## Which core
 
@@ -222,8 +230,8 @@ All of it is behind the `ps2` capability ([protocol.md](protocol.md)
 - **`status.timing`** (capability `gameTiming`) is the same for a PS2 game:
   LRPS2's `retro_system_av_info` frame rate and its `retro_get_region`, and
   `null` for a game that ended with `bios` before it loaded, which
-  `tests/ps2_core.py` checks. The values of a running PS2 game have not been
-  seen yet.
+  `tests/ps2_core.py` checks. In the test with real games above, Jak and
+  Daxter reported a frame rate of 59.940.
 - **`errorCode`**: `bios` when LRPS2 found no BIOS; `core` when it could not
   start the game for any other reason.
 - **Controllers**: two ports, as for PS1. The host gives LRPS2's DualShock 2
@@ -314,14 +322,17 @@ archive holds the patched LRPS2 with its `anyps5-core-source.txt`.
 The release check runs the zip's own LRPS2 through `tests/ps2_core.py` on each
 system, and `package_release.py --check` finds LRPS2's identity for
 `LRPS2_COMMIT` in every zip. Without a BIOS that shows only that it loads,
-reports its identity and refuses the missing BIOS; nothing PS2 has been seen
-running from a release either. A launcher finds `pcsx2_libretro` beside the
-signed host once it knows the name; the launchers have not taken that up yet.
+reports its identity and refuses the missing BIOS. The games seen running
+(above) ran on a local build of LRPS2 at `LRPS2_COMMIT` with the patch, not
+from a release zip. A launcher finds `pcsx2_libretro` beside the signed host
+once it knows the name; AnyTogether/AnyPS5-Desktop#171 does that and is not
+merged yet.
 
 ## Not done yet
 
-- Booting anything: drawing, sound, input, pacing and memory cards of a running
-  PS2 game.
+- Booting a PS2 program in CI, and running PS2 games on Linux and macOS, with
+  save states, or with the core options other than `pcsx2_upscale_multiplier`
+  changed.
 - The launcher side, not yet planned by the launchers: the proposed Settings ›
   Emulators PS2 row, BIOS check and copy, starting PS2 games with `console`,
   and showing `bios`.

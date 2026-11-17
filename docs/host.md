@@ -34,7 +34,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`cores/apply-core-patches.sh`](../cores/apply-core-patches.sh), [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh), [`cores/patches`](../cores/patches) | The host's SwanStation and LRPS2 patches and the script that applies them; the SwanStation script runs it for `swanstation` (see "SwanStation patches" and "LRPS2 patches" below) |
 | [`tools/core_identity.py`](../tools/core_identity.py) | Computes the core build identity from the SwanStation or LRPS2 commit and `cores/patches` without a build, and compares what each system's core reported ([netplay.md](netplay.md) "Core build identity") |
 | [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
-| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions, a `SOURCE.txt` naming another source, a `.files` without the PS2 core and a core without its build identity ("Result"), and how `--mit-notice` and `--bsd-notice` gather MIT and BSD notices ("Licences in a zip") |
+| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions, a `SOURCE.txt` naming another source, a `.files` without SwanStation, without LRPS2 when `--lrps2-commit` is given or with LRPS2 in only some zips, and a core without its build identity ("Result"), and how `--mit-notice` and `--bsd-notice` gather MIT and BSD notices ("Licences in a zip") |
 
 ## Choices made for version 1
 
@@ -789,8 +789,16 @@ release can be packed and checked by hand the same way.
   LRPS2's tree at `LRPS2_COMMIT` (c0d39a58e) outside `tests/` and `.github/`;
   LRPS2 has no submodules. Moving `LRPS2_COMMIT` means reading the new
   commit's `3rdparty/`, `libretro/libretro-common`, `pcsx2/GS/parallel-gs` and
-  `pcsx2/USB` again. Nothing here is a BIOS: LRPS2 boots only with one the
-  player dumped (ps2.md "The BIOS").
+  `pcsx2/USB` again. It means repeating the network audit too, since
+  protocol.md "Network" rests on the same commit: at c0d39a58e everything in
+  LRPS2 that opens a socket or reads the network adapters is DEV9
+  (`pcsx2/DEV9/`, run only with `EthEnable`), apart from Android's
+  `compat_ifaddrs`, `tests/` and VIXL's assembler `bind()`; and `EthEnable` is
+  set only by the `pcsx2_dev9_eth` option, which the host fixes off, and by
+  the Python 2 path in `libretro/main.c`, which runs only for a `.py2` file,
+  an extension the host refuses for PS2. A new commit that breaks either needs
+  a change in the host before it ships. Nothing here is a BIOS: LRPS2 boots
+  only with one the player dumped (ps2.md "The BIOS").
 - **Which source.** `SOURCE.txt` names the source that was really built, so a
   fork's package names the fork, not this repository. The packer reads it
   from the checkout it runs in, as release tools such as GoReleaser do: the
@@ -850,7 +858,12 @@ release can be packed and checked by hand the same way.
   job runs it on every run. Every file `SHA256SUMS` lists must be in the
   folder with that digest, and every zip must hold exactly what its `.files`
   lists (no entry changed, missing or added), and each `.files` must list the
-  host and both cores under its system's names; all names must carry one
+  host and SwanStation under its system's names. Either every `.files` lists
+  LRPS2 too or none does, and with `--lrps2-commit` every one must, so a
+  release from before LRPS2 shipped can still be checked: v1.0.0's published
+  files pass `--check` with `--version 1.0.0` and its source, though not with
+  `--swanstation-commit`, since its SwanStation was built unmodified, before
+  the host's patches and the core build identity. All names must carry one
   version, and with `--version` that one; with `--swanstation-commit` and
   `--lrps2-commit`, each zip's SwanStation and LRPS2 must hold the core build
   identity `tools/core_identity.py` computes for that commit, found in the

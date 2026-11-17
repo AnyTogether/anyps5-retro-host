@@ -194,9 +194,9 @@ def checked(folder, *arguments):
         return f'refused: {refusal}'
 
 
-def release(folder, entries, files_text=None, extra_sums=()):
-    folder.mkdir(parents=True)
-    stem = 'anyps5-retro-host-1.0.0-linux-x64'
+def release(folder, entries, files_text=None, extra_sums=(), system='linux-x64'):
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = f'anyps5-retro-host-1.0.0-{system}'
     with zipfile.ZipFile(folder / f'{stem}.zip', 'w') as archive:
         for name, data, mode in entries:
             info = zipfile.ZipInfo(name, date_time=p.TIME)
@@ -395,8 +395,17 @@ with tempfile.TemporaryDirectory() as folder:
           refused(checked(folder / 'good', None, FORK, commit), 'no SOURCE.txt'), True)
     check('a commit without a repository is refused',
           refused(checked(sourced_folder, None, None, commit), 'together'), True)
-    check('a .files that does not list the PS2 core is refused',
-          refused(checked(release(folder / 'no-ps2', good[:3])), 'does not list'), True)
+    ps1_only = release(folder / 'no-ps2', good[:3])
+    check('a release from before LRPS2 is accepted without --lrps2-commit', checked(ps1_only), 'accepted')
+    check('a .files that does not list the PS2 core is refused with --lrps2-commit',
+          refused(checked(ps1_only, None, None, None, None, 'c' * 40), 'does not list', 'pcsx2_libretro.so'), True)
+    check('a .files that does not list SwanStation is refused',
+          refused(checked(release(folder / 'no-ps1', [good[0]] + good[2:])), 'does not list'), True)
+    windows = [('anyps5-retro-host.exe', b'host', p.PLAIN), ('swanstation_libretro.dll', b'core', p.PLAIN),
+               ('licenses/LICENSE', b'licence', p.PLAIN)]
+    release(folder / 'some-ps2', good)
+    check('a release where only some zips hold LRPS2 is refused',
+          refused(checked(release(folder / 'some-ps2', windows, system='windows-x64')), 'others do not'), True)
     swanstation_commit = '631f0fb31b809e0f889d7c551fe695788e39c1d3'
     lrps2_commit = 'c0d39a58e0417189abdd2d77ba1b73126083b41f'
     ps1_identity = p.core_identity.identity(swanstation_commit, 'swanstation').encode()
