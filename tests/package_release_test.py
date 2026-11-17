@@ -109,7 +109,9 @@ with tempfile.TemporaryDirectory() as folder:
                                                  ('fork', 'git@github.com:example-fork/anyps5-retro-host.git')],
                             upstream='fork')
     check('the remote the branch tracks, at HEAD', outcome(root, environment=CI), (FORK, head))
-    text = p.source_text('1.0.0', 'linux-x64', *p.host_source(root, environment={}), 'f' * 40)
+    text = p.source_text('1.0.0', 'linux-x64', *p.host_source(root, environment={}), 'f' * 40, '2026-11-17')
+    check('SOURCE.txt says when SwanStation was last modified',
+          'SwanStation was modified by AnyPS5 Desktop contributors, last on 2026-11-17;' in text.splitlines(), True)
     check('SOURCE.txt names them', f'{FORK} at commit {head}.' in text.splitlines(), True)
     check('SOURCE.txt names no other host repository', 'AnyTogether' in text, False)
 
@@ -127,7 +129,7 @@ with tempfile.TemporaryDirectory() as folder:
     root, head = repository(folder / 'token', [('origin', 'https://user:secret@github.com/example-fork/anyps5-retro-host')])
     found = outcome(root, environment={})
     check('a token in the remote is left out', found, (FORK, head))
-    check('no secret in SOURCE.txt', 'secret' in p.source_text('1.0.0', 'linux-x64', *found, 'f' * 40), False)
+    check('no secret in SOURCE.txt', 'secret' in p.source_text('1.0.0', 'linux-x64', *found, 'f' * 40, '2026-11-17'), False)
 
     root, head = repository(folder / 'local', [('origin', str(folder / 'tracked'))])
     found = outcome(root, environment=CI)
