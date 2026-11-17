@@ -4,8 +4,8 @@
 # How the host is put together
 
 The host implements [protocol version 1](protocol.md) with the `ps1`,
-`coreIdentity` and `gameTiming` capabilities. It is a small C++17 program
-with three threads:
+`coreIdentity`, `gameTiming` and `ps2` capabilities ([ps2.md](ps2.md) for
+PS2). It is a small C++17 program with three threads:
 
 | Thread | Does |
 | --- | --- |
@@ -31,8 +31,8 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/channel.cpp`](../src/channel.cpp) | Framing for the control stream, and the clock the watch thread reads for the write limit |
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
 | [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio, with the volume, mute and pause |
-| [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh), [`cores/patches`](../cores/patches) | The host's SwanStation patches and the script that applies them (see "SwanStation patches" below) |
-| [`tools/core_identity.py`](../tools/core_identity.py) | Computes the core build identity from the SwanStation commit and `cores/patches` without a build, and compares what each system's core reported ([netplay.md](netplay.md) "Core build identity") |
+| [`cores/apply-core-patches.sh`](../cores/apply-core-patches.sh), [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh), [`cores/patches`](../cores/patches) | The host's SwanStation and LRPS2 patches and the script that applies them; the SwanStation script runs it for `swanstation` (see "SwanStation patches" and "LRPS2 patches" below) |
+| [`tools/core_identity.py`](../tools/core_identity.py) | Computes the core build identity from the SwanStation or LRPS2 commit and `cores/patches` without a build, and compares what each system's core reported ([netplay.md](netplay.md) "Core build identity") |
 | [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
 | [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions and a `SOURCE.txt` naming another source ("Result"), and how `--mit-notice` gathers MIT notices ("What a zip holds") |
 
@@ -284,7 +284,16 @@ A crash gives none of these, so the tests expect the exact code.
   to 50 through `SET_SYSTEM_AV_INFO` after a frame, as SwanStation does when
   a game changes its video mode. It still reads `fake_region` every frame,
   so `restart_option` sees the host keep a restart option's new value from
-  the running game.
+  the running game. Its `library_name` is `fake`, or the environment variable
+  `FAKE_CORE_NAME`. With a `fake-ps2` file it also offers LRPS2's
+  `pcsx2_bios` (one value, `fake-ps2-bios.bin`),
+  `pcsx2_shared_memory_cards`, `pcsx2_usb_camera`, `pcsx2_dev9_hdd`,
+  `pcsx2_dev9_hdd_size`, `pcsx2_dev9_eth`, `pcsx2_renderer` and
+  `pcsx2_multitap` with LRPS2's titles and defaults, writes each port's device to
+  `fake-ps2-ports.txt`, and loads a `.iso` or `.elf` as LRPS2 loads a PS2
+  game: without `pcsx2/bios/fake-ps2-bios.bin` it logs LRPS2's message for a
+  missing BIOS and fails, with `fake-ps2-fail` it fails without it, and a
+  game that loads writes the option values it read to `fake-ps2-options.txt`.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
   not. Its fake launcher checks every `ring` (its size and the growth rule)
   and every `frame` (the newest slot's epoch is the one `start` returned, and
@@ -333,6 +342,21 @@ A crash gives none of these, so the tests expect the exact code.
     with 0;
   - Windows: a library the core loads by name is not taken from the host's
     working directory;
+  - a PS2 game (`ps2_game`, [ps2.md](ps2.md)): `start` refuses another
+    `console`, a PS1 disc, an `.m3u`, `initialDisc` and a PS2 disc started as
+    PS1; a PS2 game with no BIOS ends with `bios` and `No PS2 BIOS was
+    found.`, one the core cannot load with `core`, both with `console`
+    `ps2`; a running one gets LRPS2's DualShock 2 on each connected port and
+    the host's own memory card, renderer, multitap, USB camera, DEV9 hard
+    disk, hard disk size and DEV9 ethernet values whatever `start.options`
+    asks, none of which `status.options` lists, and `pcsx2_bios` is listed
+    with `restart` `true`; and a PS1 game after it in the same host is
+    `console` `ps1` with SwanStation's analog controller;
+  - a core for the other console (`core_for_other_console`): the test core
+    reporting `ParaLLEl PS2` for a PS1 game, or `SwanStation` or
+    `SwanStation Debug` for a PS2 game, ends with `core` and no `status.core`;
+    a name the host does not know, and each known name for its own console,
+    loads;
   - eight games in a row with `volume`, `pause` and `stop` calls in between,
     each an OpenGL game (`fake-gpu`) that must draw five frames (the first
     also goes from 1x to 2x, so the framebuffer is made again under the core
@@ -400,6 +424,16 @@ A crash gives none of these, so the tests expect the exact code.
   at least 50 frames, and no more than that rate allows, in 5 seconds. The
   test then checks a clean `stop` and exit, and keeps the last picture (`--picture`) as a workflow artifact. No
   Sony BIOS or game is used.
+- [`tests/ps2_core.py`](../tests/ps2_core.py) runs the real LRPS2 through
+  the host as a PS2 game with no BIOS, since there is none it may use
+  ([ps2.md](ps2.md) "The BIOS"): `welcome` lists `ps2` and `coreIdentity`;
+  with no `pcsx2` folder in the system directory, and with only a 4 MiB file
+  that is not a BIOS in `pcsx2/bios`, the game ends before a first frame with
+  `bios`, `console` `ps2` and `status.core` `ParaLLEl PS2` with the version
+  `--expect-core-version` names; the core loads again for a third game; and
+  the host exits with 0. `real-core.yml`'s `ps2` jobs run it on both Ubuntus,
+  macOS and Windows with LRPS2 built at `LRPS2_COMMIT`, and `same-ps2-core`
+  checks that all four wrote the same `status.core`.
 - [`tests/fake_host.py`](../tests/fake_host.py) is the fake host of
   protocol.md "Fixtures", for testing a launcher; see below.
   [`tests/fake_host_selftest.py`](../tests/fake_host_selftest.py) tests it
@@ -452,9 +486,13 @@ A crash gives none of these, so the tests expect the exact code.
 ## SwanStation patches
 
 The host's SwanStation is upstream SwanStation at `SWANSTATION_COMMIT` with
-the patches in [`cores/patches`](../cores/patches), applied in the byte order
-of their names by
-[`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh).
+the `swanstation-*` patches in [`cores/patches`](../cores/patches), applied in
+the byte order of their names by
+[`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh),
+which runs [`cores/apply-core-patches.sh`](../cores/apply-core-patches.sh)
+`swanstation` (it keeps its name because the patch
+`swanstation-01-core-build-identity`, whose bytes are part of the identity,
+names it).
 The script sets `LC_ALL=C`, so bash's glob sorts the names as
 `tools/core_identity.py` does, by bytes, on every machine. Patch names carry
 two-digit numbers (`swanstation-01-…`), so a tenth patch still sorts after
@@ -513,6 +551,48 @@ python3 tools/core_identity.py --swanstation-commit <SWANSTATION_COMMIT>
 ```
 
 The last line prints the identity that core reports in `status.core`.
+
+## LRPS2 patches
+
+The host's LRPS2, the PS2 core ([ps2.md](ps2.md) "The core"), is upstream
+[libretro/parallel-ps2](https://github.com/libretro/parallel-ps2) at
+`LRPS2_COMMIT` (in `real-core.yml`) with the `lrps2-*` patches in
+[`cores/patches`](../cores/patches), applied by
+[`cores/apply-core-patches.sh`](../cores/apply-core-patches.sh) `lrps2` by
+the same rules as SwanStation's above: byte order, a clean checkout, git's
+index, the `anyps5-core-source.txt` manifest (its second line is
+`lrps2 <commit>`), and the dated GPL-3.0 section 5(a) notices that
+`tools/core_identity.py` checks. LRPS2's C files take the notice as a `/* */`
+comment; the file the patch creates also gets a GPL-3.0 header. The patches
+are GPL-3.0-only ([REUSE.toml](../REUSE.toml)), as SwanStation's are; LRPS2
+is GPL-3.0, and the PCSX2 files it touches are LGPL-3.0-or-later.
+
+| Patch | What it changes |
+| --- | --- |
+| [`lrps2-01-core-build-identity`](../cores/patches/lrps2-01-core-build-identity.patch) | When `anyps5-core-source.txt` is beside LRPS2's top `CMakeLists.txt`, CMake adds `C89_EMITTER`, `DISABLE_ADVANCE_SIMD`, `USE_OPENGL` and `USE_VULKAN` to it, and `library_version` becomes `anyps5-1-<SHA-256 of the whole>`. Without the file the core keeps LRPS2's own `library_version` |
+
+No floating-point contraction patch is made for LRPS2 yet: it matters only to
+two players' cores computing alike, and PS2 online play is not proposed
+([ps2.md](ps2.md) "PS2 online play").
+
+To build LRPS2 as the workflows do (CMake and a compiler are all it needs;
+the whole core takes several minutes):
+
+```bash
+git init -q lrps2
+git -C lrps2 config core.autocrlf false
+git -C lrps2 fetch -q --depth 1 https://github.com/libretro/parallel-ps2.git <LRPS2_COMMIT>
+git -C lrps2 checkout -q FETCH_HEAD
+bash cores/apply-core-patches.sh lrps2 lrps2
+cmake -S lrps2 -B lrps2/build -DCMAKE_BUILD_TYPE=Release -DC89_EMITTER=ON -DDISABLE_ADVANCE_SIMD=ON -DUSE_OPENGL=ON -DUSE_VULKAN=ON
+cmake --build lrps2/build --config Release --target pcsx2_libretro
+python3 tests/ps2_core.py --host build/anyps5-retro-host --core lrps2/build/bin/pcsx2_libretro.so --log build/ps2-core.log \
+  --expect-core-version "$(python3 tools/core_identity.py --lrps2-commit <LRPS2_COMMIT>)"
+```
+
+The library is `lrps2/build/bin/pcsx2_libretro.so` on Linux,
+`lrps2/build/libretro/pcsx2_libretro.dylib` on macOS and
+`lrps2/build/libretro/Release/pcsx2_libretro.dll` with Visual Studio.
 
 ## Testing a launcher with the fake host
 
@@ -669,7 +749,7 @@ release can be packed and checked by hand the same way.
   the one libretro-common file the host uses) and
   `licenses/swanstation-libretro-common-MIT.txt`, `-glad-MIT.txt` (Khronos'
   `khrplatform.h`) and `-stb-MIT.txt` (stb's MIT choice), and `SOURCE.txt` naming the repository
-  and commit the host is built from, the SwanStation commit, the patches and
+  and commit the host is built from, the SwanStation commit, its `swanstation-*` patches and
   the date they last modified SwanStation ("SwanStation patches"), and the source
   archive. Everything sits at the
   top of the zip except the licences. The zip is the same bytes for the same

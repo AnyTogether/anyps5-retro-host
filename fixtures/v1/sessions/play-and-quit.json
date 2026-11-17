@@ -30,7 +30,8 @@
         "capabilities": [
           "ps1",
           "coreIdentity",
-          "gameTiming"
+          "gameTiming",
+          "ps2"
         ],
         "pixelFormat": "rgba8"
       },
@@ -200,6 +201,7 @@
               "restart": false
             }
           },
+          "console": "ps1",
           "core": {
             "name": "SwanStation",
             "version": "anyps5-1-0000000000000000000000000000000000000000000000000000000000000000"
@@ -289,6 +291,7 @@
               "restart": false
             }
           },
+          "console": "ps1",
           "core": {
             "name": "SwanStation",
             "version": "anyps5-1-0000000000000000000000000000000000000000000000000000000000000000"

@@ -139,13 +139,19 @@ def start_args(args, name=None):
     obj(args, 'start args')
     for field in ('core', 'disc', 'system', 'saves'):
         path(args.get(field), f'start.{field}')
+    need(args.get('console', 'ps1') in ('ps1', 'ps2'), 'start.console must be "ps1" or "ps2"')
+    ps2 = args.get('console') == 'ps2'
+    if ps2:
+        need('initialDisc' not in args, 'start.initialDisc is only for a PS1 game')
+        need(extension(args['disc'], '.iso', '.chd', '.cso', '.zso', '.cue', '.elf'),
+             "a PS2 game's start.disc is a .iso, .chd, .cso, .zso, .cue or .elf")
     if 'options' in args:
         for key, value in obj(args['options'], 'start.options').items():
             string(value, f'start.options.{key}')
     if 'initialDisc' in args:
         integer(args['initialDisc'], 0, 127, 'start.initialDisc')
         need(extension(args['disc'], '.m3u') or args['disc'] == '${playlist}', 'initialDisc needs an .m3u disc')
-    elif args['disc'] not in ('${disc}', '${playlist}', '${disc1}', '${disc2}'):
+    elif not ps2 and args['disc'] not in ('${disc}', '${playlist}', '${disc1}', '${disc2}'):
         need(extension(args['disc'], '.cue', '.chd', '.pbp', '.m3u'), 'start.disc is a .cue, .chd, .pbp or .m3u')
 
 
@@ -166,6 +172,8 @@ def status_result(value, name=None, report=False):
     string(value.get('resolutionError'), 'status.resolutionError')
     if 'cardUnreadable' in value:
         boolean(value['cardUnreadable'], 'status.cardUnreadable')
+    if 'console' in value:
+        need(value['console'] in ('ps1', 'ps2'), 'status.console must be "ps1" or "ps2"')
     need('progressPercent' in value and 'progressLabel' in value, 'status needs progressLabel and progressPercent')
     need(value['progressLabel'] is None or isinstance(value['progressLabel'], str), 'status.progressLabel')
     if value['progressPercent'] is not None:
@@ -460,7 +468,7 @@ def order(message, sender, calls, state, step):
 def capability_fields(status, state):
     """A status the host sends has every field of the capabilities its welcome listed (protocol.md
     "status")."""
-    for capability, field in (('coreIdentity', 'core'), ('gameTiming', 'timing')):
+    for capability, field in (('coreIdentity', 'core'), ('gameTiming', 'timing'), ('ps2', 'console')):
         if capability in state['capabilities']:
             need(field in status, f'a host that lists {capability} sends status.{field}')
 

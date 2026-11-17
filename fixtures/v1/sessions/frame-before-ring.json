@@ -29,7 +29,8 @@
         "capabilities": [
           "ps1",
           "coreIdentity",
-          "gameTiming"
+          "gameTiming",
+          "ps2"
         ],
         "pixelFormat": "rgba8"
       },

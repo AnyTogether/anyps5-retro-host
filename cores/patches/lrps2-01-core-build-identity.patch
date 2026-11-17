@@ -1,0 +1,123 @@
+Description: Report the AnyPS5 core build identity as library_version
+ anyps5-retro-host's cores/apply-core-patches.sh writes anyps5-core-source.txt beside
+ LRPS2's top CMakeLists.txt. With that file, CMake adds the build options that change
+ what the core computes or which renderers it has (C89_EMITTER, DISABLE_ADVANCE_SIMD,
+ USE_OPENGL, USE_VULKAN) to it, and library_version becomes anyps5-1-<SHA-256 of the
+ whole> (anyps5-retro-host docs/netplay.md "Core build identity", docs/ps2.md). Without
+ it the core keeps LRPS2's own library_version.
+Author: AnyPS5 Desktop contributors
+Forwarded: not-needed
+Last-Update: 2026-11-17
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index cdaa5b0..16ae805 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,3 +1,6 @@
++# Modified on 2026-11-17 by anyps5-retro-host's lrps2-01-core-build-identity.patch
++# (AnyPS5 Desktop contributors): the AnyPS5 core build identity, below SearchForStuff.
++
+ # Setting it to a range tells it that it supports the features on the newer
+ # versions as well, avoiding setting policies.
+ cmake_minimum_required(VERSION 3.12...3.24)
+@@ -58,6 +61,32 @@ include(GNUInstallDirs)
+ include(BuildParameters)
+ include(SearchForStuff)
+ 
++# AnyPS5 core build identity (anyps5-retro-host docs/netplay.md "Core build identity", docs/ps2.md).
++# The host's cores/apply-core-patches.sh writes anyps5-core-source.txt beside this file: the LRPS2
++# commit, the date the patches last modified it, and the SHA-256 and name of each patch it applied,
++# in order. The build options that change what the core computes or which renderers it has are
++# added to it here, and library_version becomes anyps5-1-<SHA-256 of the whole>, the same for the
++# same emulation on every system. Without that file the core keeps LRPS2's own library_version.
++set(ANYPS5_CORE_IDENTITY "")
++set(ANYPS5_CORE_SOURCE "${CMAKE_SOURCE_DIR}/anyps5-core-source.txt")
++if(EXISTS "${ANYPS5_CORE_SOURCE}")
++	set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ANYPS5_CORE_SOURCE}")
++	file(READ "${ANYPS5_CORE_SOURCE}" ANYPS5_CORE_MANIFEST)
++	foreach(ANYPS5_OPTION C89_EMITTER DISABLE_ADVANCE_SIMD USE_OPENGL USE_VULKAN)
++		if(${ANYPS5_OPTION})
++			string(APPEND ANYPS5_CORE_MANIFEST "option ${ANYPS5_OPTION}=ON\n")
++		else()
++			string(APPEND ANYPS5_CORE_MANIFEST "option ${ANYPS5_OPTION}=OFF\n")
++		endif()
++	endforeach()
++	file(WRITE "${CMAKE_BINARY_DIR}/anyps5-core-manifest.txt" "${ANYPS5_CORE_MANIFEST}")
++	string(SHA256 ANYPS5_CORE_DIGEST "${ANYPS5_CORE_MANIFEST}")
++	set(ANYPS5_CORE_IDENTITY "anyps5-1-${ANYPS5_CORE_DIGEST}")
++	message("AnyPS5 core build identity: ${ANYPS5_CORE_IDENTITY}")
++endif()
++configure_file("${CMAKE_SOURCE_DIR}/libretro/anyps5_core_identity.h.in"
++               "${CMAKE_BINARY_DIR}/anyps5/anyps5_core_identity.h" @ONLY)
++
+ # make common
+ add_subdirectory(common)
+ 
+diff --git a/libretro/CMakeLists.txt b/libretro/CMakeLists.txt
+index fc2a20f..9404f69 100644
+--- a/libretro/CMakeLists.txt
++++ b/libretro/CMakeLists.txt
+@@ -1,3 +1,6 @@
++# Modified on 2026-11-17 by anyps5-retro-host's lrps2-01-core-build-identity.patch
++# (AnyPS5 Desktop contributors): the AnyPS5 core build identity's header folder.
++
+ 
+ # fastjmp's register save and restore is file-scope assembly, which MSVC does
+ # not have on x64: fastjmp.c compiles to nothing under _MSC_VER and the
+@@ -124,6 +127,7 @@ target_include_directories(common INTERFACE
+ )
+ 
+ target_include_directories(pcsx2_libretro PRIVATE
++	"${CMAKE_BINARY_DIR}/anyps5"
+ 	"${CMAKE_SOURCE_DIR}"
+ 	"${CMAKE_SOURCE_DIR}/libretro/libretro-common/include"
+ 	"${CMAKE_SOURCE_DIR}/common/include"
+diff --git a/libretro/anyps5_core_identity.h.in b/libretro/anyps5_core_identity.h.in
+new file mode 100644
+index 0000000..3441cbf
+--- /dev/null
++++ b/libretro/anyps5_core_identity.h.in
+@@ -0,0 +1,11 @@
++/*  Copyright (C) 2026 AnyPS5 Desktop contributors
++ *  Licensed under the GNU General Public License version 3, as LRPS2 is (COPYING.GPLv3).
++ *  Added on 2026-11-17 by anyps5-retro-host's lrps2-01-core-build-identity.patch.
++ */
++
++#ifndef ANYPS5_CORE_IDENTITY_H
++#define ANYPS5_CORE_IDENTITY_H
++
++#define ANYPS5_CORE_IDENTITY "@ANYPS5_CORE_IDENTITY@"
++
++#endif
+diff --git a/libretro/main.c b/libretro/main.c
+index e8077df..7754cc9 100644
+--- a/libretro/main.c
++++ b/libretro/main.c
+@@ -1,3 +1,7 @@
++/* Modified on 2026-11-17 by anyps5-retro-host's lrps2-01-core-build-identity.patch
++ * (AnyPS5 Desktop contributors): library_version is the AnyPS5 core build identity when there
++ * is one. */
++
+ #ifdef WIN32
+ #include <windows.h>
+ #endif
+@@ -49,6 +53,7 @@
+ #include "../pcsx2/vtlb.h"
+ #include "../pcsx2/Host.h"
+ 
++#include "anyps5_core_identity.h"
+ #include "HostFS.h"
+ 
+ #include "../common/WindowInfo.h"
+@@ -1838,7 +1843,10 @@ void retro_get_system_info(struct retro_system_info* info)
+ #endif
+ 	memset(info, 0, sizeof(*info));
+ 	/* the version is checked by retroachievements, it should be semver */
+-	info->library_version  = "v2.0.0-" GIT_VERSION;
++	if (ANYPS5_CORE_IDENTITY[0] != '\0')
++		info->library_version = ANYPS5_CORE_IDENTITY;
++	else
++		info->library_version = "v2.0.0-" GIT_VERSION;
+ 	info->library_name     = "ParaLLEl PS2";
+ 	info->valid_extensions = "elf|iso|ciso|cue|gz|chd|cso|zso|m3u|py1|py2";
+ 	info->need_fullpath    = true;

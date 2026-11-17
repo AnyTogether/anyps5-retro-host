@@ -13,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -27,7 +28,12 @@ struct retro_game_geometry;
 
 namespace retro_host {
 
+// The console a game is for (protocol.md "start", console): PS1 on SwanStation, or, with the
+// capability ps2, PS2 on LRPS2 (docs/ps2.md).
+enum class Console { kPs1, kPs2 };
+
 struct GameConfig {
+  Console console = Console::kPs1;
   std::string core;
   std::string disc;
   std::string system;
@@ -234,7 +240,13 @@ class Game {
   std::atomic<bool> bios_found_{false};
   std::string console_region_;
   std::atomic<bool> disc_missing_{false};
+  void LogPs1(std::string_view message);
   bool UsesBios() const;
+  // LRPS2 said it found no PS2 BIOS in its folder of the system directory (docs/ps2.md "The
+  // BIOS"). It may log from threads of its own.
+  std::atomic<bool> ps2_bios_missing_{false};
+  // The libretro device a controller port with a controller in is given.
+  unsigned PadDevice() const;
   std::string card_;
   struct DiscControl;
   std::unique_ptr<DiscControl> disc_control_;
