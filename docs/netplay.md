@@ -250,7 +250,7 @@ on its own.
 
 > The host's lockstep (`ps1Lockstep`) and its `sync` hashes are built. How a
 > match would use them, the input delay a launcher would pick, a connection
-> limit and rollback, is part of the proposal.
+> limit and rollback are part of the proposal.
 
 **Lockstep with input delay** (proposal; the host's part, capability
 `ps1Lockstep`, is built). A frame would run only when every player's input

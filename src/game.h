@@ -106,7 +106,7 @@ class Game {
 
   // Puts a running game in lockstep, or changes how it runs there; the frame count starts at 0
   // when it enters. Both this and LeaveLockstep wait for the frame being run to end, so no frame
-  // straddles the change. Returns the next frame the game will run, or nothing when it has ended
+  // straddles the change. Returns the frame the next step is for, or nothing when it has ended
   // or its frame did not end within 4 seconds.
   std::optional<uint64_t> Lockstep(const LockstepConfig& config);
   // Leaves lockstep and drops the steps not yet run; false when the game has ended or its frame

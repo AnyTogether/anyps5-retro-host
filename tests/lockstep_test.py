@@ -148,7 +148,7 @@ def port(buttons, left_x=0):
 
 
 def script(frame):
-    """The input both players' launchers agree on for a frame: two ports, every button, changing every
+    """The scripted input fed to both hosts for a frame: two ports, every button, changing every
     frame."""
     chance = random.Random(frame)
     return [port(chance.randrange(65536), chance.randrange(-32768, 32768)), port(chance.randrange(65536))]
