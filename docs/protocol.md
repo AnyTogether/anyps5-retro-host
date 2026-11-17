@@ -12,8 +12,10 @@ side can be written from this document and the fixtures in
 Version 1 runs one PS1 game for local players: start, play, change discs,
 change settings, stop. The `coreIdentity` capability adds the core build
 identity two players' launchers compare before PS1 online play
-([netplay.md](netplay.md) "Core build identity"). Online play itself, PS2 and
-PS3 are later capabilities (see [Capabilities](#capabilities)).
+([netplay.md](netplay.md) "Core build identity"). The `ps2` capability
+starts a PS2 game the same way, on LRPS2 with the player's own BIOS
+([ps2.md](ps2.md)). Online play itself and PS3 are later capabilities (see
+[Capabilities](#capabilities)).
 
 The words MUST, MUST NOT and SHOULD are used as in RFC 2119.
 
@@ -23,7 +25,8 @@ The words MUST, MUST NOT and SHOULD are used as in RFC 2119.
 | --- | --- |
 | This document, the fixtures and the fixture checker | MIT |
 | `anyps5-retro-host` | GPL-2.0-or-later |
-| SwanStation (the only core version 1 loads) | GPL-3.0, [libretro/swanstation](https://github.com/libretro/swanstation), modified by the host's patches in [`cores/patches`](../cores/patches) |
+| SwanStation (the PS1 core) | GPL-3.0, [libretro/swanstation](https://github.com/libretro/swanstation), modified by the host's patches in [`cores/patches`](../cores/patches) |
+| LRPS2 (the PS2 core, capability `ps2`) | GPL-3.0, [libretro/parallel-ps2](https://github.com/libretro/parallel-ps2), modified by the host's patches in [`cores/patches`](../cores/patches) |
 
 The launcher never links the host or a core, and shares no code with the
 host. A launcher MAY copy code from this document or the fixtures. Each host
@@ -31,7 +34,9 @@ release names the SwanStation commit it was tested with, and the distributed
 SwanStation build is made from that commit's source with the patches in
 [`cores/patches`](../cores/patches) applied ([host.md](host.md) "SwanStation
 patches"). Releases ship this patched SwanStation, not an unmodified one.
-
+They do not ship LRPS2 yet ([ps2.md](ps2.md) "Releases"); the host's CI builds
+it from the commit its workflows name with the patches in `cores/patches`
+([host.md](host.md) "LRPS2 patches").
 The host is GPL-2.0-or-later so that one host can later run GPL-3.0 cores
 (SwanStation, LRPS2) and GPL-2.0-only cores (RPCS3). It only ever loads one
 core at a time. A core's patches are published with the host, in
@@ -486,8 +491,9 @@ a method whose capability the host did not list.
 | --- | --- |
 | `ps1` | The methods below, for PS1 games, with controller ports 1 and 2 |
 | `coreIdentity` | `core` in [`status`](#status): the loaded core's name and build identity, which two players' launchers compare before a match |
+| `ps2` | PS2 games: `console` in [`start`](#start) and in [`status`](#status), with the same methods and ports as PS1 ([ps2.md](ps2.md)) |
 
-Later versions add capabilities such as PS1 online play, PS2 and PS3.
+Later versions add capabilities such as PS1 online play and PS3.
 
 ### call and reply
 
@@ -641,7 +647,8 @@ whether or not a game is loaded. With a valid argument and no game loaded,
 
 ### start
 
-Loads and starts a PS1 game.
+Loads and starts a PS1 game, or, with the `ps2` capability and `console`
+`"ps2"`, a PS2 game.
 
 ```json
 {"core":"C:\\Users\\p\\AppData\\Roaming\\AnyPS5\\retro-host\\swanstation_libretro.dll",
@@ -654,12 +661,22 @@ Loads and starts a PS1 game.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `core` | path | The SwanStation library the launcher checked |
-| `disc` | path | A `.cue`, `.chd`, `.pbp` or `.m3u` file |
-| `system` | path | The core's system directory (BIOS files) |
+| `console` | string, optional | Capability `ps2`: `"ps1"` (the default) or `"ps2"`. Any other value is an `argument` error. The launcher MUST NOT send it to a host without `ps2` |
+| `core` | path | The SwanStation library the launcher checked; for a PS2 game, LRPS2 (`pcsx2_libretro`) |
+| `disc` | path | A `.cue`, `.chd`, `.pbp` or `.m3u` file; for a PS2 game a `.iso`, `.chd`, `.cso`, `.zso`, `.cue` or `.elf` file, and no `.m3u` |
+| `system` | path | The core's system directory (BIOS files). LRPS2 looks for the PS2 BIOS in `pcsx2/bios` in it ([ps2.md](ps2.md) "The BIOS") |
 | `saves` | path | Where memory cards are kept; the host creates it if needed. Memory card 1 is the file `<disc's name without its extension>.srm` in it, as libretro frontends name it, and is checked for changes every 5 seconds between frames, also while paused, and written whenever the game ends: to a file beside it, flushed to the disk, then renamed over it, so a crash or power cut leaves the old card or the new one. A card file the host cannot read is left as it is and never written over, and `status.cardUnreadable` is `true` |
 | `options` | object of strings, optional | Core option values saved by the player, by key, including the internal resolution (`swanstation_GPU_ResolutionScale`). Unknown keys and values are ignored |
-| `initialDisc` | integer 0 to 127, optional | Only for an `.m3u`: the index of the playlist entry to insert at boot. With any other `disc` it is an `argument` error |
+| `initialDisc` | integer 0 to 127, optional | Only for an `.m3u`: the index of the playlist entry to insert at boot. With any other `disc`, and for a PS2 game, it is an `argument` error |
+
+A PS2 game's memory card is the core's own: LRPS2 keeps card 1 as `<disc's
+name without its extension>.ps2` in `saves`, creating it formatted when it is
+missing, and writes it itself, so the `.srm` rules above and
+`cardUnreadable` do not cover it. The host gives LRPS2 fixed values for
+`pcsx2_shared_memory_cards` (`disabled`, which makes that per-game card),
+`pcsx2_renderer` (`Auto`) and `pcsx2_multitap` (`disabled`), whatever
+`options` says, and leaves them out of `status.options` ([ps2.md](ps2.md)
+"What the protocol gains").
 
 The result is `{"epoch":<integer>}`. The epoch identifies this game's frames
 in the ring (see [Frame ring](#frame-ring)). It is 1 for the host's first
@@ -709,6 +726,7 @@ No argument. Returns `null` when no game is loaded, or:
 | `progressLabel` | string or null | What is loading right now, while there is something to show |
 | `progressPercent` | integer 0 to 100, or null | How far it is, when known |
 | `options` | object | Each core option the player can change now, by key |
+| `console` | string | Capability `ps2`: `"ps1"` or `"ps2"`, as the game was started. A host without `ps2` sends none |
 | `cardUnreadable` | boolean | Memory card 1's file is there but the host could not read it as a card (for example, it is not the core's card size), so it is left as it is and this game's saves are not written anywhere; the launcher can tell the player so. A launcher treats a status without this field as `false` |
 | `core` | object or null | Capability `coreIdentity`: the core the game loaded, or `null` until it is loaded and when it could not be (`errorCode` `core`). It stays once the game has ended. See below |
 | `discs` | object, optional | Present for multi-disc games |
@@ -716,7 +734,7 @@ No argument. Returns `null` when no game is loaded, or:
 | `errorCode` | Meaning |
 | --- | --- |
 | `""` | The game has not ended, or ended without an error (it was stopped) |
-| `bios` | No BIOS was found in `system`, the way the core looks for one. A file the core takes as a BIOS but that is damaged shows as `didNotStart` instead |
+| `bios` | No BIOS was found in `system`, the way the core looks for one. A file the core takes as a BIOS but that is damaged shows as `didNotStart` instead. For a PS2 game: LRPS2 found no file it takes as a PS2 BIOS in `pcsx2/bios`, and any other failed load is `core` |
 | `disc` | The disc, or a file it names, could not be read |
 | `core` | The core could not be loaded, or failed while loading or running the game |
 | `stalled` | The game stopped producing frames (see [Timeouts](#timeouts)) |
@@ -727,7 +745,8 @@ No argument. Returns `null` when no game is loaded, or:
 | `hostHung` | Only the launcher's client reports it: the host missed one of the launcher's time limits and the launcher closed it (see [Host failure](#host-failure)) |
 
 The host always sends every field above (`discs` only for a multi-disc
-game, `core` only with the `coreIdentity` capability), including for a game
+game, `core` only with the `coreIdentity` capability, `console` only with
+`ps2`), including for a game
 that ended before its first frame. The shorter
 form in [Host failure](#host-failure) is never sent by a host; only the
 launcher's client reports it. A launcher that gets `hostExited` or
@@ -743,6 +762,10 @@ Linux and macOS for a core built from the same SwanStation commit, with the
 same patches and emulation build options. A Debug build reports another
 `name` (`SwanStation Debug`), and a core built without the host's patch
 script keeps SwanStation's own `version` (`1.0.0 ` and a git description).
+The host's LRPS2 builds report `ParaLLEl PS2` and an identity of the same
+form, made from the LRPS2 commit and its patches ([ps2.md](ps2.md) "The
+core"); without the host's patch script LRPS2 keeps `v2.0.0-` and its git
+revision.
 Before a match each launcher compares both strings with its friend's, and
 plays online only when both are equal and `version` has the `anyps5-1-`
 form; anything else is a different core. The host does not judge the value.

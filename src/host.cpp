@@ -124,7 +124,7 @@ Host::Outcome Host::Hello(const Json& message) {
                        {"version", 1},
                        {"pid", ProcessId()},
                        {"hostVersion", ANYPS5_RETRO_HOST_VERSION},
-                       {"capabilities", JsonArray{"ps1", "coreIdentity"}},
+                       {"capabilities", JsonArray{"ps1", "coreIdentity", "ps2"}},
                        {"pixelFormat", format_name}}));
   return Outcome::kContinue;
 }
@@ -245,14 +245,27 @@ Host::Reply Host::Dispatch(const std::string& method, const Json& args) {
 Host::Reply Host::Start(const Json& args) {
   Need(args.IsObject(), "start takes an object.");
   GameConfig config;
+  if (const Json* console = args.Find("console")) {
+    Need(console->IsString() && (console->AsString() == "ps1" || console->AsString() == "ps2"),
+         "start.console must be \"ps1\" or \"ps2\".");
+    if (console->AsString() == "ps2") config.console = Console::kPs2;
+  }
   config.core = NeedPath(args, "core");
   config.disc = NeedPath(args, "disc");
   config.system = NeedPath(args, "system");
   config.saves = NeedPath(args, "saves");
-  const bool playlist = HasExtension(config.disc, ".m3u");
-  Need(playlist || HasExtension(config.disc, ".cue") || HasExtension(config.disc, ".chd") ||
-           HasExtension(config.disc, ".pbp"),
-       "start.disc must be a .cue, .chd, .pbp or .m3u file.");
+  const bool ps2 = config.console == Console::kPs2;
+  const bool playlist = !ps2 && HasExtension(config.disc, ".m3u");
+  if (ps2) {
+    Need(HasExtension(config.disc, ".iso") || HasExtension(config.disc, ".chd") ||
+             HasExtension(config.disc, ".cso") || HasExtension(config.disc, ".zso") ||
+             HasExtension(config.disc, ".cue") || HasExtension(config.disc, ".elf"),
+         "start.disc must be a .iso, .chd, .cso, .zso, .cue or .elf file for a PS2 game.");
+  } else {
+    Need(playlist || HasExtension(config.disc, ".cue") || HasExtension(config.disc, ".chd") ||
+             HasExtension(config.disc, ".pbp"),
+         "start.disc must be a .cue, .chd, .pbp or .m3u file.");
+  }
   if (const Json* options = args.Find("options")) {
     Need(options->IsObject(), "start.options must be an object of strings.");
     for (const auto& [key, value] : options->AsObject()) {

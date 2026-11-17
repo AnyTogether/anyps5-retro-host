@@ -27,7 +27,16 @@
  * the host to shut the game down (RETRO_ENVIRONMENT_SHUTDOWN).
  *
  * Its library_version is "1", or the environment variable FAKE_CORE_VERSION when it is set, so a
- * test can give the host a core build identity it must not pass on (protocol.md "status", core). */
+ * test can give the host a core build identity it must not pass on (protocol.md "status", core).
+ *
+ * While the system directory holds fake-ps2, it also offers LRPS2's memory card, renderer and
+ * multitap options (pcsx2_shared_memory_cards, pcsx2_renderer and pcsx2_multitap, at LRPS2's
+ * defaults) and writes each controller port's device to fake-ps2-ports.txt there, a line a call.
+ * A game whose disc is a .iso or .elf is then loaded as LRPS2 loads a PS2 game (docs/ps2.md "The
+ * BIOS"): with no file fake-ps2-bios.bin in pcsx2/bios of the system directory it logs LRPS2's
+ * message for a missing BIOS and the load fails; while the system directory holds fake-ps2-fail,
+ * the load fails without it. A game that loads writes the value it read for each of those options
+ * to fake-ps2-options.txt there, so a test can see what the host gave it. */
 
 #include <libretro.h>
 
@@ -220,7 +229,35 @@ static struct retro_core_option_v2_definition resolution = {
      {"9", "9x"}, {"10", "10x"}, {"11", "11x"}, {"12", "12x"}, {"13", "13x"}, {"14", "14x"}, {"15", "15x"},
      {"16", "16x"}, {NULL, NULL}},
     "1"};
-static struct retro_core_option_v2_definition offered[sizeof definitions / sizeof definitions[0] + 1];
+static struct retro_core_option_v2_definition ps2_definitions[] = {
+    {"pcsx2_shared_memory_cards",
+     "System > Shared Memory Cards (Restart)",
+     NULL,
+     "Use per-content or shared memory cards.",
+     NULL,
+     NULL,
+     {{"disabled", NULL}, {"enabled", NULL}, {NULL, NULL}},
+     "enabled"},
+    {"pcsx2_renderer",
+     "Video > Renderer",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"Auto", NULL}, {"OpenGL", NULL}, {"Vulkan", NULL}, {"Software (SW)", NULL}, {NULL, NULL}},
+     "Auto"},
+    {"pcsx2_multitap",
+     "Input > Multitap (Restart)",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"disabled", NULL}, {"port 1", "Port 1"}, {NULL, NULL}},
+     "disabled"},
+};
+#define PS2_OPTIONS (sizeof ps2_definitions / sizeof ps2_definitions[0])
+static struct retro_core_option_v2_definition offered[sizeof definitions / sizeof definitions[0] + 1 + PS2_OPTIONS];
+static bool ps2_wanted;
 static struct retro_core_options_v2 options = {NULL, offered};
 
 RETRO_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
@@ -282,6 +319,8 @@ RETRO_API void retro_init(void) {
   memset(offered, 0, sizeof offered);
   memcpy(offered, definitions, count * sizeof definitions[0]);
   if (gpu_wanted) offered[count] = resolution;
+  ps2_wanted = in_system_directory("fake-ps2");
+  if (ps2_wanted) memcpy(offered + count + (gpu_wanted ? 1 : 0), ps2_definitions, sizeof ps2_definitions);
   if (environment(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) && version >= 2) {
     environment(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &options);
   }
@@ -324,8 +363,44 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info) {
   info->timing.sample_rate = 44100.0;
 }
 
+static FILE* open_in_system_directory(const char* name, const char* mode) {
+  const char* system = NULL;
+  char path[1100];
+  if (!environment(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system) || !system) return NULL;
+  snprintf(path, sizeof path, "%s/%s", system, name);
+  return fopen(path, mode);
+}
+
 RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device) {
+  FILE* file;
   if (port < 2) port_devices[port] = device;
+  if (!ps2_wanted) return;
+  file = open_in_system_directory("fake-ps2-ports.txt", "ab");
+  if (!file) return;
+  fprintf(file, "%u %u\n", port, device);
+  fclose(file);
+}
+
+/* A PS2 game, as LRPS2's retro_load_game takes one (libretro/main.c): no BIOS, no game. */
+static bool load_ps2(void) {
+  const char* system = NULL;
+  FILE* file;
+  size_t i;
+  if (in_system_directory("fake-ps2-fail")) return false;
+  if (!in_system_directory("pcsx2/bios/fake-ps2-bios.bin")) {
+    environment(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system);
+    if (log_printf) log_printf(RETRO_LOG_ERROR, "Could not find any valid PS2 BIOS File in \"%s/pcsx2/bios\".\n", system);
+    return false;
+  }
+  file = open_in_system_directory("fake-ps2-options.txt", "wb");
+  if (!file) return false;
+  for (i = 0; i < PS2_OPTIONS; ++i) {
+    struct retro_variable variable = {ps2_definitions[i].key, NULL};
+    const bool read = environment(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) && variable.value;
+    fprintf(file, "%s=%s\n", variable.key, read ? variable.value : "");
+  }
+  fclose(file);
+  return true;
 }
 
 RETRO_API void retro_reset(void) { frame_count = 0; }
@@ -484,6 +559,7 @@ static void load_playlist(const char* path) {
 RETRO_API bool retro_load_game(const struct retro_game_info* game) {
   enum retro_pixel_format format = RETRO_PIXEL_FORMAT_XRGB8888;
   if (!game || !game->path) return false;
+  if (ps2_wanted && (ends_with(game->path, ".iso") || ends_with(game->path, ".elf")) && !load_ps2()) return false;
   if (!environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format)) return false;
   if (environment(RETRO_ENVIRONMENT_SET_HW_RENDER, NULL) || environment(RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER, NULL)) {
     return false;

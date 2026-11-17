@@ -28,7 +28,8 @@
         "hostVersion": "1.0.0",
         "capabilities": [
           "ps1",
-          "coreIdentity"
+          "coreIdentity",
+          "ps2"
         ],
         "pixelFormat": "rgba8"
       },

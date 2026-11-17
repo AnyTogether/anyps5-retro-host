@@ -199,7 +199,7 @@ def release_files(args, host_repository, host_commit):
         ('licenses/swanstation-GPL-3.0.txt', Path(args.core_licence).read_bytes(), PLAIN),
         ('SOURCE.txt',
          source_text(args.version, args.system, host_repository, host_commit,
-                     args.swanstation_commit, core_identity.modified()).encode('utf-8'),
+                     args.swanstation_commit, core_identity.modified('swanstation')).encode('utf-8'),
          PLAIN),
         *dependency_notices(args.core_notices),
         *extra_notices(args.notice),
