@@ -22,8 +22,8 @@ the missing BIOS; the controller and option handling is checked with the
 host's fake core (`host_test.py ps2_game`). **No PS2 program has been booted**: LRPS2
 boots nothing without a Sony BIOS, and none may be used here (see "The BIOS").
 Drawing, sound, input and memory cards of a running PS2 game are therefore
-coded but not yet seen working. Releases do not ship LRPS2 yet (see
-"Releases").
+coded but not yet seen working. Releases ship this LRPS2 beside SwanStation,
+with no BIOS (see "Releases").
 
 ## Which core
 
@@ -297,21 +297,31 @@ are the known obstacles for PS2, for whoever takes it up:
 
 ## Releases
 
-Release zips hold no PS2 core yet: `release.yml` builds and packs SwanStation
-only. Shipping PS2 is the next host piece: build LRPS2 in `release.yml` at the
-`LRPS2_COMMIT` real-core tests, with the patch; add it to the zips, `.files`
-and `SOURCE.txt` with its licences (COPYING.GPLv3, the LGPL-3.0 text its PCSX2
-files name, and the notices of what it builds in: vixl, the Vulkan headers,
-glad, xbyak and libretro-common); put the patched LRPS2 source in the source
-archive; check on Windows that it still needs no Visual C++ runtime; and boot
-it in the release check, which, again without a BIOS, can only show that it
-loads and reports a missing BIOS.
+Every release zip holds LRPS2 as `pcsx2_libretro.dll`, `.so` or `.dylib`
+beside the host and SwanStation, so one signed `.files` covers both cores
+([host.md](host.md) "Releases"). `release.yml` builds it at the
+`LRPS2_COMMIT` real-core tests (the version job fails if the two differ), with
+the host's patch, the four options its identity names, the host's static
+Visual C++ runtime (the Windows job fails if it imports the runtime) and the
+host's macOS 11.0 target. `SOURCE.txt` names the LRPS2 commit and the date the
+patches last modified it, and says no BIOS is in the release. The zip carries
+LRPS2's GPL-3.0, the LGPL-3.0 text its PCSX2 files and paraLLEl-GS name, and
+the notices of what it builds in (Granite, libretro-common, QEMU's USB code
+and `queue.h`, xxHash, Khronos' `khrplatform.h`, xbyak, VIXL and the Vulkan
+headers); host.md "Releases" lists each with how it is carried. The source
+archive holds the patched LRPS2 with its `anyps5-core-source.txt`.
+
+The release check runs the zip's own LRPS2 through `tests/ps2_core.py` on each
+system, and `package_release.py --check` finds LRPS2's identity for
+`LRPS2_COMMIT` in every zip. Without a BIOS that shows only that it loads,
+reports its identity and refuses the missing BIOS; nothing PS2 has been seen
+running from a release either. A launcher finds `pcsx2_libretro` beside the
+signed host once it knows the name; the launchers have not taken that up yet.
 
 ## Not done yet
 
 - Booting anything: drawing, sound, input, pacing and memory cards of a running
   PS2 game.
-- Release packaging (above).
 - The launcher side, not yet planned by the launchers: the proposed Settings ›
   Emulators PS2 row, BIOS check and copy, starting PS2 games with `console`,
   and showing `bios`.

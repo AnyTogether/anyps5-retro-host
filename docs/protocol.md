@@ -36,10 +36,12 @@ host. A launcher MAY copy code from this document or the fixtures. Each host
 release names the SwanStation commit it was tested with, and the distributed
 SwanStation build is made from that commit's source with the patches in
 [`cores/patches`](../cores/patches) applied ([host.md](host.md) "SwanStation
-patches"). Releases ship this patched SwanStation, not an unmodified one.
-They do not ship LRPS2 yet ([ps2.md](ps2.md) "Releases"); the host's CI builds
-it from the commit its workflows name with the patches in `cores/patches`
-([host.md](host.md) "LRPS2 patches").
+patches"). The same holds for LRPS2 and its commit ([host.md](host.md)
+"LRPS2 patches"). Releases ship this patched SwanStation and this patched
+LRPS2, not unmodified ones, and no PS2 BIOS ([ps2.md](ps2.md) "Releases").
+LRPS2 is GPL-3.0, and the PCSX2 files in it are LGPL-3.0-or-later; a release
+carries both licence texts and the notices of the code each core builds in
+([host.md](host.md) "Releases").
 The host is GPL-2.0-or-later so that one host can later run GPL-3.0 cores
 (SwanStation, LRPS2) and GPL-2.0-only cores (RPCS3). It only ever loads one
 core at a time. A core's patches are published with the host, in
@@ -181,7 +183,7 @@ changes nothing in those checks.
   signatures of `SHA256SUMS` by the release keys built into the launcher.
   One good signature by a built-in key is enough.
 - For each system the release has `anyps5-retro-host-<version>-<os>-<arch>.zip`,
-  the host and SwanStation, and
+  the host and its cores (SwanStation, and LRPS2 for a host with `ps2`), and
   `anyps5-retro-host-<version>-<os>-<arch>.files`, which lists every file in
   that zip in the same `shasum` format, with `/` between directories.
   `<version>` is the host's release, as in [`welcome`](#welcome).
@@ -195,8 +197,8 @@ changes nothing in those checks.
   only then unpacks the zip. It keeps
   `SHA256SUMS`, `SHA256SUMS.sig` and the `.files` beside the unpacked host.
 - *Before each start*: it checks the signature again, the `.files` against
-  `SHA256SUMS`, and the host executable and the SwanStation library against
-  the `.files`.
+  `SHA256SUMS`, and the host executable and the library of the core the game
+  starts on (SwanStation for PS1, LRPS2 for PS2) against the `.files`.
 - *Minimum version*: each launcher release has a minimum host version built
   in. It does not use an older host, even a signed one, so an old signed
   host with a known fault cannot be put back in its place.
@@ -209,7 +211,7 @@ game's load unprotected. Holding the handles does not stop the host loading
 the library, and no other program can write, rename or delete the file while
 they are open. So the file it checked is the file that runs. The launcher's
 own updater cannot replace those files either, so before it updates the host
-or SwanStation the launcher shuts the host down ([`shutdown`](#shutdown)) and
+or a core the launcher shuts the host down ([`shutdown`](#shutdown)) and
 waits for it to exit. On Linux the
 launcher hashes the host executable from a
 descriptor it opened with `O_CLOEXEC` at a number above 3 (moved there with
@@ -219,9 +221,9 @@ descriptor (`/proc/self/fd/<n>` as the path given to `posix_spawn`; the
 kernel opens it before close-on-exec descriptors are closed, so the
 descriptor itself never reaches the host), so the file
 it checked is the file that runs. On macOS the system itself checks the code
-signature of the host and of the SwanStation library as they are loaded (see
-macOS signing below), so a changed file does not run. The SwanStation
-library on Linux is checked by path in the launcher's own storage (its own
+signature of the host and of the core library as they are loaded (see
+macOS signing below), so a changed file does not run. The core library on
+Linux is checked by path in the launcher's own storage (its own
 directory or its data folder, as above), which only the user can write.
 
 These checks protect against a damaged download and a changed mirror, not
@@ -233,8 +235,8 @@ emulator needs to be downloaded again.
 
 A launcher is built in one of three ways, and only a release is published:
 
-- **A release** is what players download. It only ever runs the SwanStation
-  library from the signed host release, after the checks above, and never a
+- **A release** is what players download. It only ever runs the core
+  libraries from the signed host release, after the checks above, and never a
   core the player picks. It ignores the environment variable
   `ANYPS5_RETRO_HOST`. A build that is optimized like a release but not
   published (the Flutter launcher's profile build) is a release here too.
@@ -265,9 +267,9 @@ it (its `docs/AnyPS5 Desktop - Emulator Host UI.md`, "The unchecked-host
 mark").
 
 **macOS signing.** The host is signed with Developer ID, the hardened runtime
-and library validation, and notarized. The SwanStation library in a macOS
-host release is signed by the same team, so library validation lets the host
-load it without the `disable-library-validation` entitlement.
+and library validation, and notarized. The core libraries in a macOS host
+release are signed by the same team, so library validation lets the host
+load them without the `disable-library-validation` entitlement.
 
 ## Framing
 

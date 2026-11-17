@@ -6,7 +6,8 @@
 The separate program that runs emulator cores for the AnyPS5 launchers, and
 the contract between them. Version 1 runs single-player PS1 games with
 SwanStation, and starts PS2 games on LRPS2 with the player's own BIOS; no PS2
-program has been booted in CI, since no PS2 BIOS may be used there.
+program has been booted in CI, since no PS2 BIOS may be used there. Releases
+ship the host with both cores, and no BIOS.
 
 - [docs/protocol.md](docs/protocol.md): the protocol, the contract both sides
   are written from.
