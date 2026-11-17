@@ -26,9 +26,10 @@ the protocol with their own discs of Jak and Daxter, Grand Theft Auto: Vice
 City and TimeSplitters: Future Perfect and their own dumps of four USA BIOS
 versions (SCPH-39001, SCPH-70012, SCPH-77001 and SCPH-90001), each of which
 booted at least one of the games. All three games drew correctly, ran at full
-speed (but for one Vice City reading taken while the whole GPU was busy),
-played sound and took controller input, and the memory cards of Jak and
-Daxter and TimeSplitters kept their saves across a host restart. None of this
+speed in play (Jak and Daxter's title screen read 93 %, and one Vice City
+drive was slower while the whole GPU was busy), played sound and took
+controller input, and the memory cards of Jak and Daxter and TimeSplitters
+kept their saves across a host restart. None of this
 is in CI. **Not seen yet**: PS2 games on Linux and macOS, save states, and
 the core options other than `pcsx2_upscale_multiplier`. "Releases" below says
 whether the release zips hold LRPS2.
