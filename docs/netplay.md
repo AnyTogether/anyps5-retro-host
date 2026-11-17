@@ -64,11 +64,11 @@ need the same emulator build; and desyncs are found by comparing hashes.
 
 **Proposed: the launcher owns the network. The host never opens a socket.**
 
-- The launcher already has the signed-in account and AnyTogether's WebRTC
-  data channels, which today carry PS4 and PS5 online play and Share Play.
-  Neither launcher has PS1 or PS2 online play on its main branch. A PS1
-  match's invitation, lobby and input, and PS2 and PS3 online play later,
-  could use the same transport, so it would stay in one place.
+- The launcher is where the player signs in to AnyTogether. Neither
+  launcher has PS1 or PS2 online play on its main branch, and no transport
+  for it is decided. Whatever carries a PS1 match's invitation, lobby and
+  input could later carry PS2 and PS3 online play too, so it would stay in
+  one place.
 - The host runs third-party emulator code. Keeping it off the network keeps
   protocol.md's rule ("Network"), which CI enforces by tracing the host's
   network calls, and means a flaw in a core cannot be reached from the
@@ -189,7 +189,7 @@ option MSB_FIRST=OFF
   check.
 - Without `anyps5-core-source.txt` (a SwanStation built without the script)
   the core keeps SwanStation's own `library_version`, which is not of the
-  `anyps5-1-` form, so a launcher does not play online with it.
+  `anyps5-1-` form, so a launcher would not play online with it.
 - `tools/core_identity.py` computes the same value from `cores/patches` and
   the commit without building anything. The `real-core` workflow checks that
   each system's core reports it, and its `same-core` job that Windows, the
@@ -207,16 +207,16 @@ option MSB_FIRST=OFF
   path `start` names, and may load another core for the next game.
 
 **What it does not cover.** The core options are not in the identity: they
-are chosen per match, the launcher sends both players the same at `start`,
-and `status.options` shows each one's `activeValue`. Nor are the BIOS and the
-disc, which the launchers compare by content. Nor is the renderer: a host
-draws with SwanStation's OpenGL renderer when it can make an OpenGL context
-and in software otherwise (`status.hardware`), and the two draw different
-pictures from the same emulation, even at 1x; GPUs can round differently too.
-Everything else that can still differ between two machines is what the hashes
-compared during a match are for. When a patch is
-added or changed, or the SwanStation commit moves, the identity changes, and
-players need the same host release to play together.
+would be chosen per match, the launchers would send both players the same at
+`start`, and `status.options` shows each one's `activeValue`. Nor are the BIOS
+and the disc, which the launchers would compare by content. Nor is the
+renderer: a host draws with SwanStation's OpenGL renderer when it can make an
+OpenGL context and in software otherwise (`status.hardware`), and the two draw
+different pictures from the same emulation, even at 1x; GPUs can round
+differently too. Everything else that can still differ between two machines is
+what the hashes compared during a match are for. When a patch is added or
+changed, or the SwanStation commit moves, the identity changes, and players
+need the same host release to play together.
 
 ## Frame rate
 
@@ -315,8 +315,9 @@ seconds. Others handle the card the same way: DuckStation's rollback
 netplay (its unmerged pull request 3000) gives every player a
 non-persistent card 1 and no card 2, "We want all players to have the same
 memory card contents"; RetroArch's netplay instead sends the server's save
-RAM to each client when it connects and gives the client a separate
-`.netplay` save folder, so the client's own saves are not written over.
+RAM to each client when it connects, and points the client's save folder at
+a `.netplay` folder inside it, so the client's own saves are not written
+over unless that folder cannot be made (RetroArch then keeps the usual one).
 Bringing a player's saves into a match, as RetroArch does, would need the
 card handed to both hosts, and is left for later ([Steps](#steps)).
 
@@ -397,9 +398,9 @@ held by one controller on one PC. For a PS1 game:
 - Pausing from the PS menu during a match would pause for both players: the
   launcher would stop sending steps and tell the friend's launcher, which
   would do the same. The host itself needs nothing more; it simply waits.
-  A launcher stops handing steps on while its game is paused, the friend's
-  included: a paused host keeps the steps it is sent, at most 600, and the
-  601st waiting is a protocol error that ends the host (protocol.md
+  A launcher would stop handing steps on while its game is paused, the
+  friend's included: a paused host keeps the steps it is sent, at most 600,
+  and the 601st waiting is a protocol error that ends the host (protocol.md
   "step").
 
 ## NAT and relays
@@ -410,17 +411,16 @@ held by one controller on one PC. For a PS1 game:
 > maintainers to decide.
 
 If agreed, a match could use AnyTogether's rooms for the invitation and a
-WebRTC data channel like those the launcher opens for PS4 and PS5 online
-play: a direct path when the two PCs can reach each other, and a TURN relay
-when they cannot. The lobby would show which one it got. Neither launcher
-carries PS1 or PS2 input today; an input wire for it exists only in our
-unmerged proposal branches. Input is small (one frame's input for two ports
-is under 30 bytes), so the traffic a match would add to a relay would be
-small; whether a relayed connection's round trip is good enough for a match
-is part of the same open question. The one large transfer, the
-state a friend would join a running game from (step 4), would be sent once
-over the reliable channel. Relay use and its traffic policy remain
-AnyTogether's decision, as for the launcher's existing online play.
+WebRTC data channel: a direct path when the two PCs can reach each other, and
+a TURN relay when they cannot. The lobby would show which one it got. Neither
+launcher carries PS1 or PS2 input today; an input wire for it exists only in
+our unmerged proposal branches. Input is small (one frame's input for two
+ports is under 30 bytes), so the traffic a match would add to a relay would be
+small; whether a relayed connection's round trip is good enough for a match is
+part of the same open question. The one large transfer, the state a friend
+would join a running game from (step 4), would be sent once over the reliable
+channel. Relay use and its traffic policy remain AnyTogether's decision, as
+for PS4 and PS5 online play.
 
 ## Steps
 
@@ -506,19 +506,18 @@ and relay question that is still open.
     from the other's. Both games must run on the host's empty card instead,
     and when the hosts have exited both cards must be as they were, with
     nothing else in the folders.
-  - With the test core (`tests/fake_core.c`, whose "RAM" mixes the card it
-    has at the first frame and every input it reads, and whose state holds
-    that RAM and the card) `ram`, `video` and `state` must match. It also
-    checks that a different input on port 2 changes the next `sync.ram`;
-    that a sync can carry the `ram` hash alone; that lockstep refuses option and port changes and arguments
-    out of range; that leaving lockstep while a frame is being run is
-    answered only once that frame has ended, with nothing of the old frame
-    count after it, and that a game entering lockstep again runs no frame
-    before its first step; that a game that ran on its own and enters
+  - With the test core (`tests/fake_core.c`, whose "RAM" mixes the card it has
+    at the first frame and every input it reads, and whose state holds that
+    RAM and the card) `ram`, `video` and `state` must match. It also checks
+    that a different input on port 2 changes the next `sync.ram`; that a sync
+    can carry the `ram` hash alone; that lockstep refuses option and port
+    changes and arguments out of range; that leaving lockstep while a frame is
+    being run is answered only once that frame has ended, with nothing of the
+    old frame count after it, and that a game entering lockstep again runs no
+    frame before its first step; that a game that ran on its own and enters
     lockstep on a duplicate frame gives the hash of the picture it published
     last; and that a step out of order or outside lockstep is a protocol
-    error. CI runs it on Linux, macOS, Windows and under
-    ThreadSanitizer.
+    error. CI runs it on Linux, macOS, Windows and under ThreadSanitizer.
   - With `--bios` and `--program`, it runs real SwanStation on the OpenBIOS
     and psyqo `hello` disc that `tests/make_test_disc.py` makes, each player
     with their own copy of the disc in a different folder and their own

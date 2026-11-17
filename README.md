@@ -13,8 +13,8 @@ program has been booted in CI, since no PS2 BIOS may be used there.
 - [docs/host.md](docs/host.md): how this host is put together.
 - [docs/netplay.md](docs/netplay.md): the design for PS1 online play, built
   one capability at a time. The core build identity two players' launchers
-  compare (protocol.md "status", `core`), the game's frame rate (`timing`)
-  and lockstep (protocol.md "Lockstep") are built.
+  would compare (protocol.md "status", `core`), the game's frame rate
+  (`timing`) and lockstep (protocol.md "Lockstep") are built.
 - [docs/ps2.md](docs/ps2.md): PS2 games: why LRPS2, how it is built, the
   player's BIOS, drawing, the protocol's `ps2` capability, and what is left.
 - [fixtures/v1](fixtures/v1): every message, and whole conversations
