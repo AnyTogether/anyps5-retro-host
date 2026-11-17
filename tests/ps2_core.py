@@ -71,10 +71,13 @@ def pump(until, timeout=5.0):
         if time.monotonic() - state['pinged'] >= 2:
             host.send_message({'type': 'ping', 'id': next(pings)})
             state['pinged'] = time.monotonic()
-        message, _ = host.read(max(0.1, min(1.0, deadline - time.monotonic())))
+        try:
+            message, _ = host.read(max(0.1, min(1.0, deadline - time.monotonic())))
+        except c.Idle:
+            continue
         if until(message):
             return message
-    raise c.Idle('the host sent nothing that was waited for')
+    raise c.Failed(f'the host sent nothing that was waited for within {timeout} s')
 
 
 def call(method, args=None):

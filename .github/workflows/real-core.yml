@@ -143,6 +143,7 @@ jobs:
   # it, reports its core build identity and console, and ends a game with errorCode bios when no
   # BIOS is there; same-ps2-core checks that every system's build reports the same identity.
   ps2:
+    name: ps2 (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:

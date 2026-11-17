@@ -14,8 +14,10 @@ PS2 disc, loads LRPS2, reports its name and core build identity in
 `status.core` and the console in `status.console`, gives it a DualShock 2 per
 connected port, fixes three of its options, and ends a game with `errorCode`
 `bios` when LRPS2 finds no BIOS. The `real-core` workflow builds LRPS2 at
-`LRPS2_COMMIT` with the host's patch on Windows, Linux and macOS and checks
-all of that with the real core. **No PS2 program has been booted**: LRPS2
+`LRPS2_COMMIT` with the host's patch on Windows, Linux and macOS and checks,
+with the real core, that it loads, reports `ps2`, its name and identity, and
+the missing BIOS; the controller and option handling is checked with the
+host's fake core (`host_test.py ps2_game`). **No PS2 program has been booted**: LRPS2
 boots nothing without a Sony BIOS, and none may be used here (see "The BIOS").
 Drawing, sound, input and memory cards of a running PS2 game are therefore
 coded but not yet seen working. Releases do not ship LRPS2 yet (see
