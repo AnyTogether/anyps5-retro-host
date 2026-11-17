@@ -395,7 +395,22 @@ A crash gives none of these, so the tests expect the exact code.
   descriptor from the launcher (Linux and macOS), an extra call during a
   `wait`, a launcher that never ends the host, and a launcher that ends it
   one step early (before the breaking message of a protocol error session,
-  and at the start of a `wait`). Run it with
+  and at the start of a `wait`). A launcher whose raster thread draws a
+  frame that breaks a frame check before it reads the `frame` message must
+  pass. The self-test cuts each `silence` or `wait` before an end to 1
+  second, so before it ends the fake it waits for the report to show
+  `awaitingKill`; ending it on its own clock would race the fake's pause and
+  report write on a slow runner. A `ring` followed by a `publish` is checked
+  only for the fields the launcher checks when a ring arrives, because the
+  host may publish into a ring as soon as it has sent it (protocol.md, "Frame
+  ring": the host never waits); the `frame` step checks the rest. The
+  self-test starts the fake with `--resume` and moves it past each
+  `launcherDraws` and `launcherReports` step only after checking it, so a
+  later `publish` cannot overtake that check. An early end can only be
+  told apart by time, so the cases that end the fake one step early give it
+  a 5 second `--kill-pause`: the self-test ends it about 0.15 seconds into
+  the pause, and only a runner that holds the self-test up for nearly 5
+  seconds could still make it arrive late. Run it with
   `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
   supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
@@ -558,12 +573,17 @@ What the fake does with each step:
   Before a host step the fake keeps checking the launcher's messages during
   the pause and answers pings; any other message is dropped, as it is while
   the fake waits to be ended. A `silence` or `wait` goes on as written. When
-  the pause is over, the report is set to `awaitingKill` and then the host
-  step's message is written. The report is set just before the write, not
-  after it: a launcher may end the host the moment it has read the message,
+  the pause is over, the report is set to `awaitingKill`, then a `frame`
+  step's `publish` is written into the ring, and then the host step's
+  message is written. The report is set just before the write, not after
+  it: a launcher may end the host the moment it has read the message,
   before the fake could write a report, and setting it after would fail a
-  correct launcher. A launcher that ends the host early does it during the
-  pause, after the message before.
+  correct launcher. The `publish` is part of the breaking step, so it too
+  waits for the pause: a launcher's raster thread reads the ring whenever it
+  draws, and a frame that breaks a frame check, written before the pause,
+  would let a correct launcher end the host before the fake expects it. A
+  launcher that ends the host early does it during the pause, after the
+  message before.
 - **`launcherKillsHost`**, and the end of a session whose outcome is not
   `clean`: waits `--kill-within` seconds (default 10) to be ended, and fails
   after that. End-of-stream is ignored then.
@@ -571,7 +591,10 @@ What the fake does with each step:
   the fake only records that it reached them. To hold it there while the test
   checks, pass `--hold <seconds>` or `--resume <file>`: the fake then waits
   until the file holds a step index at least that step's. While it waits, a
-  call to a method it has already answered gets the same reply again.
+  call to a method it has already answered gets the same reply again. The
+  launcher writes the file before it goes on, so a message that arrives
+  once the file has reached the step is kept for the steps after it, even
+  a call the fake could answer again.
 - **The end of a `clean` session**: waits for `shutdown` or end-of-stream,
   then exits with 0.
 
