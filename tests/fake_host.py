@@ -592,6 +592,7 @@ class Fake:
         self.started_handle = started_handle
         self.watcher = watcher
         self.backlog = collections.deque()
+        self.taken = None
         self.calls = {}
         self.pings = {}
         self.last_call = 0
@@ -715,14 +716,17 @@ class Fake:
 
     def take(self, deadline, wanted=None):
         while True:
-            event = self.next_event(deadline)
-            if event is None:
-                return None
-            if event[0] != 'message':
-                self.control(event)
-                continue
-            message = event[1]
-            self.check_order(message, self.link.before_welcome(event[2]))
+            if self.taken is not None:
+                message, self.taken = self.taken, None
+            else:
+                event = self.next_event(deadline)
+                if event is None:
+                    return None
+                if event[0] != 'message':
+                    self.control(event)
+                    continue
+                message = event[1]
+                self.check_order(message, self.link.before_welcome(event[2]))
             kind = message['type']
             if kind == wanted:
                 return message
@@ -769,13 +773,15 @@ class Fake:
     def send(self, message, descriptors=()):
         self.link.send_message(message, descriptors)
 
-    def deliver(self, data, descriptors, armed, welcome=False):
+    def deliver(self, data, descriptors, armed, welcome=False, publish=None):
         if armed:
             self.pause()
         if welcome:
             self.link.mark_welcome()
         if armed:
             self.arm()
+        if publish is not None:
+            self.ring.publish(publish)
         self.link.send(data, descriptors)
 
     def spare_descriptors(self, count):
@@ -823,13 +829,12 @@ class Fake:
             if not WINDOWS and count:
                 attach = [memory.descriptor]
                 count -= 1
-        if kind == 'frame' and 'publish' in step:
-            if self.ring is None:
-                raise Failed('the session publishes a frame before any ring')
-            self.ring.publish(step['publish'])
+        publish = step.get('publish') if kind == 'frame' else None
+        if publish is not None and self.ring is None:
+            raise Failed('the session publishes a frame before any ring')
         spare = self.spare_descriptors(count)
         try:
-            self.deliver(encode(message), attach + spare, armed, kind == 'welcome')
+            self.deliver(encode(message), attach + spare, armed, kind == 'welcome', publish)
         finally:
             for descriptor in spare:
                 os.close(descriptor)
@@ -910,7 +915,13 @@ class Fake:
             while not self.resumed(index):
                 if time.monotonic() > deadline:
                     raise Failed(f'{self.options.resume} did not reach step {index} within {self.options.timeout} s')
-                self.serve(time.monotonic() + 0.05)
+                message = self.take(time.monotonic() + 0.05)
+                if message is None:
+                    continue
+                if self.resumed(index):
+                    self.taken = message
+                    return
+                self.extra(message)
         elif self.options.hold > 0:
             deadline = time.monotonic() + self.options.hold
             while time.monotonic() < deadline:

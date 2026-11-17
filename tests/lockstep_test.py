@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
-"""Two hosts on one machine in lockstep (protocol.md "Lockstep"), as two players' hosts are in an
+"""Two hosts on one machine in lockstep (protocol.md "Lockstep"), as two players' hosts would be in an
 online match: both boot the same game from a cold boot with start.lockstep, are fed the same input
 frame by frame, and must report the same RAM and picture hashes after every frame, and the same
 state hashes when both keep the disc at the same path.

@@ -23,11 +23,12 @@ it is built.
 
 Built so far: the core build identity (capability `coreIdentity`, `core` in
 protocol.md "status"), which two players' launchers compare before a match;
-the game's frame rate and region (capability `gameTiming`, `timing` in
-protocol.md "status"), which a match's frame clock follows; and lockstep
-(capability `ps1Lockstep`, protocol.md "Lockstep"), in which two players'
-hosts run the same frames on the same input from a cold boot and hash what
-each frame left behind. The proposed steps after them are in [Steps](#steps).
+the frame rate the host paces the game to and the console's region
+(capability `gameTiming`, `timing` in protocol.md "status"), which a
+launcher may use, for example to pace a match; and lockstep (capability
+`ps1Lockstep`, protocol.md "Lockstep"), in which two hosts given the same
+inputs run the same frames from a cold boot and hash what each frame left
+behind. The proposed steps after them are in [Steps](#steps).
 
 ## What others do
 
@@ -219,81 +220,75 @@ players need the same host release to play together.
 ## Frame rate
 
 > What the host reports, `status.timing`, and the paced lockstep that keeps
-> to it are built. How a match's clock would use them (rollback, round trips,
-> input delay) belongs to the proposal.
+> to it are built: the frame rate the host paces the game to and the
+> console's region. A launcher may use them, for example to pace an online
+> match; how a match's clock would do that is part of the proposal
+> ([Steps](#steps), "Frame clock").
 
-In lockstep the host runs one frame per input, so the launcher's frames are
-the game's frames, and in rollback (step 5 in [Steps](#steps)) the
-launcher's frame clock is the game's only clock: the host runs each step as
-it comes. A paced lockstep game (`lockstep.paced`) keeps to the same rate
-the host reports, so it never runs faster than the game would on its own. That clock must run at the game's own rate. A PS1 game does not
-always run at 60 frames a second: SwanStation gives the vertical frequency
-of the video mode the game set, about 60 for NTSC and 50 for PAL (a European
-game sets PAL), and gives a new one when the game changes its mode. At
-631f0fb `real_core.py` measured 59.817 for a progressive NTSC mode and
-49.747 for a PAL mode, the same on Windows, Linux and macOS. A clock fixed
-at 60 would run a PAL game a fifth too fast, and an NTSC game slightly off
-its console's rate.
+A PS1 game does not always run at 60 frames a second: SwanStation gives the
+vertical frequency of the video mode the game set, about 60 for NTSC and 50
+for PAL (a European game sets PAL), and gives a new one when the game
+changes its mode. At 631f0fb `real_core.py` measured 59.817 for a
+progressive NTSC mode and 49.747 for a PAL mode, the same on Windows, Linux
+and macOS. Pacing fixed at 60 would run a PAL game a fifth too fast, and an
+NTSC game slightly off its console's rate.
 
 RetroArch paces its main loop to the core's `retro_system_av_info`
-`timing.fps` and follows `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO`; GGPO leaves
-the frame rate to the game, which advances its own clock. The host already
-does the first when it keeps its own time, and with capability `gameTiming`
+`timing.fps` and follows `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO`. The host
+does the same when it keeps its own time, and with capability `gameTiming`
 it reports that rate, and the core's `retro_get_region`, as `status.timing`
-([protocol.md](protocol.md) "status"), so the launcher's clock can be the
-second: it steps a frame every 1 ÷ `fps` seconds and takes a new `fps` from
+([protocol.md](protocol.md) "status"); a new `fps` reaches the launcher with
 the next `status`. The value comes from the emulated console, so both
 players' hosts report the same rate at the same frame; it is not a measure
 of either machine's speed.
 
-The input delay, the round trip in frames and whether a rollback fits in a
-frame are all counted in frames of that length: 16.7 ms in an NTSC game and
-20 ms in a PAL one. With an input delay of half the round trip in frames
-plus one, at most 8, the longest round trip a match takes is about 230 ms in
-an NTSC game and 280 ms in a PAL one.
+A paced lockstep game (`lockstep.paced`, capability `ps1Lockstep`) keeps to
+the same rate the host reports, so it never runs faster than the game would
+on its own.
 
 ## Lockstep first, rollback after
 
 > The host's lockstep (`ps1Lockstep`) and its `sync` hashes are built. How a
-> match would use them, the input delay a launcher picks, the lobby's
-> connection limit and rollback, is part of the proposal.
+> match would use them, the input delay a launcher would pick, a connection
+> limit and rollback, is part of the proposal.
 
-**Lockstep with input delay** (capability `ps1Lockstep`, built). A frame
-runs only when every player's input for it is known. Each launcher sends its
-own input for frame *n* + *d*, where *d* is the input delay, and hands the
-host the step for frame *n* once the friend's input for *n* has arrived. With
-*d* frames of delay covering half the round trip plus some jitter, the game
-never waits. A late packet makes both players wait; it never makes them
-differ.
+**Lockstep with input delay** (proposal; the host's part, capability
+`ps1Lockstep`, is built). A frame would run only when every player's input
+for it is known. Each launcher would send its own input for frame *n* + *d*,
+where *d* is the input delay, and hand the host the step for frame *n* once
+the friend's input for *n* has arrived. With *d* frames of delay covering
+half the round trip plus some jitter, the game would never wait. A late
+packet would make both players wait; it would never make them differ.
 
-**Rollback** (step 5). The host runs ahead on predicted input and, when the
-real input differs, loads the state from before that frame and runs again.
-It hides more of the round trip than delay alone, and costs a state save
-before every frame run on a prediction and a burst of frames run again on
-each wrong guess.
+**Rollback** (step 5, proposal). The host would run ahead on predicted input
+and, when the real input differs, load the state from before that frame and
+run again. It would hide more of the round trip than delay alone, and cost a
+state save before every frame run on a prediction and a burst of frames run
+again on each wrong guess.
 
-Lockstep comes first because:
+The host's lockstep comes first because:
 
 - it needs the fewest new parts: the host waits, the launcher's input wire
-  stays as it is, and nothing is undone;
-- it is the control rollback is checked against: a rollback run must reach
-  the same hashes as a lockstep run of the same input;
+  can stay as it is, and nothing is undone;
+- it is the control a rollback would be checked against: a rollback run
+  would have to reach the same hashes as a lockstep run of the same input;
 - it needs no state at all when both games start from a cold boot with
   `start.lockstep`, and the stock SwanStation boots alike on every system,
   so it needs no SwanStation patch. Rollback, and a friend joining a running
-  game, need states the core saves and loads exactly and quickly; the
+  game, would need states the core saves and loads exactly and quickly; the
   launcher's own harness found that stock SwanStation's are not exact (it
   reschedules the sound unit's sample event with timing from the discarded
-  timeline), so states come with their patches in step 4.
+  timeline), so states would come with their patches in step 4.
 
-A match picks *d* from the round trip it measures while the lobby is open:
+A match could pick *d* from the round trip it measures before it starts:
 *d* = ⌈(round trip ÷ 2) ÷ frame⌉ + 1, at most 8, where a frame lasts
 1 ÷ `status.timing.fps` (16.7 ms in an NTSC game, 20 ms in a PAL one;
-"Frame rate" above). Above 8 frames (a round trip above about 230 ms in an
-NTSC game, 280 ms in a PAL one) the lobby says the connection is too slow
-for this game, rather than offering a match that feels broken. Rollback
-later lowers the delay players feel to a fixed 1 or 2 frames, with the rest
-predicted.
+"Frame rate" above). A cap of 8 frames would turn away a round trip above
+about 230 ms in an NTSC game and 280 ms in a PAL one. That cap is a latency
+budget, and it, like whether a relayed connection meets it, belongs to the
+transport and relay question that is still open ("Frame clock" under
+[Steps](#steps)). Rollback would later lower the delay players feel to 1 or
+2 frames, with the rest predicted.
 
 **What a `sync` compares.** Every `check` frames the host hashes the
 console's main RAM, the last picture and the core's serialized state
@@ -303,7 +298,7 @@ and the picture depends on the renderer, not only on the emulation. `state`
 matches only when both machines keep the disc at the same path, because
 SwanStation's state names the disc's path; that also means a state sent to a
 friend would tell them where the game is on the other player's disk. Step
-4's patches give a state for netplay no path.
+4's patches would give a state for netplay no path.
 
 **Why Windows' picture hash differs in CI.** In the `real-core` workflow at
 0217758, two cores in lockstep on `hello` gave the same `ram` after 600
@@ -352,26 +347,26 @@ warning when `video` differs between systems that draw with OpenGL. At
 > **Proposal, not agreed.** This is how the launcher's lobby could seat
 > players; the host's part, two ports in each `step`, is built.
 
-The launcher's lobby has seats for Player 1 to 4. Each seat is held by one
-controller on one PC. For a PS1 game:
+The launcher's lobby would have seats for Player 1 to 4. Each seat would be
+held by one controller on one PC. For a PS1 game:
 
-- Player 1 is controller port 1 and Player 2 is port 2. Seats 3 and 4 show as
-  *Not in this game*: version 1 keeps SwanStation's Multitap off (its option
-  is one the host fixes), so a PS1 game has two ports. Four players need a
-  later change that lets a lockstep match turn the Multitap on for every
-  player at boot.
-- The match host's launcher assigns seats, and every launcher builds the same
-  `step` for each frame from all seats' input: port 1's input from whoever
-  holds seat 1, wherever they are. A PC can hold both seats (couch co-op) or
-  one, so a local second player and an online friend are the same thing to
-  the host.
+- Player 1 would be controller port 1 and Player 2 port 2. Seats 3 and 4
+  would show as *Not in this game*: version 1 keeps SwanStation's Multitap
+  off (its option is one the host fixes), so a PS1 game has two ports. Four
+  players would need a later change that lets a lockstep match turn the
+  Multitap on for every player at boot.
+- The match host's launcher would assign seats, and every launcher would
+  build the same `step` for each frame from all seats' input: port 1's input
+  from whoever holds seat 1, wherever they are. A PC could hold both seats
+  (couch co-op) or one, so a local second player and an online friend are
+  the same thing to the host.
 - How many ports are connected is part of each step (`ports` has one or two
   entries), so a second player joining or leaving takes effect at the same
   frame on both machines. `connectedPorts` is refused in lockstep for that
   reason.
-- Pausing from the PS menu during a match pauses for both players: the
-  launcher stops sending steps and tells the friend's launcher, which does the
-  same. The host itself needs nothing more; it simply waits.
+- Pausing from the PS menu during a match would pause for both players: the
+  launcher would stop sending steps and tell the friend's launcher, which
+  would do the same. The host itself needs nothing more; it simply waits.
 
 ## NAT and relays
 
@@ -380,14 +375,16 @@ controller on one PC. For a PS1 game:
 > touch AnyTogether's online service and relay traffic and are for the
 > maintainers to decide.
 
-If agreed, nothing new would be needed. The launcher would reuse AnyTogether's rooms for the
-invitation and the WebRTC data channel it already uses for PS1 and PS2 online
-play: a direct path when the two PCs can reach each other, and the TURN relay
-when they cannot. The lobby would show which one it got. Input is small (one
-frame's input for two ports is under 30 bytes, and the input wire sends up to
-eight frames in one 108-byte packet), so a relay carries it easily. The one
-large transfer, the state a friend joins a running game from (step 4), is
-sent once over the reliable channel. Relay use and its traffic policy remain
+If agreed, the launcher would reuse AnyTogether's rooms for the invitation
+and the WebRTC data channel it already uses for PS1 and PS2 online play: a
+direct path when the two PCs can reach each other, and the TURN relay when
+they cannot. The lobby would show which one it got. Input is small (one
+frame's input for two ports is under 30 bytes, and the input wire sends up
+to eight frames in one 108-byte packet), so the traffic a match would add to
+a relay is small; whether a relayed connection's round trip is good enough
+for a match is part of the same open question. The one large transfer, the
+state a friend would join a running game from (step 4), would be sent once
+over the reliable channel. Relay use and its traffic policy remain
 AnyTogether's decision, as for the launcher's existing online play.
 
 ## Steps
@@ -413,6 +410,29 @@ identity when it adds a SwanStation patch:
    input differs, loads the state before the first wrong frame and runs
    again, between two frames.
 6. `syncXxh3`: cheaper `sync` hashes, and checks that leave the state out.
+
+### Frame clock
+
+> **Proposal, not agreed.** Whether the launcher drives a match's frames at
+> all, and how, depends on the frame-clock model, the transport and the
+> relay, which the maintainers have not settled.
+
+With the host running one frame per input (step 3, built), a match's
+launcher frames would be the game's frames, and in rollback (step 5) the launcher's frame clock would
+be the game's only clock: the host would run each step as it came. That
+clock would then have to run at the game's own rate. GGPO leaves the frame
+rate to the game, which advances its own clock; with `status.timing` a
+launcher's clock could do the same, stepping a frame every 1 ÷ `fps`
+seconds and taking a new `fps` from the next `status`.
+
+The input delay, the round trip in frames and whether a rollback fits in a
+frame would then all be counted in frames of that length: 16.7 ms in an
+NTSC game and 20 ms in a PAL one. For example, with an input delay of half
+the round trip in frames plus one, at most 8, the longest round trip a
+match could take would be about 230 ms in an NTSC game and 280 ms in a PAL
+one. That is an illustration of the arithmetic, not a latency budget: the
+budget, and whether a relayed connection meets it, belong to the transport
+and relay question that is still open.
 
 ## Tests
 
