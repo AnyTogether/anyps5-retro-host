@@ -10,8 +10,10 @@ side can be written from this document and the fixtures in
 [`fixtures/v1`](../fixtures/v1) alone.
 
 Version 1 runs one PS1 game for local players: start, play, change discs,
-change settings, stop. Online play, PS2 and PS3 are later capabilities (see
-[Capabilities](#capabilities)).
+change settings, stop. The `coreIdentity` capability adds the core build
+identity two players' launchers compare before PS1 online play
+([netplay.md](netplay.md) "Core build identity"). Online play itself, PS2 and
+PS3 are later capabilities (see [Capabilities](#capabilities)).
 
 The words MUST, MUST NOT and SHOULD are used as in RFC 2119.
 
@@ -471,6 +473,7 @@ a method whose capability the host did not list.
 | Capability | Adds |
 | --- | --- |
 | `ps1` | The methods below, for PS1 games, with controller ports 1 and 2 |
+| `coreIdentity` | `core` in [`status`](#status): the loaded core's name and build identity, which two players' launchers compare before a match |
 
 Later versions add capabilities such as PS1 online play, PS2 and PS3.
 
@@ -695,6 +698,7 @@ No argument. Returns `null` when no game is loaded, or:
 | `progressPercent` | integer 0 to 100, or null | How far it is, when known |
 | `options` | object | Each core option the player can change now, by key |
 | `cardUnreadable` | boolean | Memory card 1's file is there but the host could not read it as a card (for example, it is not the core's card size), so it is left as it is and this game's saves are not written anywhere; the launcher can tell the player so. A launcher treats a status without this field as `false` |
+| `core` | object or null | Capability `coreIdentity`: the core the game loaded, or `null` until it is loaded and when it could not be (`errorCode` `core`). It stays once the game has ended. See below |
 | `discs` | object, optional | Present for multi-disc games |
 
 | `errorCode` | Meaning |
@@ -711,10 +715,25 @@ No argument. Returns `null` when no game is loaded, or:
 | `hostHung` | Only the launcher's client reports it: the host missed one of the launcher's time limits and the launcher closed it (see [Host failure](#host-failure)) |
 
 The host always sends every field above (`discs` only for a multi-disc
-game), including for a game that ended before its first frame. The shorter
+game, `core` only with the `coreIdentity` capability), including for a game
+that ended before its first frame. The shorter
 form in [Host failure](#host-failure) is never sent by a host; only the
 launcher's client reports it. A launcher that gets `hostExited` or
 `hostHung` from a host treats it as `other`.
+
+`core` has `name` and `version`: the `library_name` and `library_version`
+the core gives `retro_get_system_info` when the host loads it, each as it is
+when it is printable ASCII (0x20 to 0x7E) of at most 256 bytes, and `""`
+otherwise. The host's SwanStation builds report `SwanStation` and
+`anyps5-1-<64 lowercase hex digits>`, the core build identity
+[netplay.md](netplay.md) "Core build identity" defines: the same on Windows,
+Linux and macOS for a core built from the same SwanStation commit, with the
+same patches and emulation build options. A Debug build reports another
+`name` (`SwanStation Debug`), and a core built without the host's patch
+script keeps SwanStation's own `version` (`1.0.0 ` and a git description).
+Before a match each launcher compares both strings with its friend's, and
+plays online only when both are equal and `version` has the `anyps5-1-`
+form; anything else is a different core. The host does not judge the value.
 
 Each option has `title` (string), `values` (array of strings), `labels`
 (array of strings, the same length as `values`), `selected` (index into

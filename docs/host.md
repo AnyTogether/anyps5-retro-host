@@ -30,6 +30,8 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/channel.cpp`](../src/channel.cpp) | Framing for the control stream, and the clock the watch thread reads for the write limit |
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
 | [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio, with the volume, mute and pause |
+| [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh), [`cores/patches`](../cores/patches) | The host's SwanStation patches and the script that applies them (see "SwanStation patches" below) |
+| [`tools/core_identity.py`](../tools/core_identity.py) | Computes the core build identity from the SwanStation commit and `cores/patches` without a build, and compares what each system's core reported ([netplay.md](netplay.md) "Core build identity") |
 | [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
 | [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions and a `SOURCE.txt` naming another source ("Result"), and how `--mit-notice` gathers MIT notices ("What a zip holds") |
 
@@ -283,6 +285,10 @@ A crash gives none of these, so the tests expect the exact code.
   twice. The tests:
   - a stuck core: the stall limit, then `release` replying and the host
     exiting with 3;
+  - `status.core` (`core_identity`): the test core's `library_version` from
+    the environment variable `FAKE_CORE_VERSION`, passed as it is when it is
+    printable ASCII of at most 256 bytes and as `""` otherwise, kept after the
+    game ends, and `null` for a core that did not load;
   - a core that is not a library and a missing disc, each ending the game
     with `errorCode` `core` or `disc`;
   - a playlist saved in Latin-1, whose labels and paths reach `status` as
@@ -360,7 +366,12 @@ A crash gives none of these, so the tests expect the exact code.
   two pictures a second or more apart are not black and differ (the
   program animates its background), and that `hardware` and `resolutionError`
   agree (a machine without an OpenGL context draws in software and must say
-  so). With `--expect-opengl`, which `real-core.yml` passes on Linux and macOS, the test also
+  so). With `--expect-core-version`, which both workflows pass with the value
+  [`tools/core_identity.py`](../tools/core_identity.py) computes, `welcome`
+  must list `coreIdentity` and `status.core` must be `SwanStation` with that
+  version; `--core-identity-out` writes `status.core`, and `real-core.yml`'s
+  `same-core` job checks that Windows, both Linux runners and macOS wrote the
+  same one. With `--expect-opengl`, which `real-core.yml` passes on Linux and macOS, the test also
   fails when the host made no OpenGL context, so neither system can slip back
   to the core's software renderer unnoticed. The Windows runner makes no
   OpenGL 3.3 context, so there the core draws in software. The `hello`
@@ -405,6 +416,43 @@ A crash gives none of these, so the tests expect the exact code.
   "double lock" in `Game::Join`: libstdc++ 11 waits with
   `pthread_cond_clockwait`, which that version does not intercept. Use GCC 12
   or later, or clang 14 or later.
+
+## SwanStation patches
+
+The host's SwanStation is upstream SwanStation at `SWANSTATION_COMMIT` with
+the patches in [`cores/patches`](../cores/patches), applied in the order of
+their names by
+[`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh).
+The `real-core` and `release` workflows apply them after fetching SwanStation
+and before building it, and the release's source archive holds the patched
+source. The script refuses a checkout that differs from its commit in any
+way, applies the patches to git's index and checks the files out again, so
+they apply where git writes CRLF line endings too. Then it writes
+`anyps5-core-source.txt` into the checkout, the source part of the core
+build identity ([netplay.md](netplay.md) "Core build identity"), which the
+source archive holds too. A patch that no longer applies stops the build;
+one moved to a new `SWANSTATION_COMMIT` is made again with `git diff`
+against that commit, after the patches before it. The patches are
+GPL-3.0-only, as SwanStation is ([REUSE.toml](../REUSE.toml)).
+
+| Patch | What it changes |
+| --- | --- |
+| [`swanstation-1-core-build-identity`](../cores/patches/swanstation-1-core-build-identity.patch) | When `anyps5-core-source.txt` is beside SwanStation's top `CMakeLists.txt`, CMake adds the build options that change what the core computes (`MSB_FIRST`) to it, and `library_version` becomes `anyps5-1-<SHA-256 of the whole>`. Without the file the core keeps SwanStation's own `library_version` |
+
+To build SwanStation as the workflows do:
+
+```bash
+git init -q swanstation
+git -C swanstation fetch -q --depth 1 https://github.com/libretro/swanstation.git <SWANSTATION_COMMIT>
+git -C swanstation checkout -q FETCH_HEAD
+git -C swanstation submodule update -q --init --depth 1 --recursive
+bash cores/apply-swanstation-patches.sh swanstation
+cmake -S swanstation -B swanstation/build -DCMAKE_BUILD_TYPE=Release
+cmake --build swanstation/build --config Release
+python3 tools/core_identity.py --swanstation-commit <SWANSTATION_COMMIT>
+```
+
+The last line prints the identity that core reports in `status.core`.
 
 ## Testing a launcher with the fake host
 
@@ -540,7 +588,7 @@ release can be packed and checked by hand the same way.
 - **What a zip holds.** The host (`anyps5-retro-host.exe` on Windows,
   `anyps5-retro-host` elsewhere), SwanStation
   (`swanstation_libretro.dll`, `.so` or `.dylib`) built from
-  `SWANSTATION_COMMIT`, `licenses/` with the host's and SwanStation's licences
+  `SWANSTATION_COMMIT` with the host's patches ("SwanStation patches"), `licenses/` with the host's and SwanStation's licences
   and every licence, copying, copyright or notice file under SwanStation's
   `dep/` (the libraries it builds in, such as libchdr, xxHash and VIXL, as
   `licenses/swanstation-dep/<path>`), the Apache-2.0 text for SwanStation's
@@ -583,14 +631,18 @@ release can be packed and checked by hand the same way.
   files that are released are the files that were tested. On Linux and macOS
   it must also get an OpenGL context (`--expect-opengl`), as in
   `real-core.yml`; the Windows runner has no OpenGL 3.3 driver, so Windows
-  boots in software there.
+  boots in software there. Its core must also report the core build identity
+  [`tools/core_identity.py`](../tools/core_identity.py) computes
+  (`--expect-core-version`).
 - **Version.** `<version>` is `project(... VERSION)` in `CMakeLists.txt`,
   which is also `hostVersion` in `welcome`. A tag `v<version>` runs the
   workflow for a release and must match it. Pushes and pull requests that
   change the workflow or the packer run it too, and `workflow_dispatch` runs it
   by hand.
 - **Source.** The `source` job packs the host and SwanStation at the released
-  commits, with all their submodules and without `.git`, into
+  commits, with all their submodules, SwanStation with the host's patches
+  applied and the `anyps5-core-source.txt` the patch script writes, and
+  without `.git`, into
   `anyps5-retro-host-<version>-source.tar.gz` (sorted, with fixed times and
   owners). It is the complete corresponding source the GPL asks for, and is
   published with the binaries, and carries the same Apache-2.0 text at its

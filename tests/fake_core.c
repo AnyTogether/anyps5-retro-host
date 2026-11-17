@@ -24,7 +24,10 @@
  * framebuffer bindings it left, are as it left them; after SET_SYSTEM_AV_INFO it checks that a
  * binding of the host's old framebuffer moved to the new one. The host must not change a core's
  * OpenGL state (docs/host.md, "GPU rendering"). When it has, the core logs what changed and asks
- * the host to shut the game down (RETRO_ENVIRONMENT_SHUTDOWN). */
+ * the host to shut the game down (RETRO_ENVIRONMENT_SHUTDOWN).
+ *
+ * Its library_version is "1", or the environment variable FAKE_CORE_VERSION when it is set, so a
+ * test can give the host a core build identity it must not pass on (protocol.md "status", core). */
 
 #include <libretro.h>
 
@@ -303,7 +306,8 @@ RETRO_API void retro_deinit(void) {
 RETRO_API void retro_get_system_info(struct retro_system_info* info) {
   memset(info, 0, sizeof *info);
   info->library_name = "fake";
-  info->library_version = "1";
+  const char* version = getenv("FAKE_CORE_VERSION");
+  info->library_version = version ? version : "1";
   info->valid_extensions = "cue|chd|pbp|m3u";
   info->need_fullpath = true;
 }
