@@ -327,12 +327,15 @@ class Launcher:
                                                           'saves')}
         paths_file = work / 'paths.json'
         paths_file.write_text(json.dumps(self.paths), encoding='utf-8')
-        files = ['--session', str(path), '--report', str(self.report_path), '--paths', str(paths_file)]
+        self.resume_path = work / 'resume'
+        self.resume_path.write_text('-1', encoding='utf-8')
+        files = ['--session', str(path), '--report', str(self.report_path), '--paths', str(paths_file),
+                 '--resume', str(self.resume_path)]
         env = dict(os.environ)
         if mode == 'env':
             files = []
             env.update(ANYPS5_FAKE_HOST_SESSION=str(path), ANYPS5_FAKE_HOST_REPORT=str(self.report_path),
-                       ANYPS5_FAKE_HOST_PATHS=str(paths_file))
+                       ANYPS5_FAKE_HOST_PATHS=str(paths_file), ANYPS5_FAKE_HOST_RESUME=str(self.resume_path))
         command = [sys.executable, '-I', str(FAKE)] + files + list(extra)
         if mode == 'shim':
             command = [str(self.shim(command))]
@@ -384,8 +387,9 @@ class Launcher:
                 continue
             return message, descriptors
 
-    def play(self, stop_at=None, mistake=None, never_kill=False):
+    def play(self, stop_at=None, mistake=None, never_kill=False, raster=False):
         self.mistake = mistake
+        self.raster = raster
         try:
             self.play_steps(stop_at, never_kill)
         except Made:
@@ -407,7 +411,7 @@ class Launcher:
             if step.get('from') == 'launcher':
                 self.launcher_step(step)
             elif step.get('from') == 'host':
-                self.host_step(step)
+                self.host_step(step, self.following(index))
                 if self.mistake == 'second-hello' and self.welcomed:
                     self.send(fill(self.steps[0]['message'], self.paths))
                     raise Made()
@@ -439,11 +443,15 @@ class Launcher:
             elif 'launcherKillsHost' in step:
                 if never_kill:
                     return
+                self.wait_until_armed()
                 self.kill()
             elif 'launcherDraws' in step:
                 slot = self.view.slot(self.view.u32(24))
                 if (slot['epoch'] == self.epoch) != step['launcherDraws']:
                     raise Failed(f'launcherDraws {step["launcherDraws"]}, but the slot is {slot} in game {self.epoch}')
+                self.resume_path.write_text(str(index), encoding='utf-8')
+            elif 'launcherReports' in step:
+                self.resume_path.write_text(str(index), encoding='utf-8')
         if self.started.process.poll() is None and not never_kill:
             if self.session['outcome'] == 'clean':
                 if self.status is not None:
@@ -455,6 +463,7 @@ class Launcher:
                 if self.started.process.wait(10) != 0:
                     raise Failed('the fake did not exit with 0 after shutdown')
             else:
+                self.wait_until_armed()
                 self.kill()
 
     def drain(self):
@@ -463,6 +472,26 @@ class Launcher:
             if message.get('type') != 'pong' or message.get('id') not in self.ours:
                 raise Failed(f'expected a pong, got {message}')
             self.ours.discard(message['id'])
+
+    def wait_until_armed(self):
+        deadline = time.monotonic() + 10
+        while not self.report()['awaitingKill']:
+            if time.monotonic() > deadline:
+                raise Failed('the fake did not wait to be ended')
+            time.sleep(0.005)
+
+    def draw_before_frame(self):
+        deadline = time.monotonic() + 10
+        while self.view.u32(24) == NONE:
+            if time.monotonic() > deadline:
+                raise Failed('the fake published nothing before its frame')
+            time.sleep(0.001)
+        slot = self.view.slot(self.view.u32(24))
+        if 1 <= slot['width'] <= 8192 and 1 <= slot['height'] <= 8192 and \
+                slot['width'] * slot['height'] * 4 <= self.slot_bytes:
+            raise Failed(f'the raster drew {slot}, which breaks no frame check')
+        self.kill()
+        raise Made()
 
     def kill(self):
         self.killed = True
@@ -508,7 +537,7 @@ class Launcher:
             self.shut = True
         self.send(message)
 
-    def host_step(self, step):
+    def host_step(self, step, following):
         count = step.get('descriptors', 1 if 'ring' in step else 0)
         if 'bytes' in step:
             wanted = bytes.fromhex(step['bytes'])
@@ -548,6 +577,11 @@ class Launcher:
                 self.view = map_posix(descriptors[0], step['ring'])
             self.model = json.loads(json.dumps(step['ring']['header']))
             self.slot_bytes = self.model['slotBytes']
+            if 'publish' in following:
+                compare(self.model, self.view.header(), {'latest', 'slots'})
+                if self.raster:
+                    self.draw_before_frame()
+                return
             compare(self.model, self.view.header(), set())
             for index, slot in enumerate(self.model['slots']):
                 pixel = self.view.pixel(index, self.slot_bytes)
@@ -597,6 +631,8 @@ def run(path, mode='args', **variant):
     launcher = None
     try:
         extra = ['--kill-within', '1'] if variant.get('never_kill') else []
+        if variant.get('stop_at') is not None:
+            extra = ['--kill-pause', '5']
         launcher = Launcher(path, mode, work, extra)
         launcher.play(**variant)
         if variant.get('never_kill') or variant.get('mistake'):
@@ -664,6 +700,10 @@ def main():
              {'mode': 'shim', 'stop_at': 4}),
             ('stop-deadline, ended one step early', SESSIONS / 'stop-deadline.json', {'stop_at': 10}),
             ('welcome-wrong-pid, never ended', SESSIONS / 'welcome-wrong-pid.json', {'never_kill': True}),
+            ('oversized-frame, drawn before reading its frame message', SESSIONS / 'oversized-frame.json',
+             {'raster': True}),
+            ('frame-larger-than-slot, drawn before reading its frame message', SESSIONS / 'frame-larger-than-slot.json',
+             {'raster': True}),
         ]
         if not WINDOWS:
             cases.append(('play-and-quit, a descriptor from the launcher', SESSIONS / 'play-and-quit.json',
