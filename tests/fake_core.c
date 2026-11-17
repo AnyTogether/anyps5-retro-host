@@ -40,7 +40,14 @@
  * BIOS"): with no file fake-ps2-bios.bin in pcsx2/bios of the system directory it logs LRPS2's
  * message for a missing BIOS and the load fails; while the system directory holds fake-ps2-fail,
  * the load fails without it. A game that loads writes the value it read for each of those options
- * to fake-ps2-options.txt there, so a test can see what the host gave it. */
+ * to fake-ps2-options.txt there, so a test can see what the host gave it.
+ *
+ * A game started with fake_region "pal" is a PAL game: 50 frames a second and RETRO_REGION_PAL, as
+ * SwanStation gives for a PAL console; otherwise it runs at 60 and is NTSC. While the system
+ * directory holds fake-refresh-50, an NTSC game switches to 50 frames a second through
+ * RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO after a frame, as SwanStation does when a game changes its
+ * video mode, keeping its region. It reads fake_region again every frame, without using it, so a
+ * test sees that the host keeps a restart option's new value from a running game. */
 
 #include <libretro.h>
 
@@ -91,7 +98,7 @@ static unsigned frame_count;
 static bool rumbling[2];
 static unsigned port_devices[2];
 static uint32_t pixels[MAX_WIDTH * MAX_HEIGHT];
-static int16_t silence[2 * 735];
+static int16_t silence[2 * 882];
 static unsigned char card[CARD_BYTES];
 static char disc_paths[MAX_DISCS][2100];
 static unsigned disc_count;
@@ -101,6 +108,8 @@ static bool tray_open;
 static bool gpu_wanted;
 static bool gpu_ready;
 static unsigned scale = 1;
+static bool pal;
+static double fps = 60.0;
 static struct retro_hw_render_callback hw;
 static void(GL_CALL* gl_bind_framebuffer)(unsigned, unsigned);
 static void(GL_CALL* gl_viewport)(int, int, int, int);
@@ -360,6 +369,8 @@ RETRO_API void retro_init(void) {
   gpu_wanted = in_system_directory("fake-gpu");
   gpu_ready = false;
   scale = 1;
+  pal = false;
+  fps = 60.0;
   memset(&hw, 0, sizeof hw);
   memset(offered, 0, sizeof offered);
   memcpy(offered, definitions, count * sizeof definitions[0]);
@@ -405,7 +416,7 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info) {
   info->geometry.max_width = hw.context_type ? VRAM_WIDTH * scale : MAX_WIDTH;
   info->geometry.max_height = hw.context_type ? VRAM_HEIGHT * scale : MAX_HEIGHT;
   info->geometry.aspect_ratio = 4.0f / 3.0f;
-  info->timing.fps = 60.0;
+  info->timing.fps = fps;
   info->timing.sample_rate = 44100.0;
 }
 
@@ -604,8 +615,11 @@ static void load_playlist(const char* path) {
 
 RETRO_API bool retro_load_game(const struct retro_game_info* game) {
   enum retro_pixel_format format = RETRO_PIXEL_FORMAT_XRGB8888;
+  struct retro_variable region = {"fake_region", NULL};
   if (!game || !game->path) return false;
   if (ps2_wanted && (ends_with(game->path, ".iso") || ends_with(game->path, ".elf")) && !load_ps2()) return false;
+  pal = environment(RETRO_ENVIRONMENT_GET_VARIABLE, &region) && region.value && strcmp(region.value, "pal") == 0;
+  fps = pal ? 50.0 : 60.0;
   if (!environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &format)) return false;
   if (environment(RETRO_ENVIRONMENT_SET_HW_RENDER, NULL) || environment(RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER, NULL)) {
     return false;
@@ -672,7 +686,7 @@ RETRO_API void retro_unload_game(void) {
 #endif
 }
 
-RETRO_API unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
+RETRO_API unsigned retro_get_region(void) { return pal ? RETRO_REGION_PAL : RETRO_REGION_NTSC; }
 
 RETRO_API void retro_run(void) {
   struct retro_variable color = {"fake_color", NULL};
@@ -729,7 +743,7 @@ RETRO_API void retro_run(void) {
     for (i = 0; i < width * height; ++i) pixels[i] = fill + (frame_count & 0xFF) * 0x10000u;
     video(pixels, width, height, width * sizeof(uint32_t));
   }
-  audio_batch(silence, 735);
+  audio_batch(silence, (size_t)(44100.0 / fps));
   for (port = 0; port < 2; ++port) {
     const bool cross = port_devices[port] != RETRO_DEVICE_NONE &&
                        input_state(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B) != 0;
@@ -740,6 +754,12 @@ RETRO_API void retro_run(void) {
   }
   card[0] = (unsigned char)(frame_count >= 30 ? 1 : 0);
   ++frame_count;
+  if (fps != 50.0 && in_system_directory("fake-refresh-50")) {
+    struct retro_system_av_info info;
+    fps = 50.0;
+    retro_get_system_av_info(&info);
+    environment(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &info);
+  }
 }
 
 RETRO_API size_t retro_serialize_size(void) { return 0; }

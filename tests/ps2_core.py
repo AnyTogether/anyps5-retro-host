@@ -7,9 +7,10 @@ BIOS, and LRPS2 has no built-in one). It checks that the host lists ps2, loads t
 its name and core build identity in status.core (with --expect-core-version, and writes it with
 --core-identity-out so CI can compare systems), and ends the game with errorCode bios both when
 the system directory has no BIOS folder and when that folder holds only a file of a BIOS's size
-that is not one, that status.options leaves out every option the host fixes for LRPS2, that the
-core loads again for a later game, and that the host exits cleanly. It prints LRPS2's entries for
-two options as status gives them, which the fixture call-status-ps2-no-bios.json shows.
+that is not one, with status.timing null; that status.options leaves out every option the host
+fixes for LRPS2; that the core loads again for a later game; and that the host exits cleanly. It
+prints LRPS2's entries for two options as status gives them, which the fixture
+call-status-ps2-no-bios.json shows.
 
 The game is a small PS2 program in an ELF file this test writes itself (a loop at its entry
 point); LRPS2 refuses the game before it reads the file, so it only has to be a well-formed ELF."""
@@ -111,7 +112,7 @@ def ended(system, what):
         if status['ended'] or status['ready']:
             break
         time.sleep(0.2)
-    shown = {key: status.get(key) for key in ('ready', 'ended', 'errorCode', 'error', 'console', 'core')}
+    shown = {key: status.get(key) for key in ('ready', 'ended', 'errorCode', 'error', 'console', 'core', 'timing')}
     print(f'{what}: {json.dumps(shown, sort_keys=True)}, {len(status.get("options", {}))} options listed')
     for key in SHOWN:
         print(f'{what}: {key}: {json.dumps(status.get("options", {}).get(key), sort_keys=True)}')
@@ -125,6 +126,9 @@ def ended(system, what):
     if status.get('console') != 'ps2' or status['hardware']:
         raise c.Failed(f'{what}: status gives console {status.get("console")!r} and hardware {status["hardware"]!r}; '
                        'a PS2 game that never loaded has ps2 and false')
+    if status.get('timing', 'missing') is not None:
+        raise c.Failed(f'{what}: status.timing is {status.get("timing", "missing")!r}, not null for a game that '
+                       'never loaded')
     core = status.get('core')
     if not core or core.get('name') != CORE_NAME:
         raise c.Failed(f'{what}: status.core is {core!r}, not {CORE_NAME}')

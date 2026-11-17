@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
 """Host behaviour the fixtures do not cover: a stuck core, the core's names in status.core, the
-memory card, ring growth, epochs across games, how the host leaves when the launcher goes, many
+frame rate and region in status.timing and the rate a game is paced to, the memory card, ring growth, epochs across games, how the host leaves when the launcher goes, many
 start, volume and stop calls in a row, the internal resolutions a GPU game is offered, an OpenGL
 game's network calls, a PS2 game (capability ps2, docs/ps2.md) as the host runs LRPS2, and a core
 started for the other console."""
@@ -138,6 +138,13 @@ class Session:
         result = self.call('start', dict({'core': self.paths['core'], 'disc': disc or self.paths['disc'],
                                           'system': self.paths['system'], 'saves': self.paths['saves']}, **extra))
         return result['epoch']
+
+    def frame_rate(self, seconds):
+        """The frames a second the game published over seconds, counted from the host's frame messages."""
+        self.read(lambda m: m.get('type') == 'frame')
+        began, first = time.monotonic(), self.frames
+        self.read(lambda m: time.monotonic() >= began + seconds, seconds + 5)
+        return (self.frames - first) / (time.monotonic() - began)
 
     def wait(self, test, seconds):
         deadline = time.monotonic() + seconds
@@ -432,6 +439,56 @@ def core_identity(program, core, log):
             os.environ.pop('FAKE_CORE_VERSION', None)
         else:
             os.environ['FAKE_CORE_VERSION'] = saved
+
+
+def game_timing(program, core, log):
+    """status.timing gives the frame rate the host paces the game to and the core's region: the fake
+    core's NTSC game at 60, its PAL game at 50, and a game that switches to 50 through
+    SET_SYSTEM_AV_INFO while it runs. A paced game publishes no more frames a second than that, the
+    timing stays once the game has ended, and it is null for a core that did not load."""
+    session = Session(program, core, log)
+    try:
+        for options, timing in (({}, {'fps': 60.0, 'region': 'ntsc'}),
+                                ({'options': {'fake_region': 'pal'}}, {'fps': 50.0, 'region': 'pal'})):
+            session.start(**options)
+            status = session.wait(lambda s: s and s['ready'], 10)
+            if status.get('timing') != timing:
+                raise c.Failed(f'a game started with {options} gave timing {status.get("timing")!r}, not {timing}')
+            rate = session.frame_rate(3)
+            print(f'      {timing["region"]} game: {rate:.1f} frames a second')
+            if not 0.5 * timing['fps'] < rate < 1.05 * timing['fps']:
+                raise c.Failed(f'a {timing["fps"]:g} Hz game ran at {rate:.1f} frames a second')
+            session.call('stop')
+            status = session.wait(lambda s: s['ended'], 5)
+            if status.get('timing') != timing:
+                raise c.Failed(f'an ended game gave timing {status.get("timing")!r}')
+            session.call('release')
+
+        refresh = Path(session.paths['system']) / 'fake-refresh-50'
+        session.start()
+        session.wait(lambda s: s and s['ready'], 10)
+        refresh.write_bytes(b'')
+        status = session.wait(lambda s: (s.get('timing') or {}).get('fps') == 50.0, 5)
+        if status['timing'] != {'fps': 50.0, 'region': 'ntsc'}:
+            raise c.Failed(f'a game that switched to 50 Hz gave timing {status["timing"]!r}')
+        rate = session.frame_rate(3)
+        print(f'      game switched to 50 Hz: {rate:.1f} frames a second')
+        if not rate < 1.05 * 50:
+            raise c.Failed(f'a game that switched to 50 Hz ran at {rate:.1f} frames a second')
+        refresh.unlink()
+        session.call('stop')
+        status = session.wait(lambda s: s['ended'], 5)
+        if status.get('timing') != {'fps': 50.0, 'region': 'ntsc'}:
+            raise c.Failed(f'an ended game that had switched to 50 Hz gave timing {status.get("timing")!r}')
+        session.call('release')
+
+        session.call('start', {'core': session.paths['disc'], 'disc': session.paths['disc'],
+                               'system': session.paths['system'], 'saves': session.paths['saves']})
+        status = session.wait(lambda s: s and s['ended'], 5)
+        if status['errorCode'] != 'core' or status.get('timing', 'missing') is not None:
+            raise c.Failed(f'a core that did not load gave {status}')
+    finally:
+        session.close()
 
 
 def restart_option(program, core, log):
@@ -989,7 +1046,7 @@ def main():
     c.load_atomics(options.core.resolve())
     failures = 0
     tests = {test.__name__: test for test in (
-        stuck_core, unloadable, core_identity, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
+        stuck_core, unloadable, core_identity, game_timing, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
         launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, option_keys_not_utf8,
         rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory, ps2_game, core_for_other_console)}
     for test in (many_games, gpu_limits, gpu_network):

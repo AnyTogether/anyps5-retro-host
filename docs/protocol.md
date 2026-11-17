@@ -12,9 +12,12 @@ side can be written from this document and the fixtures in
 Version 1 runs one PS1 game for local players: start, play, change discs,
 change settings, stop. The `coreIdentity` capability adds the core build
 identity two players' launchers compare before PS1 online play
-([netplay.md](netplay.md) "Core build identity"). The `ps2` capability
-starts a PS2 game the same way, on LRPS2 with the player's own BIOS
-([ps2.md](ps2.md)). Online play itself and PS3 are later capabilities (see
+([netplay.md](netplay.md) "Core build identity"), and `gameTiming` the
+frame rate the host paces the game to and the console's region. A launcher
+may use it, for example to pace an online match ([netplay.md](netplay.md)
+"Frame rate", a proposal). The `ps2` capability starts a PS2 game the same
+way as a PS1 game, on LRPS2 with the player's own BIOS ([ps2.md](ps2.md)).
+Online play itself and PS3 are later capabilities (see
 [Capabilities](#capabilities)).
 
 The words MUST, MUST NOT and SHOULD are used as in RFC 2119.
@@ -493,6 +496,7 @@ a method whose capability the host did not list.
 | --- | --- |
 | `ps1` | The methods below, for PS1 games, with controller ports 1 and 2 |
 | `coreIdentity` | `core` in [`status`](#status): the loaded core's name and build identity, which two players' launchers compare before a match |
+| `gameTiming` | `timing` in [`status`](#status): the frame rate the host paces the game to and the console's region. A launcher may use it, for example to pace an online match ([netplay.md](netplay.md) "Frame rate", a proposal) |
 | `ps2` | PS2 games: `console` in [`start`](#start) and in [`status`](#status), with the same methods and ports as PS1 ([ps2.md](ps2.md)) |
 
 Later versions add capabilities such as PS1 online play and PS3.
@@ -742,6 +746,7 @@ No argument. Returns `null` when no game is loaded, or:
 | `console` | string | Capability `ps2`: `"ps1"` or `"ps2"`, as the game was started. A host without `ps2` sends none |
 | `cardUnreadable` | boolean | Memory card 1's file is there but the host could not read it as a card (for example, it is not the core's card size), so it is left as it is and this game's saves are not written anywhere; the launcher can tell the player so. A launcher treats a status without this field as `false` |
 | `core` | object or null | Capability `coreIdentity`: the core the game loaded, or `null` until it is loaded and when it could not be (`errorCode` `core`). It stays once the game has ended. See below |
+| `timing` | object or null | Capability `gameTiming`: the frame rate the host paces the game to and the console's region, or `null` until the core has loaded the game and when it did not (a game that ended with `bios`, `disc` or `core` before its first frame). It stays once the game has ended. See below |
 | `discs` | object, optional | Present for multi-disc games |
 
 | `errorCode` | Meaning |
@@ -758,8 +763,8 @@ No argument. Returns `null` when no game is loaded, or:
 | `hostHung` | Only the launcher's client reports it: the host missed one of the launcher's time limits and the launcher closed it (see [Host failure](#host-failure)) |
 
 The host always sends every field above (`discs` only for a multi-disc
-game, `core` only with the `coreIdentity` capability, `console` only with
-`ps2`), including for a game
+game, `core` only with the `coreIdentity` capability, `timing` only with
+`gameTiming`, `console` only with `ps2`), including for a game
 that ended before its first frame. The shorter
 form in [Host failure](#host-failure) is never sent by a host; only the
 launcher's client reports it. A launcher that gets `hostExited` or
@@ -784,7 +789,34 @@ plays online only when both are equal and `version` has the `anyps5-1-`
 form; anything else is a different core. The host does not judge the value.
 A host without the `coreIdentity` capability sends no `core`; a launcher
 plays local games with it as before and does not play online with it
-(session `older-host-without-core`).
+(session `older-host-without-core`, whose host lists only `ps1`). A host
+without `gameTiming` sends no `timing`.
+
+`timing` has `fps` and `region`:
+
+- `fps`, a number above 1 and below 1000, is the frames a second the host
+  runs the game at. It is the `timing.fps` of the core's newest
+  `retro_system_av_info`, from `retro_get_system_av_info` once the game has
+  loaded or from `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO` after a frame, or
+  60 when that is not above 1 and below 1000. SwanStation gives the
+  vertical frequency of the video mode the game has set, about 60 for NTSC
+  and 50 for PAL (at 631f0fb on every system: 59.81733322143555 for a
+  progressive NTSC mode and 49.74681854248047 for a PAL one), and gives a
+  new one when the game changes it (to an interlaced or a progressive
+  picture, or to the other standard): the host takes it between two
+  frames, also while the game is paused, and the next frame keeps to it.
+- `region` is what the core's `retro_get_region` answers at the same times:
+  `ntsc` for `RETRO_REGION_NTSC`, `pal` for `RETRO_REGION_PAL`, and `""` for
+  any other value. SwanStation answers with the console's region, which
+  `swanstation_Console_Region` sets or, by default, the disc decides; NTSC-J
+  and NTSC-U are both `ntsc`. The region is the console's and `fps` the
+  video mode's, so a game on a PAL console that sets an NTSC mode reports
+  `pal` and about 60 (59.271724700927734 at 631f0fb).
+
+Both come from the emulated console, so two players' hosts running the same
+disc on the same core build report the same values at the same frame. A
+launcher reads them from each `status`; a new `fps` reaches it with the next
+one.
 
 Each option has `title` (string), `values` (array of strings), `labels`
 (array of strings, the same length as `values`), `selected` (index into
@@ -1126,4 +1158,5 @@ or a different one.
 [`tools/check_fixtures.py`](../tools/check_fixtures.py) checks every message
 in the fixtures against the fields, types, ranges and order in this document.
 In a session, every `status` the host sends has the fields of the
-capabilities its `welcome` listed: `console` with `ps2`.
+capabilities its `welcome` listed: `core` with `coreIdentity`, `timing`
+with `gameTiming` and `console` with `ps2`.

@@ -4,12 +4,13 @@
 # How the host is put together
 
 The host implements [protocol version 1](protocol.md) with the `ps1`,
-`coreIdentity` and `ps2` capabilities ([ps2.md](ps2.md) for PS2). It is a small C++17 program with three threads:
+`coreIdentity`, `gameTiming` and `ps2` capabilities ([ps2.md](ps2.md) for
+PS2). It is a small C++17 program with three threads:
 
 | Thread | Does |
 | --- | --- |
 | Control (`main`) | Reads each message, answers calls and pings in order, and enforces the connection's order rules |
-| Game | Started once the `start` reply is sent. Opens the core and the disc, then `retro_init`, `retro_load_game` and `retro_run` paced to the core's frame rate. Publishes frames and sends `ring`, `frame` and `rumble` |
+| Game | Started once the `start` reply is sent. Opens the core and the disc, then `retro_init`, `retro_load_game` and `retro_run` paced to the core's frame rate. `ApplyTiming` takes the core's `timing.fps` and `retro_get_region` once the game has loaded and again between frames after `SET_SYSTEM_AV_INFO`, also while the game is paused, so pacing and `status.timing` use the same rate (60 when the core gives none above 1 and below 1000). Publishes frames and sends `ring`, `frame` and `rumble` |
 | Watch | Every 100 ms: the 5 s write limit, the stall and first-frame game limits, the `stop` limit, and the 10 s limit for leaving |
 
 On Linux and macOS a fourth thread waits for `SIGTERM` (sent by
@@ -277,9 +278,15 @@ A crash gives none of these, so the tests expect the exact code.
   (a binding of the old framebuffer must have moved to the new one), and when
   the host changed any it logs `[fake] The host changed the core's OpenGL
   state ...` and asks the host to shut the game down, which every OpenGL test
-  then sees as a game that ended by itself. Its `library_name` is `fake`, or
-  the environment variable `FAKE_CORE_NAME`. With a `fake-ps2` file it also
-  offers LRPS2's `pcsx2_bios` (one value, `fake-ps2-bios.bin`),
+  then sees as a game that ended by itself. A game started with the
+  `fake_region` option at `pal` runs at 50 frames a second and answers
+  `RETRO_REGION_PAL`, and a `fake-refresh-50` file makes an NTSC game switch
+  to 50 through `SET_SYSTEM_AV_INFO` after a frame, as SwanStation does when
+  a game changes its video mode. It still reads `fake_region` every frame,
+  so `restart_option` sees the host keep a restart option's new value from
+  the running game. Its `library_name` is `fake`, or the environment variable
+  `FAKE_CORE_NAME`. With a `fake-ps2` file it also offers LRPS2's
+  `pcsx2_bios` (one value, `fake-ps2-bios.bin`),
   `pcsx2_shared_memory_cards`, `pcsx2_usb_camera`, `pcsx2_dev9_hdd`,
   `pcsx2_dev9_hdd_size`, `pcsx2_dev9_eth`, `pcsx2_renderer` and
   `pcsx2_multitap` with LRPS2's titles and defaults, writes each port's device to
@@ -298,6 +305,11 @@ A crash gives none of these, so the tests expect the exact code.
     the environment variable `FAKE_CORE_VERSION`, passed as it is when it is
     printable ASCII of at most 256 bytes and as `""` otherwise, kept after the
     game ends, and `null` for a core that did not load;
+  - `status.timing` (`game_timing`): 60 and `ntsc` for the test core's NTSC
+    game, 50 and `pal` for its PAL game, and 50 and `ntsc` after the game
+    switches to 50 while it runs, each kept after the game ends; the frames a
+    second the game publishes over 3 seconds, which must not pass that rate
+    by more than 5%; and `null` for a core that did not load;
   - a core that is not a library and a missing disc, each ending the game
     with `errorCode` `core` or `disc`;
   - a playlist saved in Latin-1, whose labels and paths reach `status` as
@@ -393,7 +405,9 @@ A crash gives none of these, so the tests expect the exact code.
   so). With `--expect-core-version`, which both workflows pass with the value
   [`tools/core_identity.py`](../tools/core_identity.py) computes, `welcome`
   must list `coreIdentity` and `status.core` must be `SwanStation` with that
-  version; `--core-identity-out` writes `status.core`, and `real-core.yml`'s
+  version. It checks `status.timing` on the auto-detected console: region
+  `ntsc` or `pal`, a frame rate of about 50 or 60, and no more frames in 10
+  seconds than that rate allows. `--core-identity-out` writes `status.core`, and `real-core.yml`'s
   `same-core` job checks that Windows, both Linux runners and macOS wrote the
   same one. With `--expect-opengl`, which `real-core.yml` passes on Linux and macOS, the test also
   fails when the host made no OpenGL context, so neither system can slip back
@@ -404,8 +418,11 @@ A crash gives none of these, so the tests expect the exact code.
   the screen blue and only its top-left corner red; the test checks those
   colours near all four corners, which a picture turned upside down, mirrored
   or with red and blue swapped fails. The second game also makes a second
-  OpenGL context in the same host. The test then checks a clean `stop` and
-  exit, and keeps the last picture (`--picture`) as a workflow artifact. No
+  OpenGL context in the same host. A third game runs the same program with
+  a PAL video mode (`corner_program(pal=True)`, GP1(08h) bit 3) on a console
+  set to PAL: it must report `pal` and about 50 frames a second, and publish
+  at least 50 frames, and no more than that rate allows, in 5 seconds. The
+  test then checks a clean `stop` and exit, and keeps the last picture (`--picture`) as a workflow artifact. No
   Sony BIOS or game is used.
 - [`tests/ps2_core.py`](../tests/ps2_core.py) runs the real LRPS2 through
   the host as a PS2 game with no BIOS, since there is none it may use
@@ -429,7 +446,22 @@ A crash gives none of these, so the tests expect the exact code.
   descriptor from the launcher (Linux and macOS), an extra call during a
   `wait`, a launcher that never ends the host, and a launcher that ends it
   one step early (before the breaking message of a protocol error session,
-  and at the start of a `wait`). Run it with
+  and at the start of a `wait`). A launcher whose raster thread draws a
+  frame that breaks a frame check before it reads the `frame` message must
+  pass. The self-test cuts each `silence` or `wait` before an end to 1
+  second, so before it ends the fake it waits for the report to show
+  `awaitingKill`; ending it on its own clock would race the fake's pause and
+  report write on a slow runner. A `ring` followed by a `publish` is checked
+  only for the fields the launcher checks when a ring arrives, because the
+  host may publish into a ring as soon as it has sent it (protocol.md, "Frame
+  ring": the host never waits); the `frame` step checks the rest. The
+  self-test starts the fake with `--resume` and moves it past each
+  `launcherDraws` and `launcherReports` step only after checking it, so a
+  later `publish` cannot overtake that check. An early end can only be
+  told apart by time, so the cases that end the fake one step early give it
+  a 5 second `--kill-pause`: the self-test ends it about 0.15 seconds into
+  the pause, and only a runner that holds the self-test up for nearly 5
+  seconds could still make it arrive late. Run it with
   `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
   supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
@@ -638,12 +670,17 @@ What the fake does with each step:
   Before a host step the fake keeps checking the launcher's messages during
   the pause and answers pings; any other message is dropped, as it is while
   the fake waits to be ended. A `silence` or `wait` goes on as written. When
-  the pause is over, the report is set to `awaitingKill` and then the host
-  step's message is written. The report is set just before the write, not
-  after it: a launcher may end the host the moment it has read the message,
+  the pause is over, the report is set to `awaitingKill`, then a `frame`
+  step's `publish` is written into the ring, and then the host step's
+  message is written. The report is set just before the write, not after
+  it: a launcher may end the host the moment it has read the message,
   before the fake could write a report, and setting it after would fail a
-  correct launcher. A launcher that ends the host early does it during the
-  pause, after the message before.
+  correct launcher. The `publish` is part of the breaking step, so it too
+  waits for the pause: a launcher's raster thread reads the ring whenever it
+  draws, and a frame that breaks a frame check, written before the pause,
+  would let a correct launcher end the host before the fake expects it. A
+  launcher that ends the host early does it during the pause, after the
+  message before.
 - **`launcherKillsHost`**, and the end of a session whose outcome is not
   `clean`: waits `--kill-within` seconds (default 10) to be ended, and fails
   after that. End-of-stream is ignored then.
@@ -651,7 +688,10 @@ What the fake does with each step:
   the fake only records that it reached them. To hold it there while the test
   checks, pass `--hold <seconds>` or `--resume <file>`: the fake then waits
   until the file holds a step index at least that step's. While it waits, a
-  call to a method it has already answered gets the same reply again.
+  call to a method it has already answered gets the same reply again. The
+  launcher writes the file before it goes on, so a message that arrives
+  once the file has reached the step is kept for the steps after it, even
+  a call the fake could answer again.
 - **The end of a `clean` session**: waits for `shutdown` or end-of-stream,
   then exits with 0.
 

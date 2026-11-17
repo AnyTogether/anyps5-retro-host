@@ -30,6 +30,7 @@
         "capabilities": [
           "ps1",
           "coreIdentity",
+          "gameTiming",
           "ps2"
         ],
         "pixelFormat": "rgba8"

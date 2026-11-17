@@ -168,8 +168,8 @@ So [`tests/ps2_core.py`](../tests/ps2_core.py) checks what can be checked with
 the real core: the host lists `ps2`; with a system directory that has no
 `pcsx2` folder, and with one whose `pcsx2/bios` holds a 4 MiB file that is not
 a BIOS, the game ends with `bios`, `console` `ps2` and LRPS2's name and
-identity before a first frame, and `status.options` lists none of the options
-the host fixes; the core loads again for a third game; and the host exits
+identity and `timing` `null` before a first frame, and `status.options` lists
+none of the options the host fixes; the core loads again for a third game; and the host exits
 cleanly. The game is a small PS2 ELF the test writes (a loop at its
 entry point), which the core refuses before reading. `host_test.py ps2_game`
 covers the host's side with the fake core: the disc kinds, `console`, the
@@ -217,6 +217,11 @@ All of it is behind the `ps2` capability ([protocol.md](protocol.md)
   playlists are left for later, since few PS2 games have two discs.
 - **`status.console`**: the console the game was started as, in every status
   from a host with `ps2`.
+- **`status.timing`** (capability `gameTiming`) is the same for a PS2 game:
+  LRPS2's `retro_system_av_info` frame rate and its `retro_get_region`, and
+  `null` for a game that ended with `bios` before it loaded, which
+  `tests/ps2_core.py` checks. The values of a running PS2 game have not been
+  seen yet.
 - **`errorCode`**: `bios` when LRPS2 found no BIOS; `core` when it could not
   start the game for any other reason.
 - **Controllers**: two ports, as for PS1. The host gives LRPS2's DualShock 2

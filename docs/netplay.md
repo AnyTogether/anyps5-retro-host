@@ -3,9 +3,11 @@
 
 # PS1 online play through the host
 
-> **Status: a proposal, except for the core build identity.** The core build
-> identity (capability `coreIdentity`, "Core build identity" below) is decided
-> and built. The rest of this document, in particular the launcher carrying
+> **Status: a proposal, except for the core build identity and the frame
+> rate.** The core build identity (capability `coreIdentity`, "Core build
+> identity" below) is decided and built, and so is the game's frame rate and
+> region the host reports (capability `gameTiming`, "Frame rate"). The rest of
+> this document, in particular the launcher carrying
 > online play over AnyTogether's WebRTC connection and its TURN relay, and a
 > friend joining a running game from the other player's state, is a proposal
 > the maintainers have not agreed on yet. It touches AnyTogether's online
@@ -19,8 +21,11 @@ own tests. [protocol.md](protocol.md) is the contract for each capability once
 it is built.
 
 Built so far: the core build identity (capability `coreIdentity`, `core` in
-protocol.md "status"), which two players' launchers compare before a match.
-The proposed steps after it are in [Steps](#steps).
+protocol.md "status"), which two players' launchers compare before a match,
+and the frame rate the host paces the game to and the console's region
+(capability `gameTiming`, `timing` in protocol.md "status"), which a
+launcher may use, for example to pace a match. The proposed
+steps after them are in [Steps](#steps).
 
 ## What others do
 
@@ -190,9 +195,33 @@ compared during a match are for. When a patch is
 added or changed, or the SwanStation commit moves, the identity changes, and
 players need the same host release to play together.
 
+## Frame rate
+
+> What the host reports, `status.timing`, is built: the frame rate the host
+> paces the game to and the console's region. A launcher may use it, for
+> example to pace an online match; how a match's clock would do that is part
+> of the proposal ([Steps](#steps), "Frame clock").
+
+A PS1 game does not always run at 60 frames a second: SwanStation gives the
+vertical frequency of the video mode the game set, about 60 for NTSC and 50
+for PAL (a European game sets PAL), and gives a new one when the game
+changes its mode. At 631f0fb `real_core.py` measured 59.817 for a
+progressive NTSC mode and 49.747 for a PAL mode, the same on Windows, Linux
+and macOS. Pacing fixed at 60 would run a PAL game a fifth too fast, and an
+NTSC game slightly off its console's rate.
+
+RetroArch paces its main loop to the core's `retro_system_av_info`
+`timing.fps` and follows `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO`. The host
+does the same when it keeps its own time, and with capability `gameTiming`
+it reports that rate, and the core's `retro_get_region`, as `status.timing`
+([protocol.md](protocol.md) "status"); a new `fps` reaches the launcher with
+the next `status`. The value comes from the emulated console, so both
+players' hosts report the same rate at the same frame; it is not a measure
+of either machine's speed.
+
 ## Steps
 
-> **Proposal, not agreed** beyond step 1. The later steps are the proposed
+> **Proposal, not agreed** beyond steps 1 and 2. The later steps are the proposed
 > order; step 4's joining a running game from the other player's state is
 > part of the proposal the maintainers have not agreed on.
 
@@ -200,9 +229,7 @@ Each step is a capability of its own, with its tests, and changes the
 identity when it adds a SwanStation patch:
 
 1. `coreIdentity`: built (above).
-2. `gameTiming`: `status.timing`, the frame rate the host paces the game to
-   and the game's region, so a launcher's frame clock can follow a PAL game
-   at 50 frames a second.
+2. `gameTiming`: built ("Frame rate", above).
 3. `ps1Lockstep`: the game runs one frame for each `step` the launcher sends,
    with exactly the input in it, and sends hashes of what chosen frames left
    behind (`sync`), so two players' launchers can compare them.
@@ -215,12 +242,44 @@ identity when it adds a SwanStation patch:
    again, between two frames.
 6. `syncXxh3`: cheaper `sync` hashes, and checks that leave the state out.
 
+### Frame clock
+
+> **Proposal, not agreed.** Whether the launcher drives a match's frames at
+> all, and how, depends on the frame-clock model, the transport and the
+> relay, which the maintainers have not settled.
+
+If the host ran one frame per input (step 3), the launcher's frames would be
+the game's frames, and in rollback (step 5) the launcher's frame clock would
+be the game's only clock: the host would run each step as it came. That
+clock would then have to run at the game's own rate. GGPO leaves the frame
+rate to the game, which advances its own clock; with `status.timing` a
+launcher's clock could do the same, stepping a frame every 1 ÷ `fps`
+seconds and taking a new `fps` from the next `status`.
+
+The input delay, the round trip in frames and whether a rollback fits in a
+frame would then all be counted in frames of that length: 16.7 ms in an
+NTSC game and 20 ms in a PAL one. For example, with an input delay of half
+the round trip in frames plus one, at most 8, the longest round trip a
+match could take would be about 230 ms in an NTSC game and 280 ms in a PAL
+one. That is an illustration of the arithmetic, not a latency budget: the
+budget, and whether a relayed connection meets it, belong to the transport
+and relay question that is still open.
+
 ## Tests
 
 - `host_test.py` `core_identity` checks with the test core that `status.core`
   passes `library_name` and `library_version` on as protocol.md says, `""`
   for a value that is not printable ASCII of at most 256 bytes, and `null`
   for a core that did not load.
+- `host_test.py` `game_timing` checks with the test core that
+  `status.timing` is 60 and `ntsc` for its NTSC game, 50 and `pal` for its
+  PAL game, and 50 and `ntsc` once a game has switched to 50 while it runs;
+  that a game runs no faster than that rate; and that it is `null` for a
+  core that did not load.
+- `real_core.py` checks SwanStation's `status.timing` on an auto-detected
+  console (`ntsc` or `pal`, about 50 or 60) and on a PAL console running a
+  program that sets a PAL video mode (`pal`, about 50), and that the game
+  publishes no more frames than that rate allows.
 - `real_core.py --expect-core-version` checks that the real SwanStation,
   built with the patches, reports the identity `tools/core_identity.py`
   computes, in the `real-core` workflow on every system and in the `release`
