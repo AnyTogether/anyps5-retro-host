@@ -639,15 +639,18 @@ unsigned and nothing is published. A maintainer with the release key:
 
    ```sh
    commit="$(git rev-parse "v<version>^{commit}")"
-   gh run list -R AnyTogether/anyps5-retro-host --workflow release --event push      --branch "v<version>" --json databaseId,headSha,conclusion
-   gh run download <databaseId whose headSha is $commit> -R AnyTogether/anyps5-retro-host      -n "anyps5-retro-host-<version>-unsigned" -D <folder>
+   gh run list -R AnyTogether/anyps5-retro-host --workflow release --event push \
+     --branch "v<version>" --json databaseId,headSha,conclusion
+   gh run download <databaseId whose headSha is $commit> -R AnyTogether/anyps5-retro-host \
+     -n "anyps5-retro-host-<version>-unsigned" -D <folder>
    ```
 
 2. Checks the downloaded folder from a checkout of the tag, before signing
    anything:
 
    ```sh
-   python3 tools/package_release.py --check <folder> --version <version>      --host-repository https://github.com/AnyTogether/anyps5-retro-host --host-commit "$commit"
+   python3 tools/package_release.py --check <folder> --version <version> \
+     --host-repository https://github.com/AnyTogether/anyps5-retro-host --host-commit "$commit"
    ```
 
    It stops unless every file matches `SHA256SUMS`, every zip matches its

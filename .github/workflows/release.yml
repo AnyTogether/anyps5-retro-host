@@ -255,7 +255,8 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           python3 tools/package_release.py --sums release release/*.zip release/*.files release/*-source.tar.gz
-          python3 tools/package_release.py --check release --version "$VERSION"             --host-repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --host-commit "$GITHUB_SHA"
+          python3 tools/package_release.py --check release --version "$VERSION" \
+            --host-repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --host-commit "$GITHUB_SHA"
           test "$(ls release/*.zip | wc -l)" -eq 3
           (cd release && sha256sum -c SHA256SUMS)
       # Only a tag's run uploads the artifact the maintainers sign; any other run's artifact is
