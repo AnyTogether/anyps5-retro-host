@@ -16,7 +16,7 @@ and
 
     python3 tests/lockstep_test.py --same <file>...
 
-compares the files several systems wrote, as two players' launchers compare syncs
+compares the files several systems wrote, as two players' launchers would compare syncs
 (docs/netplay.md "Lockstep first, rollback after"): every frame's ram must be the same on all of
 them, and its video on all of them that draw in software. Systems that draw with OpenGL may round
 differently on other GPUs and drivers, so a picture that differs between them is printed as a

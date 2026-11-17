@@ -66,9 +66,10 @@ killing. It never uses the `pid` in [`welcome`](#welcome) for those. A
 `welcome` whose `pid` is not that process id is a protocol error.
 
 **Network.** In version 1, the host and the core MUST NOT open any network
-connection or listening socket. This holds for online play too: the launcher
-carries every packet between players, and the host only runs the frames it is
-given ([netplay.md](netplay.md), "Who owns the network"). The only channel the host has is the one the
+connection or listening socket. This would hold for online play too:
+whatever carries a match between players, the host only runs the frames it
+is given ([netplay.md](netplay.md) "Who owns the network" proposes that the
+launcher carries them). The only channel the host has is the one the
 launcher hands it. Reading a game or BIOS file that the operating system
 serves from a network share (SMB, NFS) is ordinary file access, not a
 network connection under this rule, and neither is playing sound through the
@@ -501,7 +502,8 @@ a method whose capability the host did not list.
 | `gameTiming` | `timing` in [`status`](#status): the frame rate the host paces the game to and the console's region. A launcher may use it, for example to pace an online match ([netplay.md](netplay.md) "Frame rate", a proposal) |
 | `ps1Lockstep` | [Lockstep](#lockstep): `start.lockstep`, the method `lockstep`, and the messages `step` and `sync` |
 
-Later versions add capabilities such as PS2 and PS3; [netplay.md](netplay.md) proposes more for PS1 online play.
+Later versions add capabilities such as PS2 and PS3;
+[netplay.md](netplay.md) proposes more for PS1 online play.
 
 ### call and reply
 
@@ -773,8 +775,8 @@ without `gameTiming` sends no `timing`.
 
 - `fps`, a number above 1 and below 1000, is the frames a second the host
   runs the game at when it keeps its own time: on its own, and in
-  [lockstep](#lockstep) with `paced`. It is the `timing.fps` of the core's newest
-  `retro_system_av_info`, from `retro_get_system_av_info` once the game has
+  [lockstep](#lockstep) with `paced`. It is the `timing.fps` of the core's
+  newest `retro_system_av_info`, from `retro_get_system_av_info` once the game has
   loaded or from `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO` after a frame, or
   60 when that is not above 1 and below 1000. SwanStation gives the
   vertical frequency of the video mode the game has set, about 60 for NTSC
@@ -892,9 +894,10 @@ Capability `ps1Lockstep`. A game in lockstep runs one frame for each `step`
 the launcher sends, with exactly the input in it, and runs no frame without
 one. Two hosts that start the same game with the same core (the same
 `status.core`, capability `coreIdentity`), BIOS and options, and are given
-the same steps, stay alike frame for frame. Each sends a [`sync`](#sync) with hashes of what the frame
-left behind, so the launchers can compare them. The launcher does all the
-networking; how a match would use lockstep is part of
+the same steps, stay alike frame for frame. Each sends a [`sync`](#sync)
+with hashes of what the frame left behind, so the launchers can compare
+them. The host opens no socket ("Network" above); how a match would use
+lockstep, and what would carry it between players, is part of
 [netplay.md](netplay.md)'s proposal.
 
 Lockstep frames count up from 0, from the moment the game enters lockstep
@@ -919,8 +922,9 @@ Argument: `{"check":<integer 1 to 3600>,"paced":<boolean, optional>}`, or
   lockstep, keeps its frame count and takes the new settings. `check` is how
   often a `sync` is sent: after every frame whose number is a multiple of it.
   `paced` (default `true`) keeps the game to its core's frame rate
-  (`status.timing.fps`, capability `gameTiming`) even when steps queue up; `false` runs queued steps as fast as the machine can, as a
-  player catching up does. The change takes effect between two frames: the
+  (`status.timing.fps`, capability `gameTiming`) even when steps queue up;
+  `false` runs queued steps as fast as the machine can, as a player catching
+  up does. The change takes effect between two frames: the
   host waits for the frame being run to end before it replies. Returns
   `{"frame":<integer>}`, the frame the next `step` is for, which is 0 when the
   game has just entered lockstep. Returns `false` when the game has ended, or
@@ -949,10 +953,10 @@ The input of one lockstep frame. It has no reply.
 
 Steps come in frame order with no gaps: the first is for the frame the
 `lockstep` reply named (0 for a game started with `start.lockstep`), and each
-next one for the frame after. At most 600 steps wait to be run. A `step` sent while no game is
-loaded, while the game is not in lockstep, for any other frame, or as the
-601st waiting, is a protocol error. A `step` for a game that has ended is
-ignored.
+next one for the frame after. At most 600 steps wait to be run. A `step`
+sent while no game is loaded, while the game is not in lockstep, for any
+other frame, or as the 601st waiting, is a protocol error. A `step` for a
+game that has ended is ignored.
 
 ### sync
 
@@ -977,9 +981,9 @@ renderers ([netplay.md](netplay.md) "Lockstep first, rollback after").
 `status.hardware`: SwanStation's OpenGL and software renderers draw
 different pictures from the same frames, and GPUs may round differently, so
 it is the same everywhere only when both draw in software. A launcher
-treats a `ram` difference as a desync and compares `video` only between
-hosts with the same `hardware`. `state` also differs when the core keeps something of the
-machine in it: SwanStation's state names the disc's path, so two players'
+would therefore treat a `ram` difference as a desync and compare `video`
+only between hosts with the same `hardware`. `state` also differs when the
+core keeps something of the machine in it: SwanStation's state names the disc's path, so two players'
 `state` match only when both keep the disc at the same path
 ([netplay.md](netplay.md) "Lockstep first, rollback after").
 

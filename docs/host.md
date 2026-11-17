@@ -374,33 +374,33 @@ A crash gives none of these, so the tests expect the exact code.
 - [`tests/lockstep_test.py`](../tests/lockstep_test.py) runs two hosts in
   [lockstep](protocol.md#lockstep), as two online players' hosts would be
   ([netplay.md](netplay.md) "Tests"): both start the game with
-  `start.lockstep` and are fed the same input, every button and the left
-  stick changing every frame on both ports, and every frame's `sync` must
-  match. With the fake core it also checks that a different input on port 2
-  changes the next `sync.ram`, that lockstep refuses `option`,
-  `connectedPorts` and `lockstep` arguments out of range, and its protocol
-  errors; and, holding the fake core inside a frame (`fake-hold-run`), that
-  leaving lockstep is answered only once that frame has ended, that nothing
-  of the old frame count follows, and that after entering again the console
-  publishes no frame until a step comes; and that a game that ran on its own
-  and enters lockstep on a duplicate frame (`fake-dupe`) gives as `video`
-  the hash of the newest picture in its frame ring, computed by the test. It
-  reads every host in turn while it waits, since an unread host exits at the 5-second write limit. With
+  `start.lockstep` and are fed the same input, every button and the left stick
+  changing every frame on both ports, and every frame's `sync` must match.
+  With the fake core it also checks that a different input on port 2 changes
+  the next `sync.ram`, that lockstep refuses `option`, `connectedPorts` and
+  `lockstep` arguments out of range, and its protocol errors; and, holding the
+  fake core inside a frame (`fake-hold-run`), that leaving lockstep is
+  answered only once that frame has ended, that nothing of the old frame count
+  follows, and that after entering again the console publishes no frame until
+  a step comes; and that a game that ran on its own and enters lockstep on a
+  duplicate frame (`fake-dupe`) gives as `video` the hash of the newest
+  picture in its frame ring, computed by the test. It reads every host in turn
+  while it waits, since an unread host exits at the 5-second write limit. With
   `--bios` and `--program` it runs the real SwanStation on the
-  `make_test_disc.py` disc, each player with their own copy in a folder of
-  its own, which the `real-core` workflow does for 600 frames on each
-  system; there `ram` and `video` must match, and `state` is not compared,
-  since SwanStation's state names the disc's path. `--syncs-out` writes that
-  cold boot's syncs and `status.hardware`, and `real-core.yml`'s `same-core`
-  job compares the four systems' files with `--same`: every frame's `ram`
-  on all of them must match, and its `video` between the systems that draw
-  in software; a `video` that differs between systems drawing with OpenGL is
+  `make_test_disc.py` disc, each player with their own copy in a folder of its
+  own, which the `real-core` workflow does for 600 frames on each system;
+  there `ram` and `video` must match, and `state` is not compared, since
+  SwanStation's state names the disc's path. `--syncs-out` writes that cold
+  boot's syncs and `status.hardware`, and `real-core.yml`'s `same-core` job
+  compares the four systems' files with `--same`: every frame's `ram` on all
+  of them must match, and its `video` between the systems that draw in
+  software; a `video` that differs between systems drawing with OpenGL is
   printed as a warning, since other GPUs and drivers may round differently
-  ([netplay.md](netplay.md) "Lockstep first, rollback after" says
-  why Windows' picture differs there). For lockstep the fake
-  core keeps four words of "system RAM" (the frame count, a mix of every
-  input it read, and the last buttons of each port) and serializes them with
-  its rumble state and memory card.
+  ([netplay.md](netplay.md) "Lockstep first, rollback after" says why Windows'
+  picture differs there). For lockstep the fake core keeps four words of
+  "system RAM" (the frame count, a mix of every input it read, and the last
+  buttons of each port) and serializes them with its rumble state and memory
+  card.
 - [`tests/ring_access.c`](../tests/ring_access.c) gives the fake launcher the
   sequentially consistent loads and stores of `latest` and `reading` that
   protocol.md asks for; Python cannot make them on shared memory itself. It

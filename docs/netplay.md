@@ -77,11 +77,11 @@ need the same emulator build; and desyncs are found by comparing hashes.
   each frame left behind (all three built), and, in the proposed later
   steps, saving and loading the core's state between frames. These need the
   core and the game's thread.
-- The cost is one more local hop for each frame's input, over a pipe or
-  socket on the same machine. It is far below a frame's 16.7 ms (20 ms in a
-  PAL game).
+- The cost would be one more local hop for each frame's input, over a pipe
+  or socket on the same machine. It is far below a frame's 16.7 ms (20 ms in
+  a PAL game).
 
-So, as proposed, each launcher is the network peer and the host is a
+So, as proposed, each launcher would be the network peer and the host a
 deterministic machine it feeds:
 
 ```
@@ -284,11 +284,12 @@ A match could pick *d* from the round trip it measures before it starts:
 *d* = ⌈(round trip ÷ 2) ÷ frame⌉ + 1, at most 8, where a frame lasts
 1 ÷ `status.timing.fps` (16.7 ms in an NTSC game, 20 ms in a PAL one;
 "Frame rate" above). A cap of 8 frames would turn away a round trip above
-about 230 ms in an NTSC game and 280 ms in a PAL one. That cap is a latency
-budget, and it, like whether a relayed connection meets it, belongs to the
-transport and relay question that is still open ("Frame clock" under
-[Steps](#steps)). Rollback would later lower the delay players feel to 1 or
-2 frames, with the rest predicted.
+about 230 ms in an NTSC game and 280 ms in a PAL one. Those figures are an
+illustration of the arithmetic, not a latency budget: the budget, and
+whether a relayed connection meets it, belong to the transport and relay
+question that is still open ("Frame clock" under [Steps](#steps)). Rollback,
+if agreed, would lower the delay players feel to 1 or 2 frames, with the
+rest predicted.
 
 **What a `sync` compares.** Every `check` frames the host hashes the
 console's main RAM, the last picture and the core's serialized state
@@ -322,7 +323,7 @@ the renderer's VRAM. With the OpenGL renderer that is the GPU's copy, unless
 readbacks from a software renderer kept alongside. `hello` reads nothing
 back, which is why its `ram` matched.
 
-So a sync check must:
+So a launcher's sync check would need to:
 
 - compare `ram` always; a difference is a desync;
 - compare `video` only between two hosts that report the same
@@ -418,12 +419,12 @@ identity when it adds a SwanStation patch:
 > relay, which the maintainers have not settled.
 
 With the host running one frame per input (step 3, built), a match's
-launcher frames would be the game's frames, and in rollback (step 5) the launcher's frame clock would
-be the game's only clock: the host would run each step as it came. That
-clock would then have to run at the game's own rate. GGPO leaves the frame
-rate to the game, which advances its own clock; with `status.timing` a
-launcher's clock could do the same, stepping a frame every 1 ÷ `fps`
-seconds and taking a new `fps` from the next `status`.
+launcher frames would be the game's frames, and in rollback (step 5) the
+launcher's frame clock would be the game's only clock: the host would run
+each step as it came. That clock would then have to run at the game's own
+rate. GGPO leaves the frame rate to the game, which advances its own clock;
+with `status.timing` a launcher's clock could do the same, stepping a frame
+every 1 ÷ `fps` seconds and taking a new `fps` from the next `status`.
 
 The input delay, the round trip in frames and whether a rollback fits in a
 frame would then all be counted in frames of that length: 16.7 ms in an

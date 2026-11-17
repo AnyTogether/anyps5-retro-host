@@ -1,5 +1,5 @@
 {
-  "description": "The match ended; the game leaves lockstep and runs on its own again.",
+  "description": "The launcher leaves lockstep, as it would at the end of a match; the game runs on its own again.",
   "from": "launcher",
   "message": {
     "type": "call",
