@@ -1,0 +1,348 @@
+{
+  "description": "A game started in lockstep runs one frame per step: no frame before the first step, then a sync after each frame in frame order, including two steps sent before either sync. The game then leaves lockstep and is stopped. The hashes are those of the host repository's test core.",
+  "tests": [
+    "host"
+  ],
+  "steps": [
+    {
+      "from": "launcher",
+      "message": {
+        "type": "hello",
+        "minVersion": 1,
+        "maxVersion": 1,
+        "pixelFormats": [
+          "rgba8",
+          "bgra8"
+        ]
+      },
+      "anyValueFor": [
+        "pixelFormats"
+      ]
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "welcome",
+        "version": 1,
+        "pid": 4242,
+        "hostVersion": "1.0.0",
+        "capabilities": [
+          "ps1",
+          "coreIdentity",
+          "gameTiming",
+          "ps2",
+          "ps1Lockstep"
+        ],
+        "pixelFormat": "rgba8"
+      },
+      "anyValueFor": [
+        "pid",
+        "hostVersion",
+        "pixelFormat"
+      ]
+    },
+    {
+      "from": "launcher",
+      "message": {
+        "type": "call",
+        "id": 1,
+        "method": "volume",
+        "args": {
+          "level": 1,
+          "muted": false
+        }
+      },
+      "anyValueFor": [
+        "id",
+        "args"
+      ]
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "reply",
+        "id": 1,
+        "result": null
+      },
+      "anyValueFor": [
+        "id"
+      ]
+    },
+    {
+      "from": "launcher",
+      "message": {
+        "type": "call",
+        "id": 2,
+        "method": "start",
+        "args": {
+          "core": "${core}",
+          "disc": "${disc}",
+          "system": "${system}",
+          "saves": "${saves}",
+          "lockstep": {
+            "check": 1,
+            "paced": false
+          }
+        }
+      },
+      "anyValueFor": [
+        "id"
+      ]
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "reply",
+        "id": 2,
+        "result": {
+          "epoch": 1
+        }
+      },
+      "anyValueFor": [
+        "id"
+      ]
+    },
+    {
+      "from": "launcher",
+      "message": {
+        "type": "step",
+        "frame": 0,
+        "ports": [
+          {
+            "buttons": 0,
+            "leftX": 0,
+            "leftY": 0,
+            "rightX": 0,
+            "rightY": 0
+          },
+          {
+            "buttons": 0,
+            "leftX": 0,
+            "leftY": 0,
+            "rightX": 0,
+            "rightY": 0
+          }
+        ]
+      }
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "ring",
+        "bytes": 3690496
+      },
+      "descriptors": 1,
+      "ring": {
+        "memoryBytes": 3690496,
+        "sealed": true,
+        "header": {
+          "magic": 1179792705,
+          "version": 1,
+          "slotCount": 3,
+          "headerBytes": 4096,
+          "slotBytes": 1228800,
+          "latest": 0,
+          "reading": 4294967295,
+          "pixelFormat": 1,
+          "slots": [
+            {
+              "width": 640,
+              "height": 480,
+              "visible": 1,
+              "epoch": 1,
+              "sequence": 1
+            },
+            {
+              "width": 0,
+              "height": 0,
+              "visible": 0,
+              "epoch": 0,
+              "sequence": 0
+            },
+            {
+              "width": 0,
+              "height": 0,
+              "visible": 0,
+              "epoch": 0,
+              "sequence": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "frame"
+      }
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "sync",
+        "frame": 0,
+        "ram": "392209f14dea4c24",
+        "video": "f20cf0e3fa25a4c4",
+        "state": "2dc557369346d137"
+      },
+      "anyValueFor": [
+        "ram",
+        "video",
+        "state"
+      ]
+    },
+    {
+      "from": "launcher",
+      "message": {
+        "type": "step",
+        "frame": 1,
+        "ports": [
+          {
+            "buttons": 1,
+            "leftX": 0,
+            "leftY": 0,
+            "rightX": 0,
+            "rightY": 0
+          },
+          {
+            "buttons": 0,
+            "leftX": 0,
+            "leftY": 0,
+            "rightX": 0,
+            "rightY": 0
+          }
+        ]
+      }
+    },
+    {
+      "from": "launcher",
+      "message": {
+        "type": "step",
+        "frame": 2,
+        "ports": [
+          {
+            "buttons": 2,
+            "leftX": 0,
+            "leftY": 0,
+            "rightX": 0,
+            "rightY": 0
+          },
+          {
+            "buttons": 0,
+            "leftX": 0,
+            "leftY": 0,
+            "rightX": 0,
+            "rightY": 0
+          }
+        ]
+      }
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "sync",
+        "frame": 1,
+        "ram": "4fd38eb2374aa657",
+        "video": "d7d768104f27b4c4",
+        "state": "613d64bc338abcc5"
+      },
+      "anyValueFor": [
+        "ram",
+        "video",
+        "state"
+      ]
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "sync",
+        "frame": 2,
+        "ram": "36dc9f1b12cb3735",
+        "video": "59f99b0f4749c4c4",
+        "state": "fdd18dc293ee9a06"
+      },
+      "anyValueFor": [
+        "ram",
+        "video",
+        "state"
+      ]
+    },
+    {
+      "from": "launcher",
+      "message": {
+        "type": "call",
+        "id": 3,
+        "method": "lockstep",
+        "args": false
+      },
+      "anyValueFor": [
+        "id"
+      ]
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "reply",
+        "id": 3,
+        "result": true
+      },
+      "anyValueFor": [
+        "id"
+      ]
+    },
+    {
+      "from": "launcher",
+      "message": {
+        "type": "call",
+        "id": 4,
+        "method": "stop"
+      },
+      "anyValueFor": [
+        "id"
+      ]
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "reply",
+        "id": 4,
+        "result": null
+      },
+      "anyValueFor": [
+        "id"
+      ]
+    },
+    {
+      "from": "launcher",
+      "message": {
+        "type": "call",
+        "id": 5,
+        "method": "release"
+      },
+      "anyValueFor": [
+        "id"
+      ]
+    },
+    {
+      "from": "host",
+      "message": {
+        "type": "reply",
+        "id": 5,
+        "result": null
+      },
+      "anyValueFor": [
+        "id"
+      ]
+    },
+    {
+      "from": "launcher",
+      "message": {
+        "type": "shutdown"
+      }
+    },
+    {
+      "hostExits": 0
+    }
+  ],
+  "outcome": "clean"
+}

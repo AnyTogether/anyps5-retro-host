@@ -32,7 +32,8 @@
           "ps1",
           "coreIdentity",
           "gameTiming",
-          "ps2"
+          "ps2",
+          "ps1Lockstep"
         ],
         "pixelFormat": "rgba8"
       },

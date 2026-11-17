@@ -444,8 +444,9 @@ def core_identity(program, core, log):
 def game_timing(program, core, log):
     """status.timing gives the frame rate the host paces the game to and the core's region: the fake
     core's NTSC game at 60, its PAL game at 50, and a game that switches to 50 through
-    SET_SYSTEM_AV_INFO while it runs. A paced game publishes no more frames a second than that, the
-    timing stays once the game has ended, and it is null for a core that did not load."""
+    SET_SYSTEM_AV_INFO while it runs. A paced game, on its own or in lockstep, publishes no more frames
+    a second than that, the timing stays once the game has ended, it is known before a game started in
+    lockstep runs its first step, and it is null for a core that did not load."""
     session = Session(program, core, log)
     try:
         for options, timing in (({}, {'fps': 60.0, 'region': 'ntsc'}),
@@ -480,6 +481,25 @@ def game_timing(program, core, log):
         status = session.wait(lambda s: s['ended'], 5)
         if status.get('timing') != {'fps': 50.0, 'region': 'ntsc'}:
             raise c.Failed(f'an ended game that had switched to 50 Hz gave timing {status.get("timing")!r}')
+        session.call('release')
+
+        pal = {'fps': 50.0, 'region': 'pal'}
+        session.start(options={'fake_region': 'pal'}, lockstep={'check': 1})
+        status = session.wait(lambda s: s and s.get('timing') is not None, 10)
+        if status['timing'] != pal or status['ready']:
+            raise c.Failed(f'a PAL game waiting for its first step gave {status}')
+        steps = 100
+        began = time.monotonic()
+        for frame in range(steps):
+            session.host.send_message({'type': 'step', 'frame': frame, 'ports': [
+                {'buttons': 0, 'leftX': 0, 'leftY': 0, 'rightX': 0, 'rightY': 0}]})
+        session.read(lambda m: m.get('type') == 'sync' and m['frame'] == steps - 1, 30)
+        took = time.monotonic() - began
+        print(f'      {steps} paced lockstep steps of a PAL game: {took:.2f} s')
+        if took < 0.95 * (steps - 1) / 50:
+            raise c.Failed(f'{steps} paced lockstep steps of a 50 Hz game took {took:.2f} s')
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
         session.call('release')
 
         session.call('start', {'core': session.paths['disc'], 'disc': session.paths['disc'],
@@ -913,8 +933,9 @@ def ps2_game(program, core, log):
     reports the console, a missing BIOS as errorCode bios the way LRPS2 says it found none, and any
     other failed load as core; it gives the core LRPS2's DualShock 2 and its own memory card,
     renderer, multitap, USB camera, DEV9 hard disk and DEV9 ethernet values whatever the launcher
-    asks, and keeps them out of status; it lists the BIOS as applied at the next start. A PS1 game
-    after it in the same host is a PS1 game again."""
+    asks, and keeps them out of status; it lists the BIOS as applied at the next start. It refuses
+    lockstep (capability ps1Lockstep) for a PS2 game, at start and while it runs. A PS1 game after it
+    in the same host is a PS1 game again."""
     session = Session(program, core, log)
     try:
         work = session.work
@@ -931,7 +952,7 @@ def ps2_game(program, core, log):
         refused = [dict(ps2, console='ps3'), dict(ps2, console=2), dict(ps2, console=None),
                    dict(ps2, disc=str(work / 'discs' / 'game.pbp')), dict(ps2, disc=session.paths['playlist']),
                    dict(ps2, disc=session.paths['playlist'], initialDisc=0), dict(ps2, initialDisc=0),
-                   dict(ps2, console='ps1')]
+                   dict(ps2, console='ps1'), dict(ps2, lockstep={'check': 1})]
         for args in refused:
             if session.error('start', args)['code'] != 'argument':
                 raise c.Failed(f'start {args} was not an argument error')
@@ -969,6 +990,8 @@ def ps2_game(program, core, log):
             raise c.Failed(f'the core was given {given}')
         if session.call('connectedPorts', 2) is not True:
             raise c.Failed('a PS2 game did not take a second controller')
+        if session.call('lockstep', {'check': 1}) is not False:
+            raise c.Failed('a PS2 game entered lockstep')
         session.wait(lambda s: '1 1' in ports.read_text(encoding='utf-8').splitlines(), 5)
         devices = ports.read_text(encoding='utf-8').splitlines()
         if devices[0] != '0 1' or '1 0' not in devices:

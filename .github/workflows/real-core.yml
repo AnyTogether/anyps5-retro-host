@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
-# Boots the real SwanStation core, built with the host's patches, through the host on each system.
-# The BIOS and the program are built here from pcsx-redux's nugget (MIT): OpenBIOS and the psyqo
-# "hello" example. No Sony BIOS or game is used. Each system's core must report the core build
-# identity tools/core_identity.py computes, and the same-core job checks that every system reports
-# the same one (docs/netplay.md "Core build identity"). The ps2 jobs build LRPS2, the PS2 core, with
-# the host's patches and check what the host reports for it without a BIOS (docs/ps2.md).
+# Boots the real SwanStation core, built with the host's patches, through the host on each system,
+# and runs two of them in lockstep. The BIOS and the program are built here from pcsx-redux's
+# nugget (MIT): OpenBIOS and the psyqo "hello" example. No Sony BIOS or game is used. Each
+# system's core must report the core build identity tools/core_identity.py computes, and the
+# same-core job checks that every system reports the same one (docs/netplay.md "Core build
+# identity"). The ps2 jobs build LRPS2, the PS2 core, with the host's patches and check what the
+# host reports for it without a BIOS (docs/ps2.md).
 name: real-core
 on: [push, pull_request]
 permissions:
@@ -106,8 +107,10 @@ jobs:
         run: |
           identity="$(${{ matrix.python }} tools/core_identity.py --swanstation-commit "$SWANSTATION_COMMIT")"
           ${{ matrix.python }} tests/real_core.py --host ${{ matrix.host }} --core ${{ matrix.core }} --bios ps1-files/openbios.bin --program ps1-files/hello.exe --log build/real-core.log --picture build/real-core.png ${{ matrix.opengl }} --expect-core-version "$identity" --core-identity-out "build/core-identity-${{ matrix.os }}.json"
+      - name: Two real cores in lockstep, fed the same input, frame for frame
+        run: ${{ matrix.python }} tests/lockstep_test.py --host ${{ matrix.host }} --core ${{ matrix.core }} --bios ps1-files/openbios.bin --program ps1-files/hello.exe --log build/lockstep.log --frames 600 --syncs-out "build/lockstep-${{ matrix.os }}.json"
       - if: failure()
-        run: tail -200 build/real-core.log || true
+        run: tail -200 build/real-core.log build/lockstep.log || true
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
@@ -118,6 +121,11 @@ jobs:
         with:
           name: core-identity-${{ matrix.os }}
           path: build/core-identity-${{ matrix.os }}.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: lockstep-${{ matrix.os }}
+          path: build/lockstep-${{ matrix.os }}.json
           if-no-files-found: error
 
   same-core:
@@ -136,6 +144,15 @@ jobs:
         run: |
           test "$(ls identities/*.json | wc -l)" -eq 4
           python3 tools/core_identity.py --same identities/*.json --swanstation-commit "$SWANSTATION_COMMIT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: lockstep-*
+          path: lockstep
+          merge-multiple: true
+      - name: Their cold boots in lockstep reach the same RAM everywhere and the same picture per renderer
+        run: |
+          test "$(ls lockstep/*.json | wc -l)" -eq 4
+          python3 tests/lockstep_test.py --same lockstep/*.json
 
   # LRPS2, the PS2 core (docs/ps2.md "The core"), at LRPS2_COMMIT with the host's patches, built with
   # the options its core build identity names. There is no freely licensed PS2 BIOS and LRPS2 boots
