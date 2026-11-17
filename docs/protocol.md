@@ -961,9 +961,15 @@ lowercase hexadecimal digits, or `null` when the core cannot give them:
 | `video` | The last picture published by this frame or an earlier one: its width and height as two 32-bit little-endian integers, then the red, green and blue bytes of each pixel, top row first, whichever pixel format the ring has. `null` before the first picture |
 | `state` | The core's `retro_serialize` data after the frame, in a buffer of `retro_serialize_size` bytes that starts zeroed. The host tells the core the state is for netplay (`RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT` answers `RETRO_SAVESTATE_CONTEXT_ROLLBACK_NETPLAY`) while it serializes it, and `RETRO_SAVESTATE_CONTEXT_NORMAL` at any other time |
 
-Two hosts that ran the same steps from the same start have the same `ram`.
-`video` is the same on two machines only when both draw in software; GPUs may
-round differently. `state` also differs when the core keeps something of the
+Two hosts that ran the same steps from the same start have the same `ram`,
+as long as the game reads no VRAM back while the two draw with different
+renderers ([netplay.md](netplay.md) "Lockstep first, rollback after").
+`video` can be the same on two machines only when both report the same
+`status.hardware`: SwanStation's OpenGL and software renderers draw
+different pictures from the same frames, and GPUs may round differently, so
+it is the same everywhere only when both draw in software. A launcher
+treats a `ram` difference as a desync and compares `video` only between
+hosts with the same `hardware`. `state` also differs when the core keeps something of the
 machine in it: SwanStation's state names the disc's path, so two players'
 `state` match only when both keep the disc at the same path
 ([netplay.md](netplay.md) "Lockstep first, rollback after").

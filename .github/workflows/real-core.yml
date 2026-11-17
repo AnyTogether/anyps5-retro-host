@@ -106,7 +106,7 @@ jobs:
           identity="$(${{ matrix.python }} tools/core_identity.py --swanstation-commit "$SWANSTATION_COMMIT")"
           ${{ matrix.python }} tests/real_core.py --host ${{ matrix.host }} --core ${{ matrix.core }} --bios ps1-files/openbios.bin --program ps1-files/hello.exe --log build/real-core.log --picture build/real-core.png ${{ matrix.opengl }} --expect-core-version "$identity" --core-identity-out "build/core-identity-${{ matrix.os }}.json"
       - name: Two real cores in lockstep, fed the same input, frame for frame
-        run: ${{ matrix.python }} tests/lockstep_test.py --host ${{ matrix.host }} --core ${{ matrix.core }} --bios ps1-files/openbios.bin --program ps1-files/hello.exe --log build/lockstep.log --frames 600
+        run: ${{ matrix.python }} tests/lockstep_test.py --host ${{ matrix.host }} --core ${{ matrix.core }} --bios ps1-files/openbios.bin --program ps1-files/hello.exe --log build/lockstep.log --frames 600 --syncs-out "build/lockstep-${{ matrix.os }}.json"
       - if: failure()
         run: tail -200 build/real-core.log build/lockstep.log || true
       - if: always()
@@ -119,6 +119,11 @@ jobs:
         with:
           name: core-identity-${{ matrix.os }}
           path: build/core-identity-${{ matrix.os }}.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: lockstep-${{ matrix.os }}
+          path: build/lockstep-${{ matrix.os }}.json
           if-no-files-found: error
 
   same-core:
@@ -137,3 +142,12 @@ jobs:
         run: |
           test "$(ls identities/*.json | wc -l)" -eq 4
           python3 tools/core_identity.py --same identities/*.json --swanstation-commit "$SWANSTATION_COMMIT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: lockstep-*
+          path: lockstep
+          merge-multiple: true
+      - name: Their cold boots in lockstep reach the same RAM everywhere and the same picture per renderer
+        run: |
+          test "$(ls lockstep/*.json | wc -l)" -eq 4
+          python3 tests/lockstep_test.py --same lockstep/*.json

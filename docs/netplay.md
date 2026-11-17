@@ -296,13 +296,52 @@ predicted.
 **What a `sync` compares.** Every `check` frames the host hashes the
 console's main RAM, the last picture and the core's serialized state
 (protocol.md "sync"), as RetroArch and GGPO compare checksums to find a
-desync. `ram` must match on every machine. `video` matches only when both
-draw in software, since GPUs may round differently. `state` matches only
-when both machines keep the disc at the same path, because SwanStation's
-state names the disc's path; that also means a state sent to a friend would
-tell them where the game is on the other player's disk. Step 4's patches
-give a state for netplay no path. Until then a launcher compares `ram`, and
-`video` only when both players draw in software.
+desync. `ram` must match on every machine. `video` is a hash of the picture,
+and the picture depends on the renderer, not only on the emulation. `state`
+matches only when both machines keep the disc at the same path, because
+SwanStation's state names the disc's path; that also means a state sent to a
+friend would tell them where the game is on the other player's disk. Step
+4's patches give a state for netplay no path.
+
+**Why Windows' picture hash differs in CI.** In the `real-core` workflow at
+0217758, two cores in lockstep on `hello` gave the same `ram` after 600
+frames on all four systems (`dae990ad0a8fcf7d`), and the same `video` on
+both Ubuntus and macOS (`2a2019e82fedaa1a`), but another `video` on Windows
+(`5d5263a5aec3e61a`). The cause is the renderer, not the host or the
+emulation: the Ubuntu and macOS runners make an OpenGL context in software
+(Mesa's llvmpipe, Apple's software renderer) and report `hardware` `true`,
+while the `windows-2022` runner has no OpenGL 3.3 driver at all, so the
+host there falls back to SwanStation's software renderer (`hardware`
+`false`, "No OpenGL context could be made"). SwanStation's OpenGL and
+software renderers rasterize differently, so the pictures differ although
+the console ran the same frames; two OpenGL implementations agreed here, but
+different GPUs and drivers need not. A real Windows PC with a GPU driver
+draws with OpenGL as Linux and macOS do.
+
+The renderer can reach RAM too: a game that copies VRAM back to the CPU
+(a GPU-to-CPU transfer, as some games do for screen effects) reads it from
+the renderer's VRAM. With the OpenGL renderer that is the GPU's copy, unless
+`swanstation_GPU_UseSoftwareRendererForReadbacks` is on, which answers
+readbacks from a software renderer kept alongside. `hello` reads nothing
+back, which is why its `ram` matched.
+
+So a sync check must:
+
+- compare `ram` always; a difference is a desync;
+- compare `video` only between two hosts that report the same
+  `status.hardware`, and treat a difference there as a warning to log, not a
+  desync, unless both draw in software;
+- compare `state` only when both keep the disc at the same path (until step
+  4); and
+- for a match between renderers to be safe for games that read VRAM back,
+  have both players' launchers start the game with the same
+  `swanstation_GPU_UseSoftwareRendererForReadbacks` value, `true` when
+  either draws with OpenGL (proposal; the option is one a launcher may
+  already send at `start`).
+
+The `real-core` workflow's `same-core` job checks this across systems: it
+compares the cold-boot syncs each system's lockstep test wrote, `ram` for
+all four and `video` between the systems that report the same `hardware`.
 
 ## Lobby, seats and controller ports
 
@@ -413,4 +452,6 @@ identity when it adds a SwanStation patch:
     with their own copy of the disc in a different folder. Every frame's
     main RAM and picture must match; the state is not compared ("What a
     `sync` compares"). The `real-core` workflow runs it on Linux, macOS and
-    Windows for 600 frames.
+    Windows for 600 frames, and its `same-core` job compares those syncs
+    across the four systems (`--syncs-out`, `--same`): `ram` on all of
+    them, `video` between the systems that report the same `hardware`.

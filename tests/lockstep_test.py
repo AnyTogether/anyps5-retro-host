@@ -9,9 +9,19 @@ state hashes when both keep the disc at the same path.
 With the test core the inputs reach its RAM, so the test also checks that a different input shows
 up as a different hash, the refusals of lockstep, that leaving and entering it falls between two
 frames, and its protocol errors. With --bios and --program it runs the real SwanStation core on a
-disc made by make_test_disc.py, each player with their own copy in a folder of its own."""
+disc made by make_test_disc.py, each player with their own copy in a folder of its own.
+
+With --syncs-out it also writes the cold boot's syncs and the game's status.hardware to a JSON file,
+and
+
+    python3 tests/lockstep_test.py --same <file>...
+
+compares the files several systems wrote, as two players' launchers compare syncs
+(docs/netplay.md "Lockstep first, rollback after"): every frame's ram must be the same on all of
+them, and its video on all of them that report the same hardware."""
 
 import argparse
+import json
 import random
 import shutil
 import sys
@@ -253,6 +263,11 @@ def play(options):
         print(f'cold boot: {compared} frames in lockstep match in RAM and picture'
               f'{"" if match.real else " and state"} '
               f'({time.monotonic() - began:.1f} s); last {boot["host"][-1]}')
+        if options.syncs_out:
+            hardware = first.call('status')['hardware']
+            syncs = [{'frame': s['frame'], 'ram': s['ram'], 'video': s['video']} for s in boot['host']]
+            Path(options.syncs_out).write_text(json.dumps({'hardware': hardware, 'syncs': syncs}) + '\n',
+                                               encoding='utf-8')
         pictures = len({s['video'] for s in boot['host'] if s['video']})
         print(f'cold boot: {pictures} different pictures among them')
         if pictures < 2 or len({s['ram'] for s in boot['host']}) < 2:
@@ -403,15 +418,53 @@ def protocol_errors(match):
     print('steps out of order or outside lockstep are protocol errors')
 
 
+def same_systems(paths):
+    """Compares the --syncs-out files of several systems; returns 0 when they agree."""
+    written = {Path(path).name: json.loads(Path(path).read_text(encoding='utf-8')) for path in paths}
+    if len(written) < 2:
+        print(f'FAILED: only {len(written)} files to compare')
+        return 1
+    frames = {name: [sync['frame'] for sync in value['syncs']] for name, value in written.items()}
+    if len({tuple(found) for found in frames.values()}) != 1 or not next(iter(frames.values())):
+        print(f'FAILED: the files hold different frames: { {name: len(found) for name, found in frames.items()} }')
+        return 1
+    groups = {}
+    for name, value in sorted(written.items()):
+        groups.setdefault(value['hardware'], []).append(name)
+        print(f'{name}: hardware={value["hardware"]} last={value["syncs"][-1]}')
+    for index, frame in enumerate(next(iter(frames.values()))):
+        rams = {value['syncs'][index]['ram'] for value in written.values()}
+        if len(rams) != 1 or None in rams:
+            print(f'FAILED: frame {frame}: the systems have different RAM: '
+                  f'{ {name: value["syncs"][index]["ram"] for name, value in written.items()} }')
+            return 1
+        for hardware, names in groups.items():
+            videos = {written[name]['syncs'][index]['video'] for name in names}
+            if len(videos) != 1:
+                print(f'FAILED: frame {frame}: systems with hardware={hardware} have different pictures: '
+                      f'{ {name: written[name]["syncs"][index]["video"] for name in names} }')
+                return 1
+    count = len(next(iter(frames.values())))
+    print(f'{count} frames: the same RAM on all {len(written)} systems; the same picture within each renderer '
+          f'({", ".join(f"hardware={hardware}: {len(names)}" for hardware, names in sorted(groups.items()))})')
+    return 0
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', required=True)
-    parser.add_argument('--core', required=True)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--same', nargs='+', metavar='FILE', help='Compare the --syncs-out files of several systems')
+    parser.add_argument('--host')
+    parser.add_argument('--core')
     parser.add_argument('--log')
     parser.add_argument('--bios', help='OpenBIOS, 512 KiB: run the real SwanStation core')
     parser.add_argument('--program', help='The PS-EXE to put on the disc, with --bios')
     parser.add_argument('--frames', type=int, default=600, help='Frames to compare from a cold boot')
+    parser.add_argument('--syncs-out', help="Write the cold boot's syncs and status.hardware here")
     options = parser.parse_args()
+    if options.same:
+        return same_systems(options.same)
+    if not options.host or not options.core:
+        parser.error('--host and --core are needed')
     if (options.bios is None) != (options.program is None):
         parser.error('--bios and --program go together')
     # The ring access library is built next to the host, as real_core.py finds it.

@@ -390,7 +390,12 @@ A crash gives none of these, so the tests expect the exact code.
   `make_test_disc.py` disc, each player with their own copy in a folder of
   its own, which the `real-core` workflow does for 600 frames on each
   system; there `ram` and `video` must match, and `state` is not compared,
-  since SwanStation's state names the disc's path. For lockstep the fake
+  since SwanStation's state names the disc's path. `--syncs-out` writes that
+  cold boot's syncs and `status.hardware`, and `real-core.yml`'s `same-core`
+  job compares the four systems' files with `--same`: every frame's `ram`
+  on all of them, and its `video` between the systems with the same
+  `hardware` ([netplay.md](netplay.md) "Lockstep first, rollback after" says
+  why Windows' picture differs there). For lockstep the fake
   core keeps four words of "system RAM" (the frame count, a mix of every
   input it read, and the last buttons of each port) and serializes them with
   its rumble state and memory card.
