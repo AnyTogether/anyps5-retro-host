@@ -694,10 +694,11 @@ Loads and starts a PS1 game, or, with the `ps2` capability and `console`
 | `initialDisc` | integer 0 to 127, optional | Only for an `.m3u`: the index of the playlist entry to insert at boot. With any other `disc`, and for a PS2 game, it is an `argument` error |
 | `lockstep` | object, optional | Capability `ps1Lockstep`: the game starts in [lockstep](#lockstep), as the `lockstep` method's argument says, on the host's empty memory card rather than the player's, and runs not even its first frame before a `step`. For a PS2 game it is an `argument` error |
 
-A PS2 game's memory card is the core's own: per LRPS2's source, not yet seen
-in a running game, it keeps card 1 as `<disc's name without its
-extension>.ps2` in `saves`, creating it formatted when it is missing, and
-writes it itself, so the `.srm` rules above and `cardUnreadable` do not cover
+A PS2 game's memory card is the core's own: LRPS2 keeps card 1 as `<disc's
+name without its extension>.ps2` in `saves`. When the file is missing it
+creates a blank, unformatted 8 MiB card (every byte 0xFF, `create_card` in
+LRPS2's `pcsx2/MemoryCardFile.c`), which a game offers to format before its
+first save. The core writes the card itself, so the `.srm` rules above and `cardUnreadable` do not cover
 it. The host gives LRPS2 fixed values for `pcsx2_shared_memory_cards`
 (`disabled`, which makes that per-game card), `pcsx2_renderer` (`Auto`),
 `pcsx2_multitap` (`disabled`), `pcsx2_usb_camera` (`disabled`, so the core
