@@ -13,8 +13,9 @@ Version 1 runs one PS1 game for local players: start, play, change discs,
 change settings, stop. The `coreIdentity` capability adds the core build
 identity two players' launchers compare before PS1 online play
 ([netplay.md](netplay.md) "Core build identity"), and `gameTiming` the
-game's frame rate and region, which a match's frame clock follows
-([netplay.md](netplay.md) "Frame rate"). Online play itself, PS2 and
+frame rate the host paces the game to and the console's region. A launcher
+may use it, for example to pace an online match ([netplay.md](netplay.md)
+"Frame rate", a proposal). Online play itself, PS2 and
 PS3 are later capabilities (see [Capabilities](#capabilities)).
 
 The words MUST, MUST NOT and SHOULD are used as in RFC 2119.
@@ -488,7 +489,7 @@ a method whose capability the host did not list.
 | --- | --- |
 | `ps1` | The methods below, for PS1 games, with controller ports 1 and 2 |
 | `coreIdentity` | `core` in [`status`](#status): the loaded core's name and build identity, which two players' launchers compare before a match |
-| `gameTiming` | `timing` in [`status`](#status): the frame rate the host paces the game to and the game's region, which a launcher's frame clock follows in an online match |
+| `gameTiming` | `timing` in [`status`](#status): the frame rate the host paces the game to and the console's region. A launcher may use it, for example to pace an online match ([netplay.md](netplay.md) "Frame rate", a proposal) |
 
 Later versions add capabilities such as PS1 online play, PS2 and PS3.
 
@@ -714,7 +715,7 @@ No argument. Returns `null` when no game is loaded, or:
 | `options` | object | Each core option the player can change now, by key |
 | `cardUnreadable` | boolean | Memory card 1's file is there but the host could not read it as a card (for example, it is not the core's card size), so it is left as it is and this game's saves are not written anywhere; the launcher can tell the player so. A launcher treats a status without this field as `false` |
 | `core` | object or null | Capability `coreIdentity`: the core the game loaded, or `null` until it is loaded and when it could not be (`errorCode` `core`). It stays once the game has ended. See below |
-| `timing` | object or null | Capability `gameTiming`: the game's frame rate and region, or `null` until the core has loaded the game and when it did not (a game that ended with `bios`, `disc` or `core` before its first frame). It stays once the game has ended. See below |
+| `timing` | object or null | Capability `gameTiming`: the frame rate the host paces the game to and the console's region, or `null` until the core has loaded the game and when it did not (a game that ended with `bios`, `disc` or `core` before its first frame). It stays once the game has ended. See below |
 | `discs` | object, optional | Present for multi-disc games |
 
 | `errorCode` | Meaning |
@@ -751,10 +752,10 @@ script keeps SwanStation's own `version` (`1.0.0 ` and a git description).
 Before a match each launcher compares both strings with its friend's, and
 plays online only when both are equal and `version` has the `anyps5-1-`
 form; anything else is a different core. The host does not judge the value.
-A host without the `coreIdentity` capability sends no `core`, and one
-without `gameTiming` no `timing`; a launcher plays local games with it as
-before and does not play online with it (session `older-host-without-core`,
-whose host lists only `ps1`).
+A host without the `coreIdentity` capability sends no `core`; a launcher
+plays local games with it as before and does not play online with it
+(session `older-host-without-core`, whose host lists only `ps1`). A host
+without `gameTiming` sends no `timing`.
 
 `timing` has `fps` and `region`:
 

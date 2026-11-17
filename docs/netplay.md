@@ -22,8 +22,9 @@ it is built.
 
 Built so far: the core build identity (capability `coreIdentity`, `core` in
 protocol.md "status"), which two players' launchers compare before a match,
-and the game's frame rate and region (capability `gameTiming`, `timing` in
-protocol.md "status"), which a match's frame clock follows. The proposed
+and the frame rate the host paces the game to and the console's region
+(capability `gameTiming`, `timing` in protocol.md "status"), which a
+launcher may use, for example to pace a match. The proposed
 steps after them are in [Steps](#steps).
 
 ## What others do
@@ -196,37 +197,27 @@ players need the same host release to play together.
 
 ## Frame rate
 
-> What the host reports, `status.timing`, is built. How a match's clock would
-> use it (lockstep, rollback, round trips) belongs to the proposal.
+> What the host reports, `status.timing`, is built: the frame rate the host
+> paces the game to and the console's region. A launcher may use it, for
+> example to pace an online match; how a match's clock would do that is part
+> of the proposal ([Steps](#steps), "Frame clock").
 
-Once the host runs one frame per input (step 3 in [Steps](#steps)), the
-launcher's frames are the game's frames, and in rollback (step 5) the
-launcher's frame clock is the game's only clock: the host runs each step as
-it comes. That clock must run at the game's own rate. A PS1 game does not
-always run at 60 frames a second: SwanStation gives the vertical frequency
-of the video mode the game set, about 60 for NTSC and 50 for PAL (a European
-game sets PAL), and gives a new one when the game changes its mode. At
-631f0fb `real_core.py` measured 59.817 for a progressive NTSC mode and
-49.747 for a PAL mode, the same on Windows, Linux and macOS. A clock fixed
-at 60 would run a PAL game a fifth too fast, and an NTSC game slightly off
-its console's rate.
+A PS1 game does not always run at 60 frames a second: SwanStation gives the
+vertical frequency of the video mode the game set, about 60 for NTSC and 50
+for PAL (a European game sets PAL), and gives a new one when the game
+changes its mode. At 631f0fb `real_core.py` measured 59.817 for a
+progressive NTSC mode and 49.747 for a PAL mode, the same on Windows, Linux
+and macOS. Pacing fixed at 60 would run a PAL game a fifth too fast, and an
+NTSC game slightly off its console's rate.
 
 RetroArch paces its main loop to the core's `retro_system_av_info`
-`timing.fps` and follows `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO`; GGPO leaves
-the frame rate to the game, which advances its own clock. The host already
-does the first when it keeps its own time, and with capability `gameTiming`
+`timing.fps` and follows `RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO`. The host
+does the same when it keeps its own time, and with capability `gameTiming`
 it reports that rate, and the core's `retro_get_region`, as `status.timing`
-([protocol.md](protocol.md) "status"), so the launcher's clock can be the
-second: it steps a frame every 1 ÷ `fps` seconds and takes a new `fps` from
+([protocol.md](protocol.md) "status"); a new `fps` reaches the launcher with
 the next `status`. The value comes from the emulated console, so both
 players' hosts report the same rate at the same frame; it is not a measure
 of either machine's speed.
-
-The input delay, the round trip in frames and whether a rollback fits in a
-frame are all counted in frames of that length: 16.7 ms in an NTSC game and
-20 ms in a PAL one. With an input delay of half the round trip in frames
-plus one, at most 8, the longest round trip a match takes is about 230 ms in
-an NTSC game and 280 ms in a PAL one.
 
 ## Steps
 
@@ -250,6 +241,29 @@ identity when it adds a SwanStation patch:
    input differs, loads the state before the first wrong frame and runs
    again, between two frames.
 6. `syncXxh3`: cheaper `sync` hashes, and checks that leave the state out.
+
+### Frame clock
+
+> **Proposal, not agreed.** Whether the launcher drives a match's frames at
+> all, and how, depends on the frame-clock model, the transport and the
+> relay, which the maintainers have not settled.
+
+If the host ran one frame per input (step 3), the launcher's frames would be
+the game's frames, and in rollback (step 5) the launcher's frame clock would
+be the game's only clock: the host would run each step as it came. That
+clock would then have to run at the game's own rate. GGPO leaves the frame
+rate to the game, which advances its own clock; with `status.timing` a
+launcher's clock could do the same, stepping a frame every 1 ÷ `fps`
+seconds and taking a new `fps` from the next `status`.
+
+The input delay, the round trip in frames and whether a rollback fits in a
+frame would then all be counted in frames of that length: 16.7 ms in an
+NTSC game and 20 ms in a PAL one. For example, with an input delay of half
+the round trip in frames plus one, at most 8, the longest round trip a
+match could take would be about 230 ms in an NTSC game and 280 ms in a PAL
+one. That is an illustration of the arithmetic, not a latency budget: the
+budget, and whether a relayed connection meets it, belong to the transport
+and relay question that is still open.
 
 ## Tests
 
