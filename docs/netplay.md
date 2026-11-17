@@ -137,9 +137,11 @@ option MSB_FIRST=OFF
   into one FMA instruction where the target has one, as arm64 always does,
   and the result is rounded once instead of twice. The patch
   `swanstation-02-no-fp-contraction` therefore builds with
-  `-ffp-contract=off` on GCC and Clang. It is not an `option` line, because
-  no build can turn it off without changing the patch, and the patch's hash
-  is already in the identity. MSVC needs no flag: from Visual Studio 2022
+  `-ffp-contract=off` on GCC and Clang. It is not an `option` line: the
+  patch's hash is already in the identity, and the release workflow passes
+  no compiler flags that could turn it off again (a build that adds its own,
+  such as a configuration's flags, is outside the promise below, like any
+  other compiler flag). MSVC needs no flag: from Visual Studio 2022
   (the `windows-2022` runner's), `/fp:precise`, its default, does not
   contract unless `/fp:contract` is given; earlier versions could, and
   SwanStation sets no `/fp` option. The CPU recompiler SwanStation builds
