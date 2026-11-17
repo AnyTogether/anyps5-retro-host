@@ -332,9 +332,9 @@ merged yet.
 
 ## Not done yet
 
-- Booting a PS2 program in CI, and running PS2 games on Linux and macOS, with
-  save states, or with the core options other than `pcsx2_upscale_multiplier`
-  changed.
+- Booting in CI, and seeing Linux and macOS, save states and the core
+  options other than `pcsx2_upscale_multiplier` work in a running
+  PS2 game.
 - The launcher side, not yet planned by the launchers: the proposed Settings ›
   Emulators PS2 row, BIOS check and copy, starting PS2 games with `console`,
   and showing `bios`.
