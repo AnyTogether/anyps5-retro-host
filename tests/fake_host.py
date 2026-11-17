@@ -769,13 +769,15 @@ class Fake:
     def send(self, message, descriptors=()):
         self.link.send_message(message, descriptors)
 
-    def deliver(self, data, descriptors, armed, welcome=False):
+    def deliver(self, data, descriptors, armed, welcome=False, publish=None):
         if armed:
             self.pause()
         if welcome:
             self.link.mark_welcome()
         if armed:
             self.arm()
+        if publish is not None:
+            self.ring.publish(publish)
         self.link.send(data, descriptors)
 
     def spare_descriptors(self, count):
@@ -823,13 +825,12 @@ class Fake:
             if not WINDOWS and count:
                 attach = [memory.descriptor]
                 count -= 1
-        if kind == 'frame' and 'publish' in step:
-            if self.ring is None:
-                raise Failed('the session publishes a frame before any ring')
-            self.ring.publish(step['publish'])
+        publish = step.get('publish') if kind == 'frame' else None
+        if publish is not None and self.ring is None:
+            raise Failed('the session publishes a frame before any ring')
         spare = self.spare_descriptors(count)
         try:
-            self.deliver(encode(message), attach + spare, armed, kind == 'welcome')
+            self.deliver(encode(message), attach + spare, armed, kind == 'welcome', publish)
         finally:
             for descriptor in spare:
                 os.close(descriptor)

@@ -395,8 +395,16 @@ A crash gives none of these, so the tests expect the exact code.
   descriptor from the launcher (Linux and macOS), an extra call during a
   `wait`, a launcher that never ends the host, and a launcher that ends it
   one step early (before the breaking message of a protocol error session,
-  and at the start of a `wait`). Run it with
-  `python3 tests/fake_host_selftest.py`.
+  and at the start of a `wait`). A launcher whose raster thread draws a
+  frame that breaks a frame check before its `frame` message arrives must
+  pass. The self-test cuts each `silence` or `wait` before an end to 1
+  second, so before it ends the fake it waits for the report to show
+  `awaitingKill`; ending it on its own clock would race the fake's pause and
+  report write on a slow runner. A `ring` followed by a `publish` is checked
+  only for the fields the launcher checks when a ring arrives, because the
+  host may publish into a ring as soon as it has sent it (protocol.md, "Frame
+  ring": the host never waits); the `frame` step checks the rest. Run it
+  with `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
   supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
   under ThreadSanitizer (on 24.04). The Windows runner's own `opengl32.dll`
@@ -558,12 +566,17 @@ What the fake does with each step:
   Before a host step the fake keeps checking the launcher's messages during
   the pause and answers pings; any other message is dropped, as it is while
   the fake waits to be ended. A `silence` or `wait` goes on as written. When
-  the pause is over, the report is set to `awaitingKill` and then the host
-  step's message is written. The report is set just before the write, not
-  after it: a launcher may end the host the moment it has read the message,
+  the pause is over, the report is set to `awaitingKill`, then a `frame`
+  step's `publish` is written into the ring, and then the host step's
+  message is written. The report is set just before the write, not after
+  it: a launcher may end the host the moment it has read the message,
   before the fake could write a report, and setting it after would fail a
-  correct launcher. A launcher that ends the host early does it during the
-  pause, after the message before.
+  correct launcher. The `publish` is part of the breaking step, so it too
+  waits for the pause: a launcher's raster thread reads the ring whenever it
+  draws, and a frame that breaks a frame check, written before the pause,
+  would let a correct launcher end the host before the fake expects it. A
+  launcher that ends the host early does it during the pause, after the
+  message before.
 - **`launcherKillsHost`**, and the end of a session whose outcome is not
   `clean`: waits `--kill-within` seconds (default 10) to be ended, and fails
   after that. End-of-stream is ignored then.
