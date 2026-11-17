@@ -420,9 +420,13 @@ A crash gives none of these, so the tests expect the exact code.
 ## SwanStation patches
 
 The host's SwanStation is upstream SwanStation at `SWANSTATION_COMMIT` with
-the patches in [`cores/patches`](../cores/patches), applied in the order of
-their names by
+the patches in [`cores/patches`](../cores/patches), applied in the byte order
+of their names by
 [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh).
+The script sets `LC_ALL=C`, so bash's glob sorts the names as
+`tools/core_identity.py` does, by bytes, on every machine. Patch names carry
+two-digit numbers (`swanstation-01-…`), so a tenth patch still sorts after
+the ninth.
 The `real-core` and `release` workflows apply them after fetching SwanStation
 and before building it, and the release's source archive holds the patched
 source. The script refuses a checkout that differs from its commit in any
@@ -435,9 +439,30 @@ one moved to a new `SWANSTATION_COMMIT` is made again with `git diff`
 against that commit, after the patches before it. The patches are
 GPL-3.0-only, as SwanStation is ([REUSE.toml](../REUSE.toml)).
 
+**Notices that SwanStation was modified.** GPL-3.0 section 5(a) asks a
+modified work to carry prominent notices that it was modified, with a
+relevant date. The patches give them as Debian's patched packages do (Fedora
+asks for the same reason that each patch in a spec file carries a comment
+saying what it is): each patch starts with a
+[DEP-3](https://dep-team.pages.debian.net/deps/dep3/) header (`Description`,
+`Author`, `Forwarded: not-needed`, `Last-Update`),
+which `git apply` skips, and adds to the top of every file it changes a line
+`Modified on <Last-Update> by anyps5-retro-host's <patch file name>` and what
+it changed (`Added on` for a file it creates, which also gets a GPL-3.0
+licence header in SwanStation's own `// Licensed under …` form). The date is
+written in the patch, not read from a clock or from git, so the same patches
+give the same bytes, and the same core build identity, on every machine.
+`anyps5-core-source.txt` has the line `modified <date>`, the latest
+`Last-Update` of the patches, and each release's `SOURCE.txt` says
+SwanStation was modified on that date. Whoever changes a patch sets its
+`Last-Update` to that day and updates the notices it adds; the `real-core`
+and `release` workflows fail otherwise, because `tools/core_identity.py`
+refuses a patch without one `Last-Update` line in its header or without the
+notice, with that date and its own name, in each file it changes.
+
 | Patch | What it changes |
 | --- | --- |
-| [`swanstation-1-core-build-identity`](../cores/patches/swanstation-1-core-build-identity.patch) | When `anyps5-core-source.txt` is beside SwanStation's top `CMakeLists.txt`, CMake adds the build options that change what the core computes (`MSB_FIRST`) to it, and `library_version` becomes `anyps5-1-<SHA-256 of the whole>`. Without the file the core keeps SwanStation's own `library_version` |
+| [`swanstation-01-core-build-identity`](../cores/patches/swanstation-01-core-build-identity.patch) | When `anyps5-core-source.txt` is beside SwanStation's top `CMakeLists.txt`, CMake adds the build options that change what the core computes (`MSB_FIRST`) to it, and `library_version` becomes `anyps5-1-<SHA-256 of the whole>`. Without the file the core keeps SwanStation's own `library_version` |
 
 To build SwanStation as the workflows do:
 
@@ -601,7 +626,8 @@ release can be packed and checked by hand the same way.
   the one libretro-common file the host uses) and
   `licenses/swanstation-libretro-common-MIT.txt`, `-glad-MIT.txt` (Khronos'
   `khrplatform.h`) and `-stb-MIT.txt` (stb's MIT choice), and `SOURCE.txt` naming the repository
-  and commit the host is built from, the SwanStation commit and the source
+  and commit the host is built from, the SwanStation commit, the patches and
+  the date they last modified SwanStation ("SwanStation patches"), and the source
   archive. Everything sits at the
   top of the zip except the licences. The zip is the same bytes for the same
   inputs (entries sorted by name, one fixed time, fixed permissions), so a

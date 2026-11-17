@@ -94,16 +94,23 @@ is of this manifest, one line each, with LF endings:
 ```
 anyps5-retro-host core source 1
 swanstation <SwanStation commit, 40 hex digits>
+modified <YYYY-MM-DD, the latest Last-Update of the patches>
 patch <SHA-256 of the patch file> <patch file name>     (one per patch, in the order applied)
 option MSB_FIRST=OFF
 ```
 
 - `cores/apply-swanstation-patches.sh` writes the first lines as
   `anyps5-core-source.txt` into the SwanStation checkout after applying the
-  patches: the commit checked out and each patch's bytes, which are LF in
-  every checkout (`.gitattributes`). The release's source archive holds that
-  file, so building it again gives the same identity.
-- The patch `swanstation-1-core-build-identity` adds the `option` lines in
+  patches: the commit checked out, the date the patches last modified
+  SwanStation, and each patch's bytes, which are LF in every checkout
+  (`.gitattributes`). The patches are applied and listed in the byte order
+  of their names (`LC_ALL=C`, two-digit numbers), as `tools/core_identity.py`
+  sorts them. The date is the `Last-Update` written in each patch's header
+  (host.md "SwanStation patches"), never the clock or a git date, so it is
+  the same on every machine and changes only with a patch. The release's
+  source archive holds that file, so building it again gives the same
+  identity.
+- The patch `swanstation-01-core-build-identity` adds the `option` lines in
   SwanStation's CMake, from the values the build is configured with, and
   hashes the whole. The only build option of SwanStation that changes what
   the core computes is `MSB_FIRST` (the byte order). Compiler, build type

@@ -1,17 +1,34 @@
+Description: Report the AnyPS5 core build identity as library_version
+ anyps5-retro-host's cores/apply-swanstation-patches.sh writes anyps5-core-source.txt
+ beside SwanStation's top CMakeLists.txt. With that file, CMake adds the build options
+ that change what the core computes (MSB_FIRST) to it, and library_version becomes
+ anyps5-1-<SHA-256 of the whole> (anyps5-retro-host docs/netplay.md "Core build
+ identity"). Without it the core keeps SwanStation's own library_version.
+Author: AnyPS5 Desktop contributors
+Forwarded: not-needed
+Last-Update: 2026-11-17
+
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index cac0d2f..8b864be 100644
+index cac0d2f..8848392 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -162,6 +162,30 @@ if(MSB_FIRST)
+@@ -1,3 +1,6 @@
++# Modified on 2026-11-17 by anyps5-retro-host's swanstation-01-core-build-identity.patch
++# (AnyPS5 Desktop contributors): the AnyPS5 core build identity, below MSB_FIRST.
++
+ cmake_minimum_required(VERSION 3.10)
+ project(swanstation C CXX)
+ 
+@@ -162,6 +165,30 @@ if(MSB_FIRST)
    add_definitions("-DMSB_FIRST=1")
  endif()
  
 +# AnyPS5 core build identity (anyps5-retro-host docs/netplay.md "Core build identity"). The
 +# host's cores/apply-swanstation-patches.sh writes anyps5-core-source.txt beside this file: the
-+# SwanStation commit and the SHA-256 of each patch it applied, in order. The build options that
-+# change what the core computes are added to it here, and library_version becomes
-+# anyps5-1-<SHA-256 of the whole>, the same for the same emulation on every system. Without that
-+# file the core keeps SwanStation's own library_version.
++# SwanStation commit, the date the patches last modified it, and the SHA-256 and name of each
++# patch it applied, in order. The build options that change what the core computes are added to
++# it here, and library_version becomes anyps5-1-<SHA-256 of the whole>, the same for the same
++# emulation on every system. Without that file the core keeps SwanStation's own library_version.
 +set(ANYPS5_CORE_IDENTITY "")
 +set(ANYPS5_CORE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/anyps5-core-source.txt")
 +if(EXISTS "${ANYPS5_CORE_SOURCE}")
@@ -34,10 +51,17 @@ index cac0d2f..8b864be 100644
  enable_testing()
  add_subdirectory(dep)
 diff --git a/src/libretro/CMakeLists.txt b/src/libretro/CMakeLists.txt
-index a6ca192..1d59f1c 100644
+index a6ca192..c694416 100644
 --- a/src/libretro/CMakeLists.txt
 +++ b/src/libretro/CMakeLists.txt
-@@ -11,6 +11,7 @@ add_library(swanstation_libretro SHARED
+@@ -1,3 +1,6 @@
++# Modified on 2026-11-17 by anyps5-retro-host's swanstation-01-core-build-identity.patch
++# (AnyPS5 Desktop contributors): the AnyPS5 core build identity's header folder.
++
+ add_library(swanstation_libretro SHARED
+   libretro_audio_stream.cpp
+   libretro_audio_stream.h
+@@ -11,6 +14,7 @@ add_library(swanstation_libretro SHARED
  )
  
  target_link_libraries(swanstation_libretro PRIVATE core common glad vulkan-loader libretro-common)
@@ -47,18 +71,30 @@ index a6ca192..1d59f1c 100644
  set_target_properties(swanstation_libretro PROPERTIES PREFIX "")
 diff --git a/src/libretro/anyps5_core_identity.h.in b/src/libretro/anyps5_core_identity.h.in
 new file mode 100644
-index 0000000..a37b5cc
+index 0000000..91b555a
 --- /dev/null
 +++ b/src/libretro/anyps5_core_identity.h.in
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,8 @@
++// Copyright 2026 AnyPS5 Desktop contributors
++// Licensed under GPL-3.0, as SwanStation is
++// Refer to the LICENSE file included.
++// Added on 2026-11-17 by anyps5-retro-host's swanstation-01-core-build-identity.patch.
++
 +#pragma once
 +
 +#define ANYPS5_CORE_IDENTITY "@ANYPS5_CORE_IDENTITY@"
 diff --git a/src/libretro/libretro_host_interface.cpp b/src/libretro/libretro_host_interface.cpp
-index fc7a9a1..f30f253 100644
+index 6f97a84..76a6c48 100644
 --- a/src/libretro/libretro_host_interface.cpp
 +++ b/src/libretro/libretro_host_interface.cpp
-@@ -26,6 +26,7 @@
+@@ -1,3 +1,6 @@
++// Modified on 2026-11-17 by anyps5-retro-host's swanstation-01-core-build-identity.patch
++// (AnyPS5 Desktop contributors): library_version is the AnyPS5 core build identity when there is one.
++
+ #include "core/host_interface.h"
+ #include "common/byte_stream.h"
+ #include "common/cd_image.h"
+@@ -26,6 +29,7 @@
  #include "libretro_settings_interface.h"
  #include "core/gpu_hw_vulkan.h"
  #include "version.h"
@@ -66,7 +102,7 @@ index fc7a9a1..f30f253 100644
  #include <array>
  #include <cstring>
  #include <tuple>
-@@ -121,7 +122,10 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info)
+@@ -118,7 +122,10 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info)
  #ifndef GIT_VERSION
  #define GIT_VERSION "undefined"
  #endif
