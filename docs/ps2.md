@@ -12,8 +12,10 @@ BIOS reaches it, how it draws, what the protocol gains, and what is left.
 **What is built.** The host lists `ps2`, takes `start.console: "ps2"` with a
 PS2 disc, loads LRPS2, reports its name and core build identity in
 `status.core` and the console in `status.console`, gives it a DualShock 2 per
-connected port, fixes three of its options, and ends a game with `errorCode`
-`bios` when LRPS2 finds no BIOS. The `real-core` workflow builds LRPS2 at
+connected port, fixes seven of its options (among them the ethernet adapter,
+the USB camera and the hard disk, so it opens no network connection, webcam or
+microphone and creates no disk image), refuses a core built for the other
+console, and ends a game with `errorCode` `bios` when LRPS2 finds no BIOS. The `real-core` workflow builds LRPS2 at
 `LRPS2_COMMIT` with the host's patch on Windows, Linux and macOS and checks,
 with the real core, that it loads, reports `ps2`, its name and identity, and
 the missing BIOS; the controller and option handling is checked with the
