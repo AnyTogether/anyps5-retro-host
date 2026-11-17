@@ -463,6 +463,7 @@ notice, with that date and its own name, in each file it changes.
 | Patch | What it changes |
 | --- | --- |
 | [`swanstation-01-core-build-identity`](../cores/patches/swanstation-01-core-build-identity.patch) | When `anyps5-core-source.txt` is beside SwanStation's top `CMakeLists.txt`, CMake adds the build options that change what the core computes (`MSB_FIRST`) to it, and `library_version` becomes `anyps5-1-<SHA-256 of the whole>`. Without the file the core keeps SwanStation's own `library_version` |
+| [`swanstation-02-no-fp-contraction`](../cores/patches/swanstation-02-no-fp-contraction.patch) | GCC and Clang build SwanStation with `-ffp-contract=off`, so no multiply and add is fused into one FMA instruction on one system and not on another ([netplay.md](netplay.md) "Core build identity"). MSVC needs nothing: from Visual Studio 2022 its default `/fp:precise` does not contract without `/fp:contract` |
 
 To build SwanStation as the workflows do:
 

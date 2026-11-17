@@ -128,12 +128,24 @@ option MSB_FIRST=OFF
 - The patch `swanstation-01-core-build-identity` adds the `option` lines in
   SwanStation's CMake, from the values the build is configured with, and
   hashes the whole. The only build option of SwanStation that changes what
-  the core computes is `MSB_FIRST` (the byte order). Compiler, build type
-  among the release ones, MSVC runtime and macOS deployment target change
-  how fast it runs, not what it computes; a Debug build already reports
-  another `library_name`. The CPU recompiler SwanStation builds for x64 or
-  arm64 is meant to compute exactly as its interpreter does, and a fault in
-  one shows as a desync in a match's hashes, not as a different identity.
+  the core computes is `MSB_FIRST` (the byte order). Build type among the
+  release ones, MSVC runtime and macOS deployment target change how fast it
+  runs, not what it computes; a Debug build already reports another
+  `library_name`. The compiler could change what it computes through
+  floating-point contraction: GCC (`-ffp-contract=fast` for the GNU dialects
+  CMake picks) and Clang (`-ffp-contract=on`) may fuse a multiply and an add
+  into one FMA instruction where the target has one, as arm64 always does,
+  and the result is rounded once instead of twice. The patch
+  `swanstation-02-no-fp-contraction` therefore builds with
+  `-ffp-contract=off` on GCC and Clang. It is not an `option` line, because
+  no build can turn it off without changing the patch, and the patch's hash
+  is already in the identity. MSVC needs no flag: from Visual Studio 2022
+  (the `windows-2022` runner's), `/fp:precise`, its default, does not
+  contract unless `/fp:contract` is given; earlier versions could, and
+  SwanStation sets no `/fp` option. The CPU recompiler SwanStation builds
+  for x64 or arm64 is meant to compute exactly as its interpreter does, and
+  a fault in one shows as a desync in a match's hashes, not as a different
+  identity.
 - The script refuses a SwanStation checkout that differs from its commit in
   any way (a staged or unstaged change, an untracked file), so the manifest
   names the source it patched exactly, as Dolphin's `-dirty` mark is meant
@@ -167,9 +179,12 @@ option MSB_FIRST=OFF
 **What it does not cover.** The core options are not in the identity: they
 are chosen per match, the launcher sends both players the same at `start`,
 and `status.options` shows each one's `activeValue`. Nor are the BIOS and the
-disc, which the launchers compare by content. Everything else that can still
-differ between two machines, such as a GPU's rounding at a resolution scale
-above 1x, is what the hashes compared during a match are for. When a patch is
+disc, which the launchers compare by content. Nor is the renderer: a host
+draws with SwanStation's OpenGL renderer when it can make an OpenGL context
+and in software otherwise (`status.hardware`), and the two draw different
+pictures from the same emulation, even at 1x; GPUs can round differently too.
+Everything else that can still differ between two machines is what the hashes
+compared during a match are for. When a patch is
 added or changed, or the SwanStation commit moves, the identity changes, and
 players need the same host release to play together.
 

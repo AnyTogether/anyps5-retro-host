@@ -1,0 +1,39 @@
+Description: Build without floating-point contraction on GCC and Clang
+ GCC and Clang may fuse a multiply and an add into one FMA instruction where the
+ target has one, as arm64 always does, so the same source built for arm64 and x64
+ can round differently. -ffp-contract=off keeps every build with the same AnyPS5
+ core build identity computing alike (anyps5-retro-host docs/netplay.md "Core build
+ identity"). MSVC from Visual Studio 2022 already does not contract under /fp:precise.
+Author: AnyPS5 Desktop contributors
+Forwarded: not-needed
+Last-Update: 2026-11-17
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8848392..7a789cf 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,7 @@
+ # Modified on 2026-11-17 by anyps5-retro-host's swanstation-01-core-build-identity.patch
+ # (AnyPS5 Desktop contributors): the AnyPS5 core build identity, below MSB_FIRST.
++# Modified on 2026-11-17 by anyps5-retro-host's swanstation-02-no-fp-contraction.patch
++# (AnyPS5 Desktop contributors): no floating-point contraction with GCC and Clang.
+ 
+ cmake_minimum_required(VERSION 3.10)
+ project(swanstation C CXX)
+@@ -83,6 +85,16 @@ if((CMAKE_COMPILER_IS_GNUCC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang") AND NOT AP
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-semantic-interposition")
+ endif()
+ 
++# AnyPS5: no floating-point contraction (anyps5-retro-host docs/netplay.md "Core build identity"),
++# so that builds with the same core build identity round alike. GCC (-ffp-contract=fast unless
++# -std=c*) and Clang (-ffp-contract=on) may fuse a multiply and an add into one FMA instruction
++# where the target has one, as arm64 always does, which rounds once instead of twice. MSVC from
++# Visual Studio 2022 does not contract under its default /fp:precise without /fp:contract.
++if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
++  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffp-contract=off")
++  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffp-contract=off")
++endif()
++
+ # Detect C++ version support.
+ set(CMAKE_CXX_STANDARD 17)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
