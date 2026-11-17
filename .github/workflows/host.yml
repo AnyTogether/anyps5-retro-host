@@ -28,6 +28,7 @@ jobs:
       - run: ctest --test-dir build --output-on-failure
       - run: python3 tests/framing_test.py
       - run: python3 tests/trace_test.py
+      - run: python3 tests/package_release_test.py
       - name: Conformance sessions; each fails on a socket that is not AF_UNIX, a bind or listen, or no trace (protocol.md, "Network")
         run: python3 tests/conformance.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --strace build/network.trace
       - name: Host tests, with Mesa's OpenGL for the resolution limits, eight OpenGL games in one host, and an OpenGL game under strace; each fails on what the conformance sessions fail on
@@ -69,6 +70,7 @@ jobs:
       - run: cmake --build build
       - run: ctest --test-dir build --output-on-failure
       - run: python3 tests/framing_test.py
+      - run: python3 tests/package_release_test.py
       - run: python3 tests/conformance.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log
       - name: Host tests, with Apple's OpenGL (the runner has only its software renderer)
         run: python3 tests/host_test.py --host build/anyps5-retro-host --core build/fake_core.so --log build/host.log --require-gpu
@@ -109,6 +111,7 @@ jobs:
       - run: ctest --test-dir build -C Release --output-on-failure -V -R gpu_thread
       - run: ctest --test-dir build -C Release --output-on-failure
       - run: python tests/framing_test.py
+      - run: python tests/package_release_test.py
       - run: python tests/conformance.py --host build/Release/anyps5-retro-host.exe --core build/Release/fake_core.dll --log build/host.log
       - name: Host tests, with Mesa's OpenGL through WGL
         run: python tests/host_test.py --host build/Release/anyps5-retro-host.exe --core build/Release/fake_core.dll --log build/host.log --require-gpu

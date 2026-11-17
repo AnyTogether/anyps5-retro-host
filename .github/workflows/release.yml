@@ -1,0 +1,278 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
+
+# Builds a host release as protocol.md "Finding and checking the host" describes it: for each
+# system the host and SwanStation in anyps5-retro-host-<version>-<os>-<arch>.zip with its .files,
+# then SHA256SUMS over all of them. Each packed zip is unpacked again and must boot the real core.
+# SHA256SUMS is left unsigned: the maintainers sign it with the release key (docs/host.md
+# "Releases"). A tag v<version> must match the version in CMakeLists.txt.
+name: release
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - .github/workflows/release.yml
+      - tools/package_release.py
+      - tests/package_release_test.py
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - tools/package_release.py
+      - tests/package_release_test.py
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  NUGGET_COMMIT: 875bfcbe3ea5d1a0de0de0f3c88c9f977fb9abf4
+  SWANSTATION_COMMIT: 631f0fb31b809e0f889d7c551fe695788e39c1d3
+  # SwanStation's Vulkan headers (dep/vulkan-loader) are Apache-2.0 and name the licence only by
+  # URL, so its text is shipped too: SPDX's copy at a fixed tag, checked by its sha256.
+  APACHE_URL: https://raw.githubusercontent.com/spdx/license-list-data/v3.27.0/text/Apache-2.0.txt
+  APACHE_SHA256: 074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff
+  # The pefile wheel the Windows job checks imports with, pinned by its PyPI sha256.
+  PEFILE_SHA256: 76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - id: version
+        name: Read the version and check the tag and the tested SwanStation commit
+        run: |
+          version="$(sed -n 's/^project(anyps5_retro_host VERSION \([0-9]*\.[0-9]*\.[0-9]*\) .*/\1/p' CMakeLists.txt)"
+          test -n "$version"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "the tag $GITHUB_REF_NAME is not v$version, the version in CMakeLists.txt" >&2
+            exit 1
+          fi
+          grep -q "^  SWANSTATION_COMMIT: $SWANSTATION_COMMIT\$" .github/workflows/real-core.yml || {
+            echo "real-core.yml tests another SwanStation commit than this release ships" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  ps1-files:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++-mipsel-linux-gnu
+      - name: Fetch nugget
+        run: |
+          git init -q nugget
+          git -C nugget fetch -q --depth 1 https://github.com/pcsx-redux/nugget.git "$NUGGET_COMMIT"
+          git -C nugget checkout -q FETCH_HEAD
+          git -C nugget submodule update -q --init --depth 1 --recursive
+      - name: Build OpenBIOS and the hello program
+        run: |
+          make -C nugget/openbios -j4 PREFIX=mipsel-linux-gnu FORMAT=elf32-tradlittlemips BOOT_MODE=fast all
+          make -C nugget/psyqo/examples/hello -j4 PREFIX=mipsel-linux-gnu FORMAT=elf32-tradlittlemips all
+      - run: |
+          mkdir out
+          cp nugget/openbios/openbios.bin out/openbios.bin
+          test "$(stat -c %s out/openbios.bin)" -le 524288
+          truncate -s 524288 out/openbios.bin
+          cp nugget/psyqo/examples/hello/hello.ps-exe out/hello.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ps1-files-for-release
+          path: out
+
+  package:
+    needs: [version, ps1-files]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: windows-x64
+            os: windows-2022
+            host: build/Release/anyps5-retro-host.exe
+            core: swanstation/build/swanstation_libretro.dll
+            unpacked-host: anyps5-retro-host.exe
+            unpacked-core: swanstation_libretro.dll
+            ring-access: build/Release/ring_access.dll
+            python: python
+            opengl: ''
+          - system: linux-x64
+            os: ubuntu-22.04
+            host: build/anyps5-retro-host
+            core: swanstation/build/swanstation_libretro.so
+            unpacked-host: anyps5-retro-host
+            unpacked-core: swanstation_libretro.so
+            ring-access: build/ring_access.so
+            python: python3
+            opengl: --expect-opengl
+          - system: macos-arm64
+            os: macos-15
+            host: build/anyps5-retro-host
+            core: swanstation/build/swanstation_libretro.dylib
+            unpacked-host: anyps5-retro-host
+            unpacked-core: swanstation_libretro.dylib
+            ring-access: build/ring_access.so
+            python: python3
+            opengl: --expect-opengl
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CONFIGURE: >-
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+        -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+        -DCMAKE_OSX_ARCHITECTURES=arm64
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: ps1-files-for-release
+          path: ps1-files
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libegl1 libgl1 libgles2 libegl-mesa0 mesa-utils
+      - name: Fetch SwanStation
+        run: |
+          git init -q swanstation
+          git -C swanstation fetch -q --depth 1 https://github.com/libretro/swanstation.git "$SWANSTATION_COMMIT"
+          git -C swanstation checkout -q FETCH_HEAD
+          git -C swanstation submodule update -q --init --depth 1 --recursive
+      - name: Build SwanStation
+        run: |
+          cmake -S swanstation -B swanstation/build $CONFIGURE
+          cmake --build swanstation/build --config Release --parallel 4
+      - name: Build the host
+        run: |
+          cmake -S . -B build $CONFIGURE
+          cmake --build build --config Release
+      - if: runner.os == 'Windows'
+        name: Check that the Windows files need no Visual C++ runtime
+        run: |
+          echo "pefile==2024.8.26 --hash=sha256:$PEFILE_SHA256" > pefile-requirements.txt
+          python -m pip install --disable-pip-version-check -q --only-binary :all: --require-hashes -r pefile-requirements.txt
+          python - "${{ matrix.host }}" "${{ matrix.core }}" <<'EOF'
+          import sys
+          import pefile
+          for path in sys.argv[1:]:
+              names = [entry.dll.decode().lower() for entry in pefile.PE(path).DIRECTORY_ENTRY_IMPORT]
+              runtime = [name for name in names if name.startswith(('vcruntime', 'msvcp', 'api-ms-win-crt', 'ucrtbase'))]
+              print(path, names)
+              if runtime:
+                  sys.exit(f'{path} imports {runtime}; the release must not need the Visual C++ runtime')
+          EOF
+      - name: Fetch the Apache-2.0 text
+        run: |
+          curl -fsSL "$APACHE_URL" -o apache-2.0.txt
+          echo "$APACHE_SHA256  apache-2.0.txt" | ${{ matrix.python }} -c "import hashlib, sys; digest, name = sys.stdin.read().split(); sys.exit(hashlib.sha256(open(name, 'rb').read()).hexdigest() != digest)"
+      - name: Check how the packer names the host's source
+        run: ${{ matrix.python }} tests/package_release_test.py
+      # macOS: the maintainers' Developer ID signing and notarization of the host and of SwanStation
+      # go here, before packing, because signing changes the files the .files lists (docs/host.md
+      # "Releases").
+      - name: Pack
+        run: |
+          ${{ matrix.python }} tools/package_release.py --version "${{ needs.version.outputs.version }}" \
+            --system ${{ matrix.system }} --host ${{ matrix.host }} --core ${{ matrix.core }} \
+            --core-licence swanstation/LICENSE --core-notices swanstation/dep \
+            --notice swanstation-vulkan-headers-Apache-2.0.txt=apache-2.0.txt \
+            --mit-notice anyps5-retro-host-libretro-h-MIT.txt=3rdparty/libretro-common/include/libretro.h \
+            --mit-notice swanstation-libretro-common-MIT.txt=swanstation/dep/libretro-common \
+            --mit-notice swanstation-glad-MIT.txt=swanstation/dep/glad \
+            --mit-notice swanstation-stb-MIT.txt=swanstation/dep/stb \
+            --swanstation-commit "$SWANSTATION_COMMIT" --out release
+      - name: Unpack the zip, check that SOURCE.txt names this run's source, and boot the real core from it
+        run: |
+          stem="anyps5-retro-host-${{ needs.version.outputs.version }}-${{ matrix.system }}"
+          ${{ matrix.python }} -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "release/$stem.zip" unpacked
+          chmod +x "unpacked/${{ matrix.unpacked-host }}"
+          grep -qxF "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY at commit $GITHUB_SHA." unpacked/SOURCE.txt || {
+            echo "SOURCE.txt does not name $GITHUB_REPOSITORY at $GITHUB_SHA, the source this run built" >&2
+            cat unpacked/SOURCE.txt >&2
+            exit 1
+          }
+          cp "${{ matrix.ring-access }}" unpacked/
+          ${{ matrix.python }} tests/real_core.py --host "unpacked/${{ matrix.unpacked-host }}" \
+            --core "unpacked/${{ matrix.unpacked-core }}" --bios ps1-files/openbios.bin \
+            --program ps1-files/hello.exe --log real-core.log --picture real-core.png ${{ matrix.opengl }}
+      - if: failure()
+        run: tail -200 real-core.log || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: release-${{ matrix.system }}
+          path: release
+          if-no-files-found: error
+
+  # The complete corresponding source of what the zips hold (GPL-2.0 and GPL-3.0): the host and
+  # SwanStation at the released commits, with their submodules, published beside the zips.
+  source:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          submodules: recursive
+          persist-credentials: false
+          path: host
+      - name: Fetch SwanStation
+        run: |
+          git init -q swanstation
+          git -C swanstation fetch -q --depth 1 https://github.com/libretro/swanstation.git "$SWANSTATION_COMMIT"
+          git -C swanstation checkout -q FETCH_HEAD
+          git -C swanstation submodule update -q --init --depth 1 --recursive
+      - name: Pack the source
+        run: |
+          stem="anyps5-retro-host-${{ needs.version.outputs.version }}-source"
+          mkdir -p "$stem" release
+          curl -fsSL "$APACHE_URL" -o "$stem/swanstation-vulkan-headers-Apache-2.0.txt"
+          echo "$APACHE_SHA256  $stem/swanstation-vulkan-headers-Apache-2.0.txt" | sha256sum -c -
+          mv host swanstation "$stem/"
+          tar --exclude=.git --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - "$stem" | gzip -9n > "release/$stem.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: release-source
+          path: release
+          if-no-files-found: error
+
+  sums:
+    needs: [version, package, source]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Write SHA256SUMS and check the release
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 tools/package_release.py --sums release release/*.zip release/*.files release/*-source.tar.gz
+          python3 tools/package_release.py --check release --version "$VERSION" \
+            --host-repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --host-commit "$GITHUB_SHA"
+          test "$(ls release/*.zip | wc -l)" -eq 3
+          (cd release && sha256sum -c SHA256SUMS)
+      # Only a tag's run uploads the artifact the maintainers sign; any other run's artifact is
+      # named for its commit, so it cannot be taken for a release (docs/host.md "Releases").
+      - id: artifact
+        name: Name the artifact
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "name=anyps5-retro-host-$VERSION-unsigned" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=anyps5-retro-host-$VERSION-not-a-release-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: release
+          if-no-files-found: error

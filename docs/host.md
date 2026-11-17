@@ -30,6 +30,8 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/channel.cpp`](../src/channel.cpp) | Framing for the control stream, and the clock the watch thread reads for the write limit |
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
 | [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio, with the volume, mute and pause |
+| [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
+| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions and a `SOURCE.txt` naming another source ("Result"), and how `--mit-notice` gathers MIT notices ("What a zip holds") |
 
 ## Choices made for version 1
 
@@ -520,3 +522,157 @@ when the fake saw the started process end (a shim, on Windows). `reached`
 lists the `launcherDraws` and `launcherReports` steps reached. On a failure
 the fake writes the report and exits with 3. `passed` says the fake saw what
 the session expects; the test still checks the outcome on the launcher side.
+
+## Releases
+
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the
+files protocol.md "Finding and checking the host" names, and
+[`tools/package_release.py`](../tools/package_release.py) packs them, so a
+release can be packed and checked by hand the same way.
+
+- **Systems.** `windows-x64` (Windows Server 2022, MSVC, with the static C and
+  C++ runtime so no Visual C++ redistributable is needed; the workflow fails
+  if the host or SwanStation imports it, checked with `pefile` installed by
+  its wheel's sha256 under `--require-hashes`), `linux-x64` (Ubuntu 22.04, the oldest
+  Linux the launcher supports, so it needs glibc 2.35 or later) and
+  `macos-arm64` (built on the fixed `macos-15` arm64 image, not
+  `macos-latest`, which GitHub moves, for macOS 11 or later).
+- **What a zip holds.** The host (`anyps5-retro-host.exe` on Windows,
+  `anyps5-retro-host` elsewhere), SwanStation
+  (`swanstation_libretro.dll`, `.so` or `.dylib`) built from
+  `SWANSTATION_COMMIT`, `licenses/` with the host's and SwanStation's licences
+  and every licence, copying, copyright or notice file under SwanStation's
+  `dep/` (the libraries it builds in, such as libchdr, xxHash and VIXL, as
+  `licenses/swanstation-dep/<path>`), the Apache-2.0 text for SwanStation's
+  Vulkan headers (`licenses/swanstation-vulkan-headers-Apache-2.0.txt`: the
+  headers name the licence only by URL, so the workflow fetches SPDX's copy at
+  a fixed tag and checks its sha256), the MIT notices of the code built in
+  whose notice is only in its source files (`--mit-notice`: each distinct MIT
+  grant the files state, after the distinct copyright lines of the files that
+  state it) as `licenses/anyps5-retro-host-libretro-h-MIT.txt` (`libretro.h`,
+  the one libretro-common file the host uses) and
+  `licenses/swanstation-libretro-common-MIT.txt`, `-glad-MIT.txt` (Khronos'
+  `khrplatform.h`) and `-stb-MIT.txt` (stb's MIT choice), and `SOURCE.txt` naming the repository
+  and commit the host is built from, the SwanStation commit and the source
+  archive. Everything sits at the
+  top of the zip except the licences. The zip is the same bytes for the same
+  inputs (entries sorted by name, one fixed time, fixed permissions), so a
+  rebuild can be compared with a release.
+- **Which source.** `SOURCE.txt` names the source that was really built, so a
+  fork's package names the fork, not this repository. The packer reads it
+  from the checkout it runs in, as release tools such as GoReleaser do: the
+  commit is `HEAD`, and the repository is the remote the checked-out branch
+  tracks (or `origin`), written as a public `https://` URL with any user
+  name, password or token left out (`git@host:owner/repo.git` becomes
+  `https://host/owner/repo`). It refuses a checkout whose tracked files have
+  changes that are not committed, a checkout git fails to read, and a remote
+  that is a local path, which would name a folder on the build machine.
+  Packed from a folder with no `.git` of its own (an unpacked source
+  archive), it takes GitHub Actions' `GITHUB_SERVER_URL`/`GITHUB_REPOSITORY`
+  at `GITHUB_SHA`, and
+  elsewhere needs `--host-repository` and `--host-commit`.
+  `--host-repository` also names a repository when the remote is a mirror.
+  The workflow checks that each unpacked `SOURCE.txt` names
+  `$GITHUB_REPOSITORY` at `$GITHUB_SHA`, and
+  [`tests/package_release_test.py`](../tests/package_release_test.py) checks
+  the rules in throwaway git repositories (CI runs it on every system).
+- **Tested with.** `SWANSTATION_COMMIT` in `release.yml` must be the one
+  `real-core.yml` tests, and the workflow fails otherwise. Each system's zip
+  is unpacked again on its own runner and boots OpenBIOS and the `hello`
+  program through [`tests/real_core.py`](../tests/real_core.py), so the
+  files that are released are the files that were tested. On Linux and macOS
+  it must also get an OpenGL context (`--expect-opengl`), as in
+  `real-core.yml`; the Windows runner has no OpenGL 3.3 driver, so Windows
+  boots in software there.
+- **Version.** `<version>` is `project(... VERSION)` in `CMakeLists.txt`,
+  which is also `hostVersion` in `welcome`. A tag `v<version>` runs the
+  workflow for a release and must match it. Pushes and pull requests that
+  change the workflow or the packer run it too, and `workflow_dispatch` runs it
+  by hand.
+- **Source.** The `source` job packs the host and SwanStation at the released
+  commits, with all their submodules and without `.git`, into
+  `anyps5-retro-host-<version>-source.tar.gz` (sorted, with fixed times and
+  owners). It is the complete corresponding source the GPL asks for, and is
+  published with the binaries, and carries the same Apache-2.0 text at its
+  top. The MIT notices of libretro-common, glad and stb are in the zips
+  themselves (above), so a zip is complete without the archive; miniaudio,
+  which the host builds in, is public domain or MIT No Attribution, which
+  asks for no notice.
+- **Result.** A run for a tag `v<version>` uploads the artifact
+  `anyps5-retro-host-<version>-unsigned`; every other run (a branch push, a
+  pull request, `workflow_dispatch` on a branch) uploads
+  `anyps5-retro-host-<version>-not-a-release-<first 12 digits of the commit>`
+  instead, so only a tag's files can be taken for the release. Either holds the
+  three zips, the three `.files`, the source archive and `SHA256SUMS`, written as `shasum -a 256`
+  writes it and sorted by name as AnyPS5-ARM's `tools/release/sign.sh` sorts
+  it. `python3 tools/package_release.py --check <folder>` checks a folder of
+  them as a launcher checks a download, without the signature, and the `sums`
+  job runs it on every run. Every file `SHA256SUMS` lists must be in the
+  folder with that digest, and every zip must hold exactly what its `.files`
+  lists (no entry changed, missing or added); all names must carry one
+  version, and with `--version` that one; with `--host-repository` and
+  `--host-commit`, every zip's `SOURCE.txt` must name that repository at that
+  commit, read from the same bytes that were hashed, so the entry is read only
+  once (the `sums` job passes this run's). It refuses a
+  `SHA256SUMS` name that is not a release file before reading it, an entry
+  that states more than 256 MiB before reading it, and a zip
+  entry that is not a plain file with the packer's permissions, or whose
+  name could unpack outside its folder or over another entry on some system:
+  each part of a name must be letters, digits and `._+-`, must not start or
+  end with a dot or be a Windows device name such as `NUL`, no two names may
+  differ only in case, and no entry may have the name of a folder another
+  entry is in (in any case). A missing file, a damaged zip (any error Python's
+  `zipfile` or `zlib` raises on it, such as damaged deflated data, a failed
+  CRC or a name that is not UTF-8), and an encrypted entry or one packed other
+  than stored or deflated are refused with a message, not a traceback. The packer refuses
+  to write such a
+  name, so a licence file with a space in its name stops the build.
+  [`tests/package_release_test.py`](../tests/package_release_test.py) covers
+  each case.
+
+**Where the maintainers sign.** The workflow holds no key, so `SHA256SUMS` is
+unsigned and nothing is published. A maintainer with the release key:
+
+1. Takes the files from one run only: the `release` run for the push of the
+   tag `v<version>` in AnyTogether/anyps5-retro-host, whose head SHA is the
+   commit the tag points at, with every job green. A run for a branch or a
+   pull request names its artifact `not-a-release-<commit>`, not `unsigned`.
+   A tag pushed in a fork gets an `unsigned` artifact too, so the repository
+   and the head SHA are what pick the run; a fork's run is never signed:
+
+   ```sh
+   commit="$(git rev-parse "v<version>^{commit}")"
+   gh run list -R AnyTogether/anyps5-retro-host --workflow release --event push \
+     --branch "v<version>" --json databaseId,headSha,conclusion
+   gh run download <databaseId whose headSha is $commit> -R AnyTogether/anyps5-retro-host \
+     -n "anyps5-retro-host-<version>-unsigned" -D <folder>
+   ```
+
+2. Checks the downloaded folder from a checkout of the tag, before signing
+   anything:
+
+   ```sh
+   python3 tools/package_release.py --check <folder> --version <version> \
+     --host-repository https://github.com/AnyTogether/anyps5-retro-host --host-commit "$commit"
+   ```
+
+   It stops unless every file matches `SHA256SUMS`, every zip matches its
+   `.files`, every name carries `<version>` and every `SOURCE.txt` names the
+   tag's commit in AnyTogether/anyps5-retro-host.
+3. Runs `tools/release/sign.sh -o <folder> <folder>/*.zip <folder>/*.files <folder>/*.tar.gz`
+   from AnyPS5-ARM. It writes the same `SHA256SUMS` again (same lines, same
+   order) and `SHA256SUMS.sig`, `ed25519 <key id> <base64 signature>` a line,
+   with the keys listed in its `tools/release/release-signing.pub`, which are
+   the keys built into the launchers (`lib/core/release_keys.dart` in the
+   Flutter launcher).
+4. Publishes a GitHub release `v<version>` with the zips, the `.files`, the
+   source archive, `SHA256SUMS` and `SHA256SUMS.sig`. The source archive must
+   be published with every release that carries the binaries.
+
+On macOS the host and SwanStation must also carry a Developer ID signature with
+the hardened runtime, and the host must be notarized (protocol.md "macOS
+signing"). That signing changes the files, so it goes into the `package` job
+after the build and before `Pack`, where the workflow marks it; it needs the
+team's certificate as a secret, which this repository does not hold. Until it
+is added, the macOS zip carries only the linker's ad-hoc signature: it is not
+yet the release protocol.md describes, and Gatekeeper refuses a downloaded copy.
