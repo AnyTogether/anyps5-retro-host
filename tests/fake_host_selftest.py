@@ -327,12 +327,15 @@ class Launcher:
                                                           'saves')}
         paths_file = work / 'paths.json'
         paths_file.write_text(json.dumps(self.paths), encoding='utf-8')
-        files = ['--session', str(path), '--report', str(self.report_path), '--paths', str(paths_file)]
+        self.resume_path = work / 'resume'
+        self.resume_path.write_text('-1', encoding='utf-8')
+        files = ['--session', str(path), '--report', str(self.report_path), '--paths', str(paths_file),
+                 '--resume', str(self.resume_path)]
         env = dict(os.environ)
         if mode == 'env':
             files = []
             env.update(ANYPS5_FAKE_HOST_SESSION=str(path), ANYPS5_FAKE_HOST_REPORT=str(self.report_path),
-                       ANYPS5_FAKE_HOST_PATHS=str(paths_file))
+                       ANYPS5_FAKE_HOST_PATHS=str(paths_file), ANYPS5_FAKE_HOST_RESUME=str(self.resume_path))
         command = [sys.executable, '-I', str(FAKE)] + files + list(extra)
         if mode == 'shim':
             command = [str(self.shim(command))]
@@ -446,6 +449,9 @@ class Launcher:
                 slot = self.view.slot(self.view.u32(24))
                 if (slot['epoch'] == self.epoch) != step['launcherDraws']:
                     raise Failed(f'launcherDraws {step["launcherDraws"]}, but the slot is {slot} in game {self.epoch}')
+                self.resume_path.write_text(str(index), encoding='utf-8')
+            elif 'launcherReports' in step:
+                self.resume_path.write_text(str(index), encoding='utf-8')
         if self.started.process.poll() is None and not never_kill:
             if self.session['outcome'] == 'clean':
                 if self.status is not None:
@@ -625,6 +631,8 @@ def run(path, mode='args', **variant):
     launcher = None
     try:
         extra = ['--kill-within', '1'] if variant.get('never_kill') else []
+        if variant.get('stop_at') is not None:
+            extra = ['--kill-pause', '5']
         launcher = Launcher(path, mode, work, extra)
         launcher.play(**variant)
         if variant.get('never_kill') or variant.get('mistake'):
@@ -692,8 +700,9 @@ def main():
              {'mode': 'shim', 'stop_at': 4}),
             ('stop-deadline, ended one step early', SESSIONS / 'stop-deadline.json', {'stop_at': 10}),
             ('welcome-wrong-pid, never ended', SESSIONS / 'welcome-wrong-pid.json', {'never_kill': True}),
-            ('oversized-frame, drawn before its frame message', SESSIONS / 'oversized-frame.json', {'raster': True}),
-            ('frame-larger-than-slot, drawn before its frame message', SESSIONS / 'frame-larger-than-slot.json',
+            ('oversized-frame, drawn before reading its frame message', SESSIONS / 'oversized-frame.json',
+             {'raster': True}),
+            ('frame-larger-than-slot, drawn before reading its frame message', SESSIONS / 'frame-larger-than-slot.json',
              {'raster': True}),
         ]
         if not WINDOWS:
