@@ -592,6 +592,7 @@ class Fake:
         self.started_handle = started_handle
         self.watcher = watcher
         self.backlog = collections.deque()
+        self.taken = None
         self.calls = {}
         self.pings = {}
         self.last_call = 0
@@ -715,14 +716,17 @@ class Fake:
 
     def take(self, deadline, wanted=None):
         while True:
-            event = self.next_event(deadline)
-            if event is None:
-                return None
-            if event[0] != 'message':
-                self.control(event)
-                continue
-            message = event[1]
-            self.check_order(message, self.link.before_welcome(event[2]))
+            if self.taken is not None:
+                message, self.taken = self.taken, None
+            else:
+                event = self.next_event(deadline)
+                if event is None:
+                    return None
+                if event[0] != 'message':
+                    self.control(event)
+                    continue
+                message = event[1]
+                self.check_order(message, self.link.before_welcome(event[2]))
             kind = message['type']
             if kind == wanted:
                 return message
@@ -911,7 +915,13 @@ class Fake:
             while not self.resumed(index):
                 if time.monotonic() > deadline:
                     raise Failed(f'{self.options.resume} did not reach step {index} within {self.options.timeout} s')
-                self.serve(time.monotonic() + 0.05)
+                message = self.take(time.monotonic() + 0.05)
+                if message is None:
+                    continue
+                if self.resumed(index):
+                    self.taken = message
+                    return
+                self.extra(message)
         elif self.options.hold > 0:
             deadline = time.monotonic() + self.options.hold
             while time.monotonic() < deadline:

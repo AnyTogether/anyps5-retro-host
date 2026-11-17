@@ -403,8 +403,13 @@ A crash gives none of these, so the tests expect the exact code.
   report write on a slow runner. A `ring` followed by a `publish` is checked
   only for the fields the launcher checks when a ring arrives, because the
   host may publish into a ring as soon as it has sent it (protocol.md, "Frame
-  ring": the host never waits); the `frame` step checks the rest. Run it
-  with `python3 tests/fake_host_selftest.py`.
+  ring": the host never waits); the `frame` step checks the rest. The
+  self-test starts the fake with `--resume` and moves it past each
+  `launcherDraws` and `launcherReports` step only after checking it, so a
+  later `publish` cannot overtake that check. The cases that end the fake
+  one step early give it a 5 second `--kill-pause`, so a self-test that the
+  runner holds up still ends it inside the pause. Run it with
+  `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
   supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
   under ThreadSanitizer (on 24.04). The Windows runner's own `opengl32.dll`
@@ -584,7 +589,10 @@ What the fake does with each step:
   the fake only records that it reached them. To hold it there while the test
   checks, pass `--hold <seconds>` or `--resume <file>`: the fake then waits
   until the file holds a step index at least that step's. While it waits, a
-  call to a method it has already answered gets the same reply again.
+  call to a method it has already answered gets the same reply again. The
+  launcher writes the file before it goes on, so a message that arrives
+  once the file has reached the step is kept for the steps after it, even
+  a call the fake could answer again.
 - **The end of a `clean` session**: waits for `shutdown` or end-of-stream,
   then exits with 0.
 
