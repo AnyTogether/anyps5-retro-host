@@ -17,9 +17,10 @@ game's frame rate and region, which a match's frame clock follows
 ([netplay.md](netplay.md) "Frame rate"). `ps1Lockstep` adds the first step
 of online play itself: a game that runs one frame per input the launcher
 hands it, so two players' hosts stay frame for frame alike (see
-[Lockstep](#lockstep) and [netplay.md](netplay.md)). Joining a running
-game, rollback, PS2 and
-PS3 are later capabilities (see [Capabilities](#capabilities)).
+[Lockstep](#lockstep) and [netplay.md](netplay.md)). PS2 and PS3 are later
+capabilities (see [Capabilities](#capabilities)). Joining a running game from
+a state, rollback and how a match reaches the other player are part of
+netplay.md's proposal, which the maintainers have not agreed on yet.
 
 The words MUST, MUST NOT and SHOULD are used as in RFC 2119.
 
