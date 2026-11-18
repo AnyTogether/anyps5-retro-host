@@ -2,10 +2,11 @@
 # SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
 # Builds a host release as protocol.md "Finding and checking the host" describes it: for each
-# system the host, SwanStation (PS1) and LRPS2 (PS2) in anyps5-retro-host-<version>-<os>-<arch>.zip
-# with its .files, then SHA256SUMS over all of them. Each packed zip is unpacked again: SwanStation
-# must boot the real PS1 core, and LRPS2, which boots nothing without a BIOS and is given none, must
-# load and report its identity and the missing BIOS.
+# system the host package, the host and SwanStation (PS1) in anyps5-retro-host-<version>-<os>-<arch>.zip,
+# and the LRPS2 package, LRPS2 (PS2) in anyps5-retro-host-<version>-<os>-<arch>-lrps2.zip, each with
+# its .files, then SHA256SUMS over all of them. Both packed zips are unpacked again into one folder,
+# as a launcher installs them: SwanStation must boot the real PS1 core, and LRPS2, which boots
+# nothing without a BIOS and is given none, must load and report its identity and the missing BIOS.
 # SHA256SUMS is left unsigned: the maintainers sign it with the release key (docs/host.md
 # "Releases"). A tag v<version> must match the version in CMakeLists.txt.
 name: release
@@ -219,7 +220,7 @@ jobs:
       # macOS: the maintainers' Developer ID signing and notarization of the host, SwanStation and
       # LRPS2 go here, before packing, because signing changes the files the .files lists (docs/host.md
       # "Releases").
-      - name: Pack
+      - name: Pack the host package and the LRPS2 package
         run: |
           ${{ matrix.python }} tools/package_release.py --version "${{ needs.version.outputs.version }}" \
             --system ${{ matrix.system }} --host ${{ matrix.host }} --core ${{ matrix.core }} \
@@ -229,6 +230,9 @@ jobs:
             --mit-notice swanstation-libretro-common-MIT.txt=swanstation/dep/libretro-common \
             --mit-notice swanstation-glad-MIT.txt=swanstation/dep/glad \
             --mit-notice swanstation-stb-MIT.txt=swanstation/dep/stb \
+            --swanstation-commit "$SWANSTATION_COMMIT" --out release
+          ${{ matrix.python }} tools/package_release.py --version "${{ needs.version.outputs.version }}" \
+            --system ${{ matrix.system }} \
             --ps2-core ${{ matrix.ps2-core }} --ps2-core-licence lrps2/COPYING.GPLv3 --ps2-core-notices lrps2/3rdparty \
             --notice lrps2-LGPL-3.0-or-later.txt=lgpl-3.0.txt \
             --mit-notice lrps2-libretro-common-MIT.txt=lrps2/libretro/libretro-common \
@@ -237,17 +241,21 @@ jobs:
             --mit-notice lrps2-khrplatform-MIT.txt=lrps2/3rdparty/GL/khrplatform.h \
             --bsd-notice lrps2-xxhash-BSD-2-Clause.txt=lrps2/3rdparty/include/xxhash.h \
             --bsd-notice lrps2-usb-queue-BSD-3-Clause.txt=lrps2/pcsx2/USB/libretro-usb/queue.h \
-            --swanstation-commit "$SWANSTATION_COMMIT" --lrps2-commit "$LRPS2_COMMIT" --out release
-      - name: Unpack the zip, check that SOURCE.txt names this run's source, and run both real cores from it
+            --lrps2-commit "$LRPS2_COMMIT" --out release
+      - name: Unpack both packages into one folder, check that each names this run's source, and run both real cores from it
         run: |
           stem="anyps5-retro-host-${{ needs.version.outputs.version }}-${{ matrix.system }}"
-          ${{ matrix.python }} -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "release/$stem.zip" unpacked
+          for zip in "release/$stem.zip" "release/$stem-lrps2.zip"; do
+            ${{ matrix.python }} -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$zip" unpacked
+          done
           chmod +x "unpacked/${{ matrix.unpacked-host }}"
-          grep -qxF "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY at commit $GITHUB_SHA." unpacked/SOURCE.txt || {
-            echo "SOURCE.txt does not name $GITHUB_REPOSITORY at $GITHUB_SHA, the source this run built" >&2
-            cat unpacked/SOURCE.txt >&2
-            exit 1
-          }
+          for source in SOURCE.txt SOURCE-lrps2.txt; do
+            grep -qxF "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY at commit $GITHUB_SHA." "unpacked/$source" || {
+              echo "$source does not name $GITHUB_REPOSITORY at $GITHUB_SHA, the source this run built" >&2
+              cat "unpacked/$source" >&2
+              exit 1
+            }
+          done
           cp "${{ matrix.ring-access }}" unpacked/
           identity="$(${{ matrix.python }} tools/core_identity.py --swanstation-commit "$SWANSTATION_COMMIT")"
           ${{ matrix.python }} tests/real_core.py --host "unpacked/${{ matrix.unpacked-host }}" \
@@ -331,7 +339,7 @@ jobs:
           python3 tools/package_release.py --check release --version "$VERSION" \
             --host-repository "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" --host-commit "$GITHUB_SHA" \
             --swanstation-commit "$SWANSTATION_COMMIT" --lrps2-commit "$LRPS2_COMMIT"
-          test "$(ls release/*.zip | wc -l)" -eq 3
+          test "$(ls release/*.zip | wc -l)" -eq 6
           (cd release && sha256sum -c SHA256SUMS)
       # Only a tag's run uploads the artifact the maintainers sign; any other run's artifact is
       # named for its commit, so it cannot be taken for a release (docs/host.md "Releases").

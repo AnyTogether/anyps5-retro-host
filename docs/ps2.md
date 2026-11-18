@@ -35,7 +35,7 @@ back in the same host and in a new one, also on Windows only
 ([protocol.md](protocol.md) "saveState and loadState"). **Not seen yet**: PS2
 games on Linux and macOS, and the core options other than
 `pcsx2_upscale_multiplier`. "Releases" below says
-whether the release zips hold LRPS2.
+how releases ship LRPS2.
 
 ## Which core
 
@@ -326,28 +326,37 @@ the known obstacles for PS2, for whoever takes it up:
 
 ## Releases
 
-Every release zip holds LRPS2 as `pcsx2_libretro.dll`, `.so` or `.dylib`
-beside the host and SwanStation, so one signed `.files` covers both cores
-([host.md](host.md) "Releases"). `release.yml` builds it at the
-`LRPS2_COMMIT` real-core tests (the version job fails if the two differ), with
+LRPS2 ships in a package of its own for each system,
+`anyps5-retro-host-<version>-<system>-lrps2.zip` with its `.files`, which
+holds `pcsx2_libretro.dll`, `.so` or `.dylib`. The host package beside it
+holds the host and SwanStation, as v1.0.0's zip did. The same signed
+`SHA256SUMS` lists both packages, so one signature covers both cores
+([host.md](host.md) "Releases"). A player adds LRPS2 as an emulator of its
+own, and a player who plays only PS1 games never downloads it. The launcher
+unpacks it beside the host from the same release and checks it before every
+host start (protocol.md "Finding and checking the host"). `release.yml` builds
+it at the `LRPS2_COMMIT` real-core tests (the version job fails if the two differ), with
 the host's patch, the four options its identity names, the host's static
 Visual C++ runtime (the Windows job fails if it imports the runtime) and the
-host's macOS 11.0 target. `SOURCE.txt` names the LRPS2 commit and the date the
-patches last modified it, and says no BIOS is in the release. The zip carries
+host's macOS 11.0 target. `SOURCE-lrps2.txt` names the LRPS2 commit, the host
+source its patches come from and the date they last modified it, and says no
+BIOS is in the package. The package carries
 LRPS2's GPL-3.0, the LGPL-3.0 text its PCSX2 files and paraLLEl-GS name, and
 the notices of what it builds in (Granite, libretro-common, QEMU's USB code
 and `queue.h`, xxHash, Khronos' `khrplatform.h`, xbyak, VIXL and the Vulkan
 headers); host.md "Releases" lists each with how it is carried. The source
 archive holds the patched LRPS2 with its `anyps5-core-source.txt`.
 
-The release check runs the zip's own LRPS2 through `tests/ps2_core.py` on each
-system, and `package_release.py --check` finds LRPS2's identity for
-`LRPS2_COMMIT` in every zip. Without a BIOS that shows only that it loads,
+The release check unpacks both packages into one folder and runs the LRPS2
+package's own LRPS2 through `tests/ps2_core.py` on each system, and
+`package_release.py --check` finds LRPS2's identity for `LRPS2_COMMIT` in
+every LRPS2 package. Without a BIOS that shows only that it loads,
 reports its identity and refuses the missing BIOS. The games seen running
 (above) ran on a local build of LRPS2 at `LRPS2_COMMIT` with the patch, not
-from a release zip. A launcher finds `pcsx2_libretro` beside the signed host
-once it knows the name; AnyTogether/AnyPS5-Desktop#171 does that and is not
-merged yet.
+from a release package. The Desktop launcher (AnyTogether/AnyPS5-Desktop#171,
+merged) finds `pcsx2_libretro` only in the host package's `.files`, so until
+it installs the LRPS2 package on its own, from its emulator settings, it offers
+no PS2 games from a split release and keeps playing PS1 ones.
 
 ## Not done yet
 

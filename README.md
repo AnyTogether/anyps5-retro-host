@@ -8,7 +8,8 @@ the contract between them. Version 1 runs single-player PS1 games with
 SwanStation, and starts PS2 games on LRPS2 with the player's own BIOS; no PS2
 program has been booted in CI, since no PS2 BIOS may be used there. A player
 can save and load states of both (protocol.md "saveState and loadState").
-Releases ship the host with both cores, and no BIOS.
+Each release has a host package with SwanStation and a separate LRPS2
+package, both under one signature, and no BIOS.
 
 - [docs/protocol.md](docs/protocol.md): the protocol, the contract both sides
   are written from.
