@@ -1574,7 +1574,7 @@ bool Game::AwaitStateWork(const std::shared_ptr<StateWork>& work, std::chrono::s
   if (state_work_ == work) state_work_.reset();
   if (work->taken) state_signal_.wait_until(lock, deadline, [&] { return work->done || ended_; });
   if (work->done) return true;
-  const bool unfinished_load = work->load && work->taken;
+  const bool unfinished_load = work->load && work->begun;
   lock.unlock();
   if (unfinished_load) Fail("The save state did not finish loading in time.", "other");
   return false;
@@ -1590,6 +1590,11 @@ StateResult Game::UnserializeState(StateWork& work) {
     work.data.resize(work.size, '\0');
   } catch (const std::bad_alloc&) {
     return StateResult::kCoreRefused;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (std::chrono::steady_clock::now() >= work.take_by) return StateResult::kNotRunning;
+    work.begun = true;
   }
   return unserialize(work.data.data(), work.data.size()) ? StateResult::kDone : StateResult::kCoreRefused;
 }

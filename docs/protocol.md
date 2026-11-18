@@ -982,8 +982,10 @@ limit:
   file holds the old state or the new one, whole.
 - A load reads and checks its file within 3 seconds of the call. A file not
   read by then is a `fileError`, and the game is not touched.
-- The game's thread begins a load only within 3.5 seconds of the call, so the
-  core has at least 1 second to finish it. A load that the core began but did
+- The game's thread gives the core a load (`retro_unserialize`) only within
+  3.5 seconds of the call, so the core has at least 1 second to finish it. A
+  load not given to the core by then returns `false` with the game
+  untouched. A load that the core began but did
   not finish within 4.5 seconds of the call ends the game with `errorCode`
   `other`, and the reply is `false`. The stock cores load a state in well
   under that second (about 30 ms for a PS1 state and 90 ms for a PS2 one on

@@ -248,7 +248,10 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   staggered: the read, header and checksum must be done 3 seconds after the
   call or it is a `fileError` with the game untouched, and the game's thread
   begins it only until 3.5 seconds after the call (`StateWork::take_by`,
-  checked by the game's thread itself as it takes the work). The core then
+  checked by the game's thread itself as it takes the work, and again under
+  the lock just before `retro_unserialize`, so a slow setup on that thread
+  cannot carry the start past it; only a load that has `begun` ends the game
+  when it runs late). The core then
   has at least 1 second, against the 30 ms SwanStation and 90 ms LRPS2 were
   measured to take, so ending the game with `other` after a load the core
   began is left to a core that hangs. The file's bytes go to the game's
@@ -373,7 +376,9 @@ A crash gives none of these, so the tests expect the exact code.
   <frame>` to `fake-states.txt` there, so a test sees which moment a game went
   back to. While it holds `fake-slow-load`, `retro_unserialize` takes 5
   seconds, longer than any load is given, so a test can end a game from the
-  control thread while its thread is inside the core.
+  control thread while its thread is inside the core. While it holds
+  `fake-slow-size`, `retro_serialize_size` takes 4 seconds, so a load's
+  setup on the game's thread runs past the moment the core may begin it.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
   not. Its fake launcher checks every `ring` (its size and the growth rule)
   and every `frame` (the newest slot's epoch is the one `start` returned, and
@@ -456,6 +461,9 @@ A crash gives none of these, so the tests expect the exact code.
     card A and loaded into a game started on card B leaves card A in the card
     file within the next 5-second check, as protocol.md "The memory card"
     says;
+  - a load whose setup on the game's thread runs past 3.5 seconds
+    (`slow_load_setup`, `fake-slow-size`): `false`, the core never given
+    the state, and the game running on;
   - a load the core does not finish in time (`late_load`, `fake-slow-load`):
     `false` within 4 to 5 seconds, the game ended with `other`, and `release`
     and the host fine once the core returns. In the ThreadSanitizer job this

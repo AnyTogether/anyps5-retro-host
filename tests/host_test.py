@@ -1366,6 +1366,39 @@ def state_card_rollback(program, core, log):
         session.close()
 
 
+def slow_load_setup(program, core, log):
+    """A load whose setup on the game's thread runs past the moment the core may still begin it
+    (fake-slow-size holds retro_serialize_size for 4 seconds, past 3.5): the reply is false within
+    the 5-second limit, the core is never given the state, and the game runs on."""
+    session = Session(program, core, log)
+    try:
+        states = Path(session.paths['states'])
+        system = Path(session.paths['system'])
+        (system / 'fake-states').write_bytes(b'')
+        moments = system / 'fake-states.txt'
+        session.start(states=str(states))
+        session.wait(lambda s: s and s['ready'], 10)
+        session.read_frames(10)
+        session.call('saveState', {'slot': 0})
+        (system / 'fake-slow-size').write_bytes(b'')
+        began = time.monotonic()
+        if session.call('loadState', {'slot': 0}) is not False:
+            raise c.Failed('a load whose setup ran late did not return false')
+        took = time.monotonic() - began
+        (system / 'fake-slow-size').unlink()
+        if not 3.5 <= took < 5:
+            raise c.Failed(f'a load whose setup ran late was answered after {took:.2f} s')
+        if any(kind == 'load' for kind, _ in state_moments(moments)):
+            raise c.Failed('a load whose setup ran late gave the core the state')
+        session.read_frames(10)
+        if session.call('status')['ended']:
+            raise c.Failed('a load whose setup ran late ended the game')
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
+    finally:
+        session.close()
+
+
 def late_load(program, core, log):
     """A load the core does not finish in time (fake-slow-load holds retro_unserialize for 5 seconds,
     longer than the call has): the reply is false within the 5-second reply limit and the game ends
@@ -1417,7 +1450,7 @@ def main():
         stuck_core, unloadable, core_identity, game_timing, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
         launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, option_keys_not_utf8,
         rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory, ps2_game, core_for_other_console,
-        save_states, state_card_rollback, late_load)}
+        save_states, state_card_rollback, slow_load_setup, late_load)}
     for test in (many_games, gpu_limits, gpu_network):
         tests[test.__name__] = lambda program, core, log, test=test: test(program, core, log, options.require_gpu)
     chosen = [(name, test) for name, test in tests.items() if not options.names or name in options.names]

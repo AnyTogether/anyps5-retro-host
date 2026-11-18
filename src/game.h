@@ -379,12 +379,14 @@ class Game {
   int savestate_context_ = 0;
   // A saveState or loadState for the game's thread (state_work_, guarded by mutex_; state_signal_
   // is notified when one is taken, when it is done and when the game ends). The game's thread takes
-  // it only before take_by. A save hands back the bytes of the core's state that can be other than
+  // it only before take_by, and a load has begun once the core is given it, which also happens only
+  // before take_by, however long getting it ready took. A save hands back the bytes of the core's state that can be other than
   // zero, and the full size the core gave; a load hands over the state file, whose core state starts
   // at offset and is given to the core at size, the size it was saved at.
   struct StateWork {
     bool load = false;
     bool taken = false;
+    bool begun = false;
     bool done = false;
     std::chrono::steady_clock::time_point take_by;
     StateResult result = StateResult::kDone;
@@ -398,7 +400,8 @@ class Game {
   // true when there was one, so the frame pacing starts again from now rather than catching up.
   bool RunStateWork();
   // Gives a load's state to the core on the game's thread: badState when it is larger than the
-  // core's retro_serialize_size, so no junk header makes the host allocate more than the core uses.
+  // core's retro_serialize_size, so no junk header makes the host allocate more than the core uses,
+  // and kNotRunning, without calling retro_unserialize, when getting it ready took past take_by.
   StateResult UnserializeState(StateWork& work);
   // Hands work to the game's thread and waits for it; false when the game ended first, or its thread
   // did not take it by its take_by or finish it by deadline.

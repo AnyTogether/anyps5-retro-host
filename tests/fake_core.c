@@ -17,7 +17,8 @@
  * any other bytes. While the system directory holds fake-states, each state saved or loaded adds
  * a line "save <frame>" or "load <frame>" to fake-states.txt there, the frame count it holds, so a
  * test can see which moment a game went back to. While it holds fake-slow-load, retro_unserialize
- * takes 5 seconds before it takes the state back, longer than the host gives any load.
+ * takes 5 seconds before it takes the state back, longer than the host gives any load, and while it
+ * holds fake-slow-size, retro_serialize_size takes 4 seconds.
  *
  * When the system directory holds fake-gpu, it also offers SwanStation's internal resolution
  * option (swanstation_GPU_ResolutionScale, 1x to 16x) and asks for an OpenGL 3.3 core context.
@@ -790,7 +791,16 @@ RETRO_API void retro_run(void) {
   }
 }
 
-RETRO_API size_t retro_serialize_size(void) { return STATE_BYTES; }
+RETRO_API size_t retro_serialize_size(void) {
+  if (in_system_directory("fake-slow-size")) {
+#ifdef _WIN32
+    Sleep(4000);
+#else
+    sleep(4);
+#endif
+  }
+  return STATE_BYTES;
+}
 RETRO_API bool retro_serialize(void* data, size_t size) {
   unsigned char* out = data;
   const uint32_t motors = (rumbling[0] ? 1u : 0u) | (rumbling[1] ? 2u : 0u);
