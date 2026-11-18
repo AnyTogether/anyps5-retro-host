@@ -104,6 +104,31 @@ LockstepConfig NeedLockstep(const Json& args, const std::string& where) {
   return config;
 }
 
+// The answer to a saveState or loadState (protocol.md "saveState and loadState").
+Host::Reply StateReply(const StateOutcome& outcome) {
+  switch (outcome.result) {
+    case StateResult::kDone:
+      return Result(Json(JsonObject{{"bytes", outcome.bytes}, {"micros", outcome.micros}}));
+    case StateResult::kNotRunning:
+      return Result(Json(false));
+    case StateResult::kLockstep:
+      throw ArgumentError{"A game in lockstep, or started in lockstep, cannot save or load a state."};
+    case StateResult::kNoState:
+      return Failure("noState", "There is no state file there.");
+    case StateResult::kBadState:
+      return Failure("badState", "The file is not a state file this host reads.");
+    case StateResult::kOtherCore:
+      return Failure("otherCore", "The state was saved by another core or core build.");
+    case StateResult::kOtherGame:
+      return Failure("otherGame", "The state was saved from another game.");
+    case StateResult::kCoreRefused:
+      return Failure("coreRefused", "The core could not save or load the state.");
+    case StateResult::kFileError:
+      break;
+  }
+  return Failure("fileError", "The state file could not be written or read.");
+}
+
 std::string Hex(const std::optional<uint64_t>& value) {
   if (!value) return std::string();
   char text[17];
@@ -180,7 +205,8 @@ Host::Outcome Host::Hello(const Json& message) {
                        {"pid", ProcessId()},
                        {"hostVersion", ANYPS5_RETRO_HOST_VERSION},
                        {"capabilities",
-                        JsonArray{"ps1", "coreIdentity", "gameTiming", "ps2", "ps1Lockstep", "ps2ResolutionLimits"}},
+                        JsonArray{"ps1", "coreIdentity", "gameTiming", "ps2", "ps1Lockstep", "saveStates",
+                                  "ps2ResolutionLimits"}},
                        {"pixelFormat", format_name}}));
   return Outcome::kContinue;
 }
@@ -286,6 +312,19 @@ Host::Reply Host::Dispatch(const std::string& method, const Json& args) {
     const auto frame = game ? game->Lockstep(config) : std::nullopt;
     return Result(frame ? Json(JsonObject{{"frame", *frame}}) : Json(false));
   }
+  if (method == "saveState" || method == "loadState") {
+    const Json* slot = args.IsObject() ? args.Find("slot") : nullptr;
+    const Json* path = args.IsObject() ? args.Find("path") : nullptr;
+    const std::string wrong = method + " takes {\"slot\":<0 to 7>} or {\"path\":<path>}.";
+    Need((slot != nullptr) != (path != nullptr), wrong);
+    Need(!slot || slot->Integer(0, 7).has_value(), wrong);
+    Need(!path || (path->IsString() && IsProtocolPath(path->AsString(), kWindows)), wrong);
+    if (!game) return Result(Json(false));
+    const std::string file = slot ? game->StatePath(static_cast<unsigned>(*slot->Integer(0, 7))) : path->AsString();
+    Need(!file.empty(), "The game was started without start.states.");
+    Need(game->IsStatePath(file), method + ".path must name a .state file directly in start.states.");
+    return StateReply(method == "saveState" ? game->SaveState(file) : game->LoadState(file));
+  }
   if (method == "stop") {
     Need(args.IsNull(), "stop takes no argument.");
     if (game && !game->Ended()) {
@@ -326,6 +365,7 @@ Host::Reply Host::Start(const Json& args) {
   config.disc = NeedPath(args, "disc");
   config.system = NeedPath(args, "system");
   config.saves = NeedPath(args, "saves");
+  if (args.Find("states")) config.states = NeedPath(args, "states");
   const bool ps2 = config.console == Console::kPs2;
   const bool playlist = !ps2 && HasExtension(config.disc, ".m3u");
   if (ps2) {

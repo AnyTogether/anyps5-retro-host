@@ -1,0 +1,23 @@
+{
+  "description": "Capability saveStates: start a game with a folder for its save states.",
+  "from": "launcher",
+  "message": {
+    "type": "call",
+    "id": 5,
+    "method": "start",
+    "args": {
+      "core": "${core}",
+      "disc": "${disc}",
+      "system": "${system}",
+      "saves": "${saves}",
+      "states": "${states}"
+    }
+  },
+  "reply": {
+    "type": "reply",
+    "id": 5,
+    "result": {
+      "epoch": 1
+    }
+  }
+}

@@ -12,6 +12,7 @@
       "gameTiming",
       "ps2",
       "ps1Lockstep",
+      "saveStates",
       "ps2ResolutionLimits"
     ],
     "pixelFormat": "rgba8"
