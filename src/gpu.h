@@ -28,6 +28,8 @@ class Gpu {
   // GL_MAX_VIEWPORT_DIMS for each side.
   uint32_t MaxWidth() const { return max_width_; }
   uint32_t MaxHeight() const { return max_height_; }
+  // The largest texture this context can make, GL_MAX_TEXTURE_SIZE, on each side.
+  uint32_t MaxTexture() const { return max_texture_; }
 
   // Where the context comes from and what draws in it, for the log: the system's way of making it,
   // GL_VENDOR, GL_RENDERER, GL_VERSION, and whether a GPU reset is reported.
@@ -66,6 +68,7 @@ class Gpu {
   uint32_t height_ = 0;
   uint32_t max_width_ = 0;
   uint32_t max_height_ = 0;
+  uint32_t max_texture_ = 0;
   bool with_depth_ = false;
   bool with_stencil_ = false;
   std::string description_;
