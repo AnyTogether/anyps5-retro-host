@@ -239,6 +239,8 @@ class Game {
   void ApplyResolutionLimit(Option& option, const ResolutionLimit& limit, const FrameLimit& frame, bool next_start);
   // Whether a PS2 game's frames still fit ps2_limit_ with pcsx2_vr_mode's eyes side by side.
   bool Ps2StereoFits() const;
+  // Whether pcsx2_vr_mode is set to "stereoscopic", applied or not yet. Called with mutex_ held.
+  bool Ps2StereoChosen() const;
   std::string CardPath() const;
   void RefreshDiscs();
   template <typename T>
@@ -275,8 +277,9 @@ class Game {
   bool options_changed_ = false;
   // Why the internal resolution asked for is not used, while the game uses another.
   std::string resolution_refused_;
-  // The limits a PS2 game's internal resolution was judged against, once the game has loaded in an
-  // OpenGL context; an option call that would widen its frames past them is refused.
+  // The limits a PS2 game's internal resolution is judged against, from the context made before the
+  // load and then the one it draws in; an option call that would widen its frames past them is
+  // refused.
   std::optional<FrameLimit> ps2_limit_;
   // The game runs without an OpenGL context, so the core draws in software.
   bool software_ = false;

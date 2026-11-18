@@ -867,7 +867,8 @@ game loads (`restart` is `true`):
   it then makes for the game. When it can make one, `values` lists only the
   scales whose largest frame fits, as above, and whose GS targets (1280 × 1280
   pixels times the scale) fit the context's largest texture, from then on,
-  also when the game later fails to load.
+  also when the game later fails to load. When not even the smallest scale
+  fits, every value is listed and the check below ends the game.
 - A saved value larger than those starts the game at the largest one listed:
   `selected` and `activeValue` are that value, and `resolutionError` says why
   until the player chooses another. `activeValue` stays the value the game
@@ -877,8 +878,8 @@ game loads (`restart` is `true`):
   saying why.
 - While the game runs, `option` refuses `pcsx2_vr_mode` `"stereoscopic"`,
   which puts two pictures side by side and doubles the frame's width, when
-  the doubled frame would not fit; a game started in stereo is judged at that
-  width.
+  the doubled frame would not fit; a game started in stereo, or set to stereo
+  while it loads, is judged at that width.
 
 `discs` has `labels` (array of at most 128 strings, the discs `changeDisc`
 reaches), `inserted` (index of the inserted disc, or null while the tray is

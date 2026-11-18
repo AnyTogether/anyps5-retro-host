@@ -1253,10 +1253,8 @@ void Game::LimitPs2ResolutionBeforeLoad() {
   early_gpu_ = true;
   const FrameLimit frame = LimitsOf(*gpu_, kPs2Target);
   std::lock_guard<std::mutex> lock(mutex_);
-  bool stereo = false;
-  for (const auto& option : options_) {
-    if (option.key == kPs2VrOption && !option.fixed) stereo = option.values[option.selected] == kPs2VrStereo;
-  }
+  ps2_limit_ = frame;
+  const bool stereo = Ps2StereoChosen();
   for (auto& option : options_) {
     if (option.key != kPs2ResolutionOption || option.fixed) continue;
     // Judged as if the core had drawn at the first scale listed, from the geometry the core's source
@@ -1284,6 +1282,9 @@ bool Game::Ps2ResolutionFits(uint32_t max_width, uint32_t max_height) {
     const auto scale = ParseScale(option.active);
     if (active == option.values.end() || !scale) return true;
     const auto index = static_cast<size_t>(active - option.values.begin());
+    // A stereo VR chosen while the game loaded is applied by LRPS2 at its next GET_VARIABLE_UPDATE,
+    // so the frame is judged at the width it will then have.
+    if (Ps2StereoChosen()) max_width = std::max(max_width, kPs2Width * 2 * *scale);
     const auto limit = retro_host::LimitResolution(option.values, option.selected, index, max_width, max_height,
                                                    frame.width, frame.height, frame.MaxScale());
     if (limit && limit->active_offered) {
@@ -1295,6 +1296,13 @@ bool Game::Ps2ResolutionFits(uint32_t max_width, uint32_t max_height) {
     return false;
   }
   return true;
+}
+
+bool Game::Ps2StereoChosen() const {
+  for (const auto& option : options_) {
+    if (option.key == kPs2VrOption && !option.fixed) return option.values[option.selected] == kPs2VrStereo;
+  }
+  return false;
 }
 
 bool Game::Ps2StereoFits() const {

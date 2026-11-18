@@ -750,6 +750,22 @@ def ps2_limits(program, core, log, require_gpu):
                 raise c.Failed(f'the game ended at 8x: {status["errorCode"]!r} {status["error"]!r}')
             if session.call('option', {'key': 'pcsx2_vr_mode', 'value': 'stereoscopic'}) is not False:
                 raise c.Failed('stereo, 10240 pixels wide at 8x, was taken')
+            finish()
+            (system / 'fake-hold-load').write_bytes(b'')
+            session.start(str(iso), console='ps2', options={key: '8x'})
+            deadline = time.monotonic() + 10
+            while not (system / 'fake-held-load').exists():
+                if time.monotonic() > deadline:
+                    raise c.Failed('the fake core never held at load')
+                time.sleep(0.05)
+            refused = session.call('option', {'key': 'pcsx2_vr_mode', 'value': 'stereoscopic'})
+            (system / 'fake-hold-load').unlink()
+            (system / 'fake-held-load').unlink()
+            if refused is not False:
+                raise c.Failed('stereo at 8x was taken while the game loaded')
+            status = session.wait(lambda s: s and (s['ready'] or s['ended']), 30)
+            if status['ended'] or status['options'][key]['activeValue'] != '8x':
+                raise c.Failed(f'8x with stereo refused while loading gave {status}')
         elif option['activeValue'] != '4x' or '10240 x 10240' not in status['resolutionError']:
             raise c.Failed(f'8x did not fit the texture limit, yet {status}')
         if session.call('option', {'key': 'pcsx2_vr_mode', 'value': 'disabled'}) is not True:

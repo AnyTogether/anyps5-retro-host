@@ -182,8 +182,9 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   reports more than its source above says, or a smaller second context) ends
   the game with `other` before `context_reset`, with `resolutionError`
   saying why. The host does not unload and load the game again at a smaller
-  scale. While the game runs, `option` refuses stereo VR when the doubled
-  width would not fit. Measured on Windows with an NVIDIA RTX 4080 SUPER
+  scale. From the time the context is made, `option` refuses stereo VR when
+  the doubled width would not fit, and a stereo VR chosen while the game loads
+  is judged at that width after the load. Measured on Windows with an NVIDIA RTX 4080 SUPER
   (largest texture 32768), with the release-tested LRPS2: Jak and Daxter and
   Grand Theft Auto: Vice City ran at full speed at 1x, 2x and 4x and at 26 to
   40 frames a second at 8x, with the GPU about half busy; the host's GPU
@@ -439,7 +440,8 @@ A crash gives none of these, so the tests expect the exact code.
     itself in `resolutionError`, draw 2560-wide frames, refuse 8x and take 2x
     for the next start, keeping 4x active; a saved 8x without stereo must
     start at 8x when the context's largest texture holds 10240, refusing
-    stereo while it runs, or at 4x saying so; a core reporting a wider
+    stereo while it runs and while it loads (`fake-hold-load`), or at 4x
+    saying so; a core reporting a wider
     geometry than LRPS2's (`fake-ps2-wide`) must end with `other` and
     `resolutionError` before any frame, and the next game in the same host
     must start. It is skipped without a context, unless `--require-gpu` is
