@@ -51,6 +51,16 @@
  * the load fails without it. A game that loads writes the value it read for each of those options
  * to fake-ps2-options.txt there, so a test can see what the host gave it.
  *
+ * While the system directory holds both fake-ps2 and fake-gpu, it offers LRPS2's internal
+ * resolution and VR options (pcsx2_upscale_multiplier and pcsx2_vr_mode, with LRPS2's titles,
+ * values and defaults) instead of SwanStation's internal resolution, and a PS2 game reads them only
+ * in retro_load_game, before it asks for an OpenGL 3.3 core context, as LRPS2 does; it writes what it
+ * read to fake-ps2-video.txt there. It then draws as LRPS2 draws an NTSC game: frames of 640 x 448
+ * times the scale, and a largest geometry of 640 x 512 times the scale, twice as wide with VR
+ * "stereoscopic" (libretro/main.c, retro_get_system_av_info). While the system directory holds
+ * fake-ps2-wide, it reports a largest geometry four times as wide as that, as a core whose geometry
+ * the host did not foresee would.
+ *
  * A game started with fake_region "pal" is a PAL game: 50 frames a second and RETRO_REGION_PAL, as
  * SwanStation gives for a PAL console; otherwise it runs at 60 and is NTSC. While the system
  * directory holds fake-refresh-50, an NTSC game switches to 50 frames a second through
@@ -77,6 +87,9 @@
 #define MAX_HEIGHT 1080
 #define VRAM_WIDTH 1024
 #define VRAM_HEIGHT 512
+#define PS2_WIDTH 640
+#define PS2_HEIGHT 448
+#define PS2_MAX_HEIGHT 512
 #define GL_FRAMEBUFFER 0x8D40
 #define GL_RENDERBUFFER 0x8D41
 #define GL_PIXEL_PACK_BUFFER 0x88EB
@@ -322,8 +335,30 @@ static struct retro_core_option_v2_definition ps2_definitions[] = {
      "disabled"},
 };
 #define PS2_OPTIONS (sizeof ps2_definitions / sizeof ps2_definitions[0])
-static struct retro_core_option_v2_definition offered[sizeof definitions / sizeof definitions[0] + 1 + PS2_OPTIONS];
+static struct retro_core_option_v2_definition ps2_video_definitions[] = {
+    {"pcsx2_upscale_multiplier",
+     "Video > Internal Resolution (Restart)",
+     NULL,
+     "Draw at a multiple of the PS2's resolution. The software renderers draw at 2x for 2x and above.",
+     NULL,
+     NULL,
+     {{"1x (Native)", NULL}, {"2x", NULL}, {"4x", NULL}, {"8x", NULL}, {NULL, NULL}},
+     "1x (Native)"},
+    {"pcsx2_vr_mode",
+     "Video > VR",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"disabled", "Off"}, {"stereoscopic", "Stereoscopic"}, {NULL, NULL}},
+     "disabled"},
+};
+#define PS2_VIDEO_OPTIONS (sizeof ps2_video_definitions / sizeof ps2_video_definitions[0])
+static struct retro_core_option_v2_definition
+    offered[sizeof definitions / sizeof definitions[0] + PS2_VIDEO_OPTIONS + PS2_OPTIONS];
 static bool ps2_wanted;
+static bool ps2_game;
+static bool ps2_stereo;
 static struct retro_core_options_v2 options = {NULL, offered};
 
 RETRO_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
@@ -371,7 +406,7 @@ RETRO_API void retro_init(void) {
   struct retro_log_callback log;
   unsigned version = 0;
   unsigned i;
-  const size_t count = sizeof definitions / sizeof definitions[0] - 1;
+  size_t count = sizeof definitions / sizeof definitions[0] - 1;
   log_printf = environment(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log) ? log.log : NULL;
   for (i = 0; i < RETRO_NUM_CORE_OPTION_VALUES_MAX; ++i) {
     snprintf(many_values[i], sizeof many_values[i], "v%u", i);
@@ -386,9 +421,16 @@ RETRO_API void retro_init(void) {
   memset(&hw, 0, sizeof hw);
   memset(offered, 0, sizeof offered);
   memcpy(offered, definitions, count * sizeof definitions[0]);
-  if (gpu_wanted) offered[count] = resolution;
   ps2_wanted = in_system_directory("fake-ps2");
-  if (ps2_wanted) memcpy(offered + count + (gpu_wanted ? 1 : 0), ps2_definitions, sizeof ps2_definitions);
+  ps2_game = false;
+  ps2_stereo = false;
+  if (gpu_wanted && ps2_wanted) {
+    memcpy(offered + count, ps2_video_definitions, sizeof ps2_video_definitions);
+    count += PS2_VIDEO_OPTIONS;
+  } else if (gpu_wanted) {
+    offered[count++] = resolution;
+  }
+  if (ps2_wanted) memcpy(offered + count, ps2_definitions, sizeof ps2_definitions);
   if (environment(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) && version >= 2) {
     environment(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &options);
   }
@@ -424,6 +466,16 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info) {
 RETRO_API void retro_get_system_av_info(struct retro_system_av_info* info) {
   const unsigned drawn = hw.context_type ? scale : 1;
   memset(info, 0, sizeof *info);
+  if (ps2_game && hw.context_type) {
+    info->geometry.base_width = PS2_WIDTH * scale;
+    info->geometry.base_height = PS2_HEIGHT * scale;
+    info->geometry.max_width = PS2_WIDTH * scale * (ps2_stereo ? 2 : 1) * (in_system_directory("fake-ps2-wide") ? 4 : 1);
+    info->geometry.max_height = PS2_MAX_HEIGHT * scale;
+    info->geometry.aspect_ratio = 4.0f / 3.0f;
+    info->timing.fps = fps;
+    info->timing.sample_rate = 44100.0;
+    return;
+  }
   info->geometry.base_width = WIDTH * drawn;
   info->geometry.base_height = HEIGHT * drawn;
   info->geometry.max_width = hw.context_type ? VRAM_WIDTH * scale : MAX_WIDTH;
@@ -470,6 +522,19 @@ static bool load_ps2(void) {
     fprintf(file, "%s=%s\n", variable.key, read ? variable.value : "");
   }
   fclose(file);
+  if (gpu_wanted) {
+    struct retro_variable upscale = {"pcsx2_upscale_multiplier", NULL};
+    struct retro_variable vr = {"pcsx2_vr_mode", NULL};
+    const bool scaled = environment(RETRO_ENVIRONMENT_GET_VARIABLE, &upscale) && upscale.value;
+    const bool stereo = environment(RETRO_ENVIRONMENT_GET_VARIABLE, &vr) && vr.value;
+    scale = scaled && atoi(upscale.value) >= 1 && atoi(upscale.value) <= 8 ? (unsigned)atoi(upscale.value) : 1;
+    ps2_stereo = stereo && strcmp(vr.value, "stereoscopic") == 0;
+    file = open_in_system_directory("fake-ps2-video.txt", "wb");
+    if (!file) return false;
+    fprintf(file, "pcsx2_upscale_multiplier=%s\npcsx2_vr_mode=%s\n", scaled ? upscale.value : "", stereo ? vr.value : "");
+    fclose(file);
+  }
+  ps2_game = true;
   return true;
 }
 
@@ -649,7 +714,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game) {
   }
 #endif
   if (gpu_wanted) {
-    read_scale();
+    if (!ps2_game) read_scale();
     hold_while_asked("load");
     hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
     hw.version_major = 3;
@@ -740,7 +805,7 @@ RETRO_API void retro_run(void) {
   if (gpu_ready) {
     bool changed = false;
     if (drawn_framebuffer && !state_kept(drawn_framebuffer, "between frames")) return;
-    if (environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &changed) && changed && read_scale()) {
+    if (environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &changed) && changed && !ps2_game && read_scale()) {
       struct retro_system_av_info info;
       retro_get_system_av_info(&info);
       environment(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &info);
@@ -748,11 +813,13 @@ RETRO_API void retro_run(void) {
     }
     drawn_framebuffer = (unsigned)hw.get_current_framebuffer();
     gl_bind_framebuffer(GL_FRAMEBUFFER, drawn_framebuffer);
-    gl_viewport(0, 0, (int)(WIDTH * scale), (int)(HEIGHT * scale));
+    const unsigned drawn_width = (ps2_game ? PS2_WIDTH : WIDTH) * scale;
+    const unsigned drawn_height = (ps2_game ? PS2_HEIGHT : HEIGHT) * scale;
+    gl_viewport(0, 0, (int)drawn_width, (int)drawn_height);
     gl_clear_color((float)(frame_count & 0xFF) / 255.0f, (float)((fill >> 8) & 0xFF) / 255.0f,
                    (float)(fill & 0xFF) / 255.0f, 1.0f);
     gl_clear(GL_COLOR_BUFFER_BIT);
-    video(RETRO_HW_FRAME_BUFFER_VALID, WIDTH * scale, HEIGHT * scale, 0);
+    video(RETRO_HW_FRAME_BUFFER_VALID, drawn_width, drawn_height, 0);
   } else if (in_system_directory("fake-dupe")) {
     video(NULL, width, height, 0);
   } else {

@@ -3,8 +3,8 @@
 
 """Host behaviour the fixtures do not cover: a stuck core, the core's names in status.core, the
 frame rate and region in status.timing and the rate a game is paced to, the memory card, ring growth, epochs across games, how the host leaves when the launcher goes, many
-start, volume and stop calls in a row, the internal resolutions a GPU game is offered, an OpenGL
-game's network calls, a PS2 game (capability ps2, docs/ps2.md) as the host runs LRPS2, and a core
+start, volume and stop calls in a row, the internal resolutions a GPU game is offered, a PS2 GPU
+game's internal resolution (capability ps2ResolutionLimits), an OpenGL game's network calls, a PS2 game (capability ps2, docs/ps2.md) as the host runs LRPS2, and a core
 started for the other console."""
 
 import argparse
@@ -670,6 +670,114 @@ def gpu_limits(program, core, log, require_gpu):
         session.close()
 
 
+def ps2_limits(program, core, log, require_gpu):
+    """A PS2 GPU game's internal resolution (capability ps2ResolutionLimits): the fake core reads
+    pcsx2_upscale_multiplier only while it loads, as LRPS2 does, and its largest geometry is 640 x
+    512 times the scale, twice as wide with pcsx2_vr_mode "stereoscopic". The host judges the value
+    in the context it makes before the game loads: a saved 8x in stereo, 10240 pixels wide, more
+    than protocol.md's 8192, starts at 4x, which is the value the core is given, and 8x is refused
+    for the next start. With VR off, 8x fits the frame and is kept when the context's largest
+    texture holds PCSX2's 10240 x 10240 targets, or starts at 4x saying so; while it runs at 8x,
+    turning stereo on is refused. A core whose largest geometry is wider than LRPS2's ends the game
+    with other before any frame, and the next game in the same host starts."""
+    session = Session(program, core, log)
+    key = 'pcsx2_upscale_multiplier'
+    try:
+        system = Path(session.paths['system'])
+        for name in ('fake-gpu', 'fake-ps2'):
+            (system / name).write_bytes(b'')
+        (system / 'pcsx2' / 'bios').mkdir(parents=True)
+        (system / 'pcsx2' / 'bios' / 'fake-ps2-bios.bin').write_bytes(b'')
+        iso = session.work / 'discs' / 'game.iso'
+        iso.write_bytes(b'\0' * 2048)
+
+        def start(**options):
+            session.start(str(iso), console='ps2', options=options)
+            return session.wait(lambda s: s and (s['ready'] or s['ended']), 30)
+
+        def given():
+            return (system / 'fake-ps2-video.txt').read_text(encoding='utf-8').splitlines()
+
+        def frame_width(width):
+            def test(s):
+                slot = session.ring.latest() if session.ring else None
+                return s['ended'] or (slot is not None and slot['width'] == width)
+            return test
+
+        def finish():
+            session.call('stop')
+            status = session.wait(lambda s: s['ended'], 10)
+            if status['errorCode']:
+                raise c.Failed(f'the game stopped with {status}')
+            session.call('release')
+
+        status = start(**{key: '8x', 'pcsx2_vr_mode': 'stereoscopic'})
+        if status['ended']:
+            raise c.Failed(f'a saved 8x in stereo ended the game: {status["errorCode"]!r} {status["error"]!r}')
+        if not status['hardware']:
+            if require_gpu:
+                raise c.Failed('the host made no OpenGL context')
+            return 'skipped: the host made no OpenGL context here'
+        option = status['options'][key]
+        if option['values'] != ['1x (Native)', '2x', '4x'] or option['activeValue'] != '4x' or \
+                option['values'][option['selected']] != '4x' or option['restart'] is not True:
+            raise c.Failed(f'a saved 8x in stereo did not start at 4x with 8x refused: {option}')
+        if '8x' not in status['resolutionError'] or '10240' not in status['resolutionError']:
+            raise c.Failed(f'resolutionError does not say why 8x is not used: {status["resolutionError"]!r}')
+        if given() != [f'{key}=4x', 'pcsx2_vr_mode=stereoscopic']:
+            raise c.Failed(f'the core was given {given()}')
+        status = session.wait(frame_width(640 * 4), 30)
+        if status['ended']:
+            raise c.Failed(f'the game ended at 4x: {status["errorCode"]!r} {status["error"]!r}')
+        if session.call('option', {'key': key, 'value': '8x'}) is not False:
+            raise c.Failed('8x, which is not offered, was taken')
+        if session.call('option', {'key': key, 'value': '2x'}) is not True:
+            raise c.Failed('2x was not taken for the next start')
+        status = session.call('status')
+        if status['options'][key]['activeValue'] != '4x' or status['resolutionError']:
+            raise c.Failed(f'after choosing 2x for the next start: {status}')
+        finish()
+
+        status = start(**{key: '8x'})
+        if status['ended'] or not status['hardware']:
+            raise c.Failed(f'a saved 8x ended the game or drew in software: {status}')
+        option = status['options'][key]
+        if option['activeValue'] == '8x':
+            if option['values'] != ['1x (Native)', '2x', '4x', '8x'] or status['resolutionError']:
+                raise c.Failed(f'8x fits, yet {status}')
+            status = session.wait(frame_width(640 * 8), 30)
+            if status['ended']:
+                raise c.Failed(f'the game ended at 8x: {status["errorCode"]!r} {status["error"]!r}')
+            if session.call('option', {'key': 'pcsx2_vr_mode', 'value': 'stereoscopic'}) is not False:
+                raise c.Failed('stereo, 10240 pixels wide at 8x, was taken')
+        elif option['activeValue'] != '4x' or '10240 x 10240' not in status['resolutionError']:
+            raise c.Failed(f'8x did not fit the texture limit, yet {status}')
+        if session.call('option', {'key': 'pcsx2_vr_mode', 'value': 'disabled'}) is not True:
+            raise c.Failed('VR off was not taken')
+        finish()
+
+        (system / 'fake-ps2-wide').write_bytes(b'')
+        frames = session.frames
+        status = start(**{key: '4x'})
+        if not status['ended'] or status['ready'] or status['errorCode'] != 'other' or \
+                '4x' not in status['resolutionError'] or '10240' not in status['resolutionError']:
+            raise c.Failed(f'a geometry wider than LRPS2 reports at 4x gave {status}')
+        if session.frames != frames:
+            raise c.Failed('a game the host ended before its first frame drew')
+        session.call('release')
+        (system / 'fake-ps2-wide').unlink()
+
+        status = start(**{key: '2x'})
+        if status['ended'] or status['options'][key]['activeValue'] != '2x' or status['resolutionError']:
+            raise c.Failed(f'the game after the one that ended gave {status}')
+        status = session.wait(frame_width(640 * 2), 30)
+        if status['ended']:
+            raise c.Failed(f'the game ended at 2x: {status["errorCode"]!r} {status["error"]!r}')
+        finish()
+    finally:
+        session.close()
+
+
 def discs(program, core, log):
     """initialDisc picks the disc a playlist boots with, changeDisc swaps discs and refuses what it
     cannot do, and a game with one disc has no discs in status."""
@@ -1072,7 +1180,7 @@ def main():
         stuck_core, unloadable, core_identity, game_timing, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
         launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, option_keys_not_utf8,
         rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory, ps2_game, core_for_other_console)}
-    for test in (many_games, gpu_limits, gpu_network):
+    for test in (many_games, gpu_limits, ps2_limits, gpu_network):
         tests[test.__name__] = lambda program, core, log, test=test: test(program, core, log, options.require_gpu)
     chosen = [(name, test) for name, test in tests.items() if not options.names or name in options.names]
     for name, test in chosen:

@@ -66,9 +66,34 @@ int main() {
   Expect(!LimitResolution(scales, 16, 0, 1024, 512, 8192, 8192), "an index past the values is refused");
 
   Expect(ParseScale("16") == 16u && ParseScale("1") == 1u && ParseScale("1024") == 1024u, "whole scales parse");
-  Expect(!ParseScale("0") && !ParseScale("01") && !ParseScale("1025") && !ParseScale("2x") && !ParseScale("") &&
+  Expect(!ParseScale("0") && !ParseScale("01") && !ParseScale("1025") && !ParseScale("2.5") && !ParseScale("") &&
              !ParseScale("-1") && !ParseScale("99999"),
          "other text is not a scale");
+
+  Expect(ParseScale("2x") == 2u && ParseScale("1x (Native)") == 1u && ParseScale("8x") == 8u &&
+             ParseScale("1024x") == 1024u,
+         "LRPS2's scales parse");
+  Expect(!ParseScale("x") && !ParseScale("2X") && !ParseScale("02x") && !ParseScale("2x(Native)") &&
+             !ParseScale("2 x") && !ParseScale("2x ") && !ParseScale("0x") && !ParseScale("1025x") &&
+             !ParseScale("2xx"),
+         "other text with an x is not a scale");
+
+  const std::vector<std::string> ps2 = {"1x (Native)", "2x", "4x", "8x"};
+  const auto ps2_8x = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, 8192 / 1280);
+  Expect(ps2_8x && ps2_8x->offered == std::vector<size_t>({0, 1, 2}) && ps2_8x->selected == 2,
+         "PS2 8x needs 10240 targets: an 8192 texture limit offers 1x to 4x");
+  Expect(ps2_8x && ps2_8x->refused_scale && ps2_8x->refused_width == 5120 && ps2_8x->refused_height == 4096,
+         "8x is refused for its targets, as its 5120 x 4096 frame fits");
+  Expect(ps2_8x && ps2_8x->width == 2560 && ps2_8x->height == 2048, "4x of 640 x 512 is 2560 x 2048");
+  const auto ps2_large = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, 32768 / 1280);
+  Expect(ps2_large && ps2_large->offered.size() == 4 && ps2_large->selected == 3 && !ps2_large->refused_scale,
+         "a 32768 texture limit offers PS2 8x");
+  const auto stereo = LimitResolution(ps2, 3, 0, 1280, 512, 8192, 8192, 32768 / 1280);
+  Expect(stereo && stereo->selected == 2 && !stereo->refused_scale && stereo->refused_width == 10240,
+         "stereo PS2 8x is refused for its 10240-wide frame");
+  const auto small_texture = LimitResolution(ps2, 3, 2, 2560, 2048, 8192, 8192, 4096 / 1280);
+  Expect(small_texture && small_texture->offered == std::vector<size_t>({0, 1}) && !small_texture->active_offered,
+         "a 4096 texture limit offers PS2 1x and 2x, judged from the geometry at 4x");
 
   if (failures) return 1;
   std::puts("All resolution checks passed.");

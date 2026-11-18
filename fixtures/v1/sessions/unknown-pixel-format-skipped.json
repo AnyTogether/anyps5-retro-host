@@ -28,7 +28,8 @@
           "coreIdentity",
           "gameTiming",
           "ps2",
-          "ps1Lockstep"
+          "ps1Lockstep",
+          "ps2ResolutionLimits"
         ],
         "pixelFormat": "bgra8"
       },

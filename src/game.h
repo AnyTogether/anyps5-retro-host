@@ -30,6 +30,20 @@ struct retro_game_geometry;
 
 namespace retro_host {
 
+struct ResolutionLimit;
+
+// What an OpenGL context lets a game's internal resolution reach: frames of at most 8192 x 8192
+// (protocol.md "Frame ring") and no larger than the context's framebuffer, and, for a core whose
+// targets the host judges, targets no larger than the context's largest texture.
+struct FrameLimit {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t texture = 0;
+  // The side of the core's largest target at scale 1, or 0 when the host does not judge targets.
+  uint32_t target = 0;
+  uint32_t MaxScale() const { return target ? texture / target : UINT32_MAX; }
+};
+
 // The console a game is for (protocol.md "start", console): PS1 on SwanStation, or, with the
 // capability ps2, PS2 on LRPS2 (docs/ps2.md).
 enum class Console { kPs1, kPs2 };
@@ -209,6 +223,22 @@ class Game {
   // instead, and the largest geometry at it is returned; otherwise std::nullopt, as the core's
   // geometry fits. Called with mutex_ held, on the game's thread, with gpu_ made.
   std::optional<std::pair<uint32_t, uint32_t>> LimitResolution(uint32_t max_width, uint32_t max_height);
+  // A PS2 game's internal resolution, which LRPS2 reads once, in retro_load_game, before it asks for
+  // its OpenGL context (docs/host.md "Resolution limits"). Before the game loads, the host makes the
+  // context LRPS2 asks for (gpu_, early_gpu_), offers only the scales whose largest geometry, 640 x
+  // 512 times the scale, fits it, and gives the core the largest of them when the value asked for
+  // does not. On the game's thread, before retro_load_game.
+  void LimitPs2ResolutionBeforeLoad();
+  // Once LRPS2 has loaded and reported its largest geometry, judges the value it loaded with against
+  // the context it draws in; false, with resolution_refused_ saying why, when it does not fit and the
+  // game must not draw. Called with mutex_ held, on the game's thread, with gpu_ made.
+  bool Ps2ResolutionFits(uint32_t max_width, uint32_t max_height);
+  // Narrows option to the values limit offers and moves it to limit's selected value; when that is
+  // not the value asked for, resolution_refused_ says why, and that the game uses the new value now
+  // or, for next_start, when it starts again.
+  void ApplyResolutionLimit(Option& option, const ResolutionLimit& limit, const FrameLimit& frame, bool next_start);
+  // Whether a PS2 game's frames still fit ps2_limit_ with pcsx2_vr_mode's eyes side by side.
+  bool Ps2StereoFits() const;
   std::string CardPath() const;
   void RefreshDiscs();
   template <typename T>
@@ -245,6 +275,9 @@ class Game {
   bool options_changed_ = false;
   // Why the internal resolution asked for is not used, while the game uses another.
   std::string resolution_refused_;
+  // The limits a PS2 game's internal resolution was judged against, once the game has loaded in an
+  // OpenGL context; an option call that would widen its frames past them is refused.
+  std::optional<FrameLimit> ps2_limit_;
   // The game runs without an OpenGL context, so the core draws in software.
   bool software_ = false;
   Disc disc_;
@@ -267,6 +300,10 @@ class Game {
   FrameResult frame_failure_ = FrameResult::kShown;
   // The core's OpenGL context (RETRO_ENVIRONMENT_SET_HW_RENDER), used on the game's thread.
   std::unique_ptr<Gpu> gpu_;
+  // gpu_ was made before retro_load_game for a PS2 game's internal resolution and the core has not
+  // asked for it yet; RETRO_ENVIRONMENT_SET_HW_RENDER hands it over when the core asks for the same
+  // kind of context, and it is dropped when the core asks for none.
+  bool early_gpu_ = false;
   std::atomic<bool> hardware_{false};
   void (*hw_context_reset_)() = nullptr;
   void (*hw_context_destroy_)() = nullptr;

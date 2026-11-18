@@ -179,7 +179,8 @@ Host::Outcome Host::Hello(const Json& message) {
                        {"version", 1},
                        {"pid", ProcessId()},
                        {"hostVersion", ANYPS5_RETRO_HOST_VERSION},
-                       {"capabilities", JsonArray{"ps1", "coreIdentity", "gameTiming", "ps2", "ps1Lockstep"}},
+                       {"capabilities",
+                        JsonArray{"ps1", "coreIdentity", "gameTiming", "ps2", "ps1Lockstep", "ps2ResolutionLimits"}},
                        {"pixelFormat", format_name}}));
   return Outcome::kContinue;
 }
