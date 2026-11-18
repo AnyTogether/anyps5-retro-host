@@ -834,9 +834,9 @@ def performance(program, core, log, require_gpu):
             raise c.Failed(f'a game that keeps up gave {kept_up}')
 
         (system / 'fake-slow').write_bytes(b'')
-        slow = playing(measured(lambda p: p['speed'] < 0.45), 'with 40 ms more a frame')
-        if not slow['work'] > 2:
-            raise c.Failed(f'a frame of more than 40 ms at 60 frames a second gave work {slow["work"]}')
+        # Until the 5 seconds hold only slow frames, speed and work each still mix in faster ones.
+        playing(measured(lambda p: p['work'] is not None and p['work'] > 2 and p['speed'] < 0.45),
+                'with 40 ms more a frame')
         (system / 'fake-slow').unlink()
 
         (system / 'fake-dupe').write_bytes(b'')
