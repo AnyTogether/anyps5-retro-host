@@ -170,9 +170,10 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   for the same one, so the limits judged are those of the context that draws
   (a request for another context gets a new one, judged again after the
   load; a core that asks for none drops it). LRPS2's largest geometry is 640
-  × 512 times the scale, PAL's height for every game, and twice as wide while
-  `pcsx2_vr_mode` is `stereoscopic` (`retro_get_system_av_info`): 5120 × 4096
-  at 8x. The host offers the scales whose largest geometry fits as above and
+  × 512 times the scale, PAL's height for every game
+  (`retro_get_system_av_info`): 5120 × 4096 at 8x. Stereo VR would make it
+  twice as wide; the host keeps `pcsx2_vr_mode` at `disabled` ([ps2.md](ps2.md)
+  "What the protocol gains"), so it is never judged. The host offers the scales whose largest geometry fits as above and
   whose GS targets, 1280 × 1280 times the scale, fit the context's
   `GL_MAX_TEXTURE_SIZE`: upstream PCSX2 clamps the scale to that rule
   (`GSGetMaxUpscaleMultiplier`, "Maximum GS target size is 1280x1280") but
@@ -185,9 +186,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   reports more than its source above says, or a smaller second context) ends
   the game with `other` before `context_reset`, with `resolutionError`
   saying why. The host does not unload and load the game again at a smaller
-  scale. From the time the context is made, `option` refuses stereo VR when
-  the doubled width would not fit, and a stereo VR chosen while the game loads
-  is judged at that width after the load. Measured on Windows with an NVIDIA RTX 4080 SUPER
+  scale. Measured on Windows with an NVIDIA RTX 4080 SUPER
   (largest texture 32768), with the release-tested LRPS2: Jak and Daxter and
   Grand Theft Auto: Vice City ran at full speed at 1x, 2x and 4x and at 26 to
   40 frames a second at 8x, with the GPU about half busy; the host's GPU
@@ -195,10 +194,11 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   8x. The limit keeps a game within what the host can pass on and the GPU
   can hold; it does not judge speed. With this host on the same PC, Jak and
   Daxter drew in the context made before the load (the log says `[host]
-  OpenGL: the context made before the game loaded`): a saved 8x in stereo
-  started at 4x (2048 × 1792 frames at 59.9 frames a second, recorded in
-  [`call-status-ps2-resolution.json`](../fixtures/v1/messages/call-status-ps2-resolution.json)),
-  4x and 8x started as asked, and stereo was refused at 8x.
+  OpenGL: the context made before the game loaded`), and 4x and 8x started
+  as asked. Asked for 8x in stereo with VR depth 200%, it started at 8x with
+  VR off (4096 × 3584 frames, about 47 frames a second in the title scene;
+  recorded in
+  [`call-status-ps2-resolution.json`](../fixtures/v1/messages/call-status-ps2-resolution.json)).
 - **Options.** The host reports core options version 2 and takes the
   definitions the core gives (`SET_CORE_OPTIONS_V2` or `_V2_INTL`, English
   text). `start.options` sets the starting values. An `option` call is
@@ -540,15 +540,16 @@ A crash gives none of these, so the tests expect the exact code.
   `FAKE_CORE_NAME`. With a `fake-ps2` file it also offers LRPS2's
   `pcsx2_bios` (one value, `fake-ps2-bios.bin`),
   `pcsx2_shared_memory_cards`, `pcsx2_usb_camera`, `pcsx2_dev9_hdd`,
-  `pcsx2_dev9_hdd_size`, `pcsx2_dev9_eth`, `pcsx2_renderer` and
-  `pcsx2_multitap` with LRPS2's titles and defaults, writes each port's device to
+  `pcsx2_dev9_hdd_size`, `pcsx2_dev9_eth`, `pcsx2_renderer`,
+  `pcsx2_multitap`, `pcsx2_vr_mode` and `pcsx2_vr_depth` with LRPS2's titles
+  and defaults, writes each port's device to
   `fake-ps2-ports.txt`, and loads a `.iso` or `.elf` as LRPS2 loads a PS2
   game: without `pcsx2/bios/fake-ps2-bios.bin` it logs LRPS2's message for a
   missing BIOS and fails, with `fake-ps2-fail` it fails without it, and a
   game that loads writes the option values it read to `fake-ps2-options.txt`.
   With both `fake-ps2` and `fake-gpu` it offers LRPS2's
-  `pcsx2_upscale_multiplier` and `pcsx2_vr_mode` instead of SwanStation's
-  internal resolution; a PS2 game reads them only in `retro_load_game`,
+  `pcsx2_upscale_multiplier` instead of SwanStation's internal resolution; a
+  PS2 game reads it and `pcsx2_vr_mode` only in `retro_load_game`,
   before it asks for an OpenGL 3.3 core context, writes what it read to
   `fake-ps2-video.txt`, and draws LRPS2's sizes for an NTSC game (frames 640
   × 448 times the scale, largest geometry 640 × 512 times it, twice as wide
@@ -617,8 +618,9 @@ A crash gives none of these, so the tests expect the exact code.
     was found.`, one the core cannot load with `core`, both with `console`
     `ps2`; a running one gets LRPS2's DualShock 2 on each connected port and
     the host's own memory card, renderer, multitap, USB camera, DEV9 hard
-    disk, hard disk size and DEV9 ethernet values whatever `start.options`
-    asks, none of which `status.options` lists, and `pcsx2_bios` is listed
+    disk, hard disk size, DEV9 ethernet, VR and VR depth values whatever
+    `start.options` asks, none of which `status.options` lists or `option`
+    takes, and `pcsx2_bios` is listed
     with `restart` `true`; the `lockstep` method returns `false` for it; and a
     PS1 game after it in the same host is `console` `ps1` with SwanStation's
     analog controller;
@@ -672,17 +674,20 @@ A crash gives none of these, so the tests expect the exact code.
     but before the host saw its geometry, the core must be given 2x by
     `context_reset`, with no 16x offered and nothing refused. Without an
     OpenGL context that test is skipped, unless `--require-gpu` is given;
-  - a PS2 game's internal resolution (`ps2_limits`): a saved 8x in stereo
-    (10240 wide) must start at 4x, offer 1x to 4x, give the core 4x, explain
-    itself in `resolutionError`, draw 2560-wide frames, refuse 8x and take 2x
-    for the next start, keeping 4x active; a saved 8x without stereo must
-    start at 8x when the context's largest texture holds 10240, refusing
-    stereo while it runs and while it loads (`fake-hold-load`), or at 4x
-    saying so; a core reporting a wider
-    geometry than LRPS2's (`fake-ps2-wide`) must end with `other` and
-    `resolutionError` before any frame, and the next game in the same host
-    must start. It is skipped without a context, unless `--require-gpu` is
-    given;
+  - a PS2 game's internal resolution (`ps2_limits`): a saved 8x must start
+    at 8x and offer 1x to 8x when the context's largest texture holds 10240,
+    or start at 4x, offer 1x to 4x and say so in `resolutionError`; the core
+    must be given that value, draw frames of its width, and the game must
+    refuse 16x and take 2x for the next start, keeping its value active; a
+    core reporting a wider geometry than LRPS2's (`fake-ps2-wide`) must end
+    with `other` and `resolutionError` before any frame, and the next game in
+    the same host must start. It is skipped without a context, unless
+    `--require-gpu` is given;
+  - a PS2 game's VR (`ps2_vr_off`): asked for 8x in stereo, which would make
+    the fake core's largest geometry 10240 wide, the core must be given VR off
+    and the game must run and draw, with neither VR option in `status.options`
+    and `option` refusing stereo while it loads (`fake-hold-load`) and while it
+    runs. It is skipped without a context, unless `--require-gpu` is given;
   - Linux: an OpenGL game run under `strace -f -e trace=%network`
     (`gpu_network`) with `DISPLAY` set to an X server over TCP
     (`127.0.0.1:9`) must make no call protocol.md "Network" forbids, so a host

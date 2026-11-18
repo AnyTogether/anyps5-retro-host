@@ -218,8 +218,8 @@ The internal resolution is `pcsx2_upscale_multiplier` (`1x (Native)`, `2x`,
 `ps2ResolutionLimits` the host limits it as it limits SwanStation's
 ([host.md](host.md) "Resolution limits", protocol.md "status"): LRPS2 reads it
 only while the game loads, so the host makes the game's OpenGL context before
-the load, offers the scales whose frames (640 × 512 times the scale, twice as
-wide in stereo VR) fit what it can pass on and whose GS targets (1280 × 1280
+the load, offers the scales whose frames (640 × 512 times the scale; stereo
+VR, which would double the width, is fixed off) fit what it can pass on and whose GS targets (1280 × 1280
 times the scale, upstream PCSX2's rule, which never refuses 1x) fit the
 context's largest texture,
 starts a saved value that does not fit at the largest that does, and hands
@@ -283,10 +283,21 @@ All of it is behind the `ps2` capability ([protocol.md](protocol.md)
     `pcsx2/DEV9hdd.raw` in the system directory at `pcsx2_dev9_hdd_size` (40
     GiB by default) on first use. `pcsx2_dev9_hdd_size` is fixed at its
     default, `40 GiB`, since it does nothing with no hard disk.
+  - `pcsx2_vr_mode` (`disabled`). Turned on (`stereoscopic`), LRPS2 sends a
+    left and a right eye for a 3D display or a headset's screen, through
+    `RETRO_ENVIRONMENT_GET_VIDEO_VIEWS_STATUS`, and its largest geometry
+    becomes twice as wide (`retro_get_system_av_info`, 10240 × 4096 at 8x,
+    more than the host passes on). The host presents no stereo views, and
+    AnyPS5 has no VR, so stereo can only cost a smaller internal resolution
+    and a doubled, unusable picture. `pcsx2_vr_depth` is fixed at its
+    default, `100%`: LRPS2 reads it only to make the eyes
+    (`GSState::VRFrame` in `pcsx2/GS/Renderers/Common/GSRenderer.cpp`), so it
+    does nothing with VR off.
 
   These were found by reading every option in `libretro_core_options.h` at
   `LRPS2_COMMIT` for one that opens the network, a camera, a microphone or
-  another device, or creates a large file. The rest read files or write small
+  another device, or creates a large file, and VR, which needs a display the
+  host does not have. The rest read files or write small
   ones the way any libretro frontend allows: cheats and an external
   `GameIndex.yaml` are read from the system directory when turned on, and the
   shader cache is written to `pcsx2/cache` there unless

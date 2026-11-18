@@ -41,7 +41,7 @@ CORE_NAME = 'ParaLLEl PS2'
 BIOS_BYTES = 4 * 1024 * 1024
 # The options the host fixes for LRPS2 and leaves out of status (src/game.cpp, kPs2ForcedOptions).
 FIXED = {'pcsx2_shared_memory_cards', 'pcsx2_renderer', 'pcsx2_multitap', 'pcsx2_usb_camera', 'pcsx2_dev9_eth',
-         'pcsx2_dev9_hdd', 'pcsx2_dev9_hdd_size'}
+         'pcsx2_dev9_hdd', 'pcsx2_dev9_hdd_size', 'pcsx2_vr_mode', 'pcsx2_vr_depth'}
 # Options whose status entries this test prints for the fixture.
 SHOWN = ('pcsx2_fastboot', 'pcsx2_enable_cheats')
 
