@@ -45,6 +45,7 @@ constexpr unsigned kNoError = 0;
 constexpr unsigned kPixelPackBuffer = 0x88EB;
 constexpr unsigned kMaxRenderbufferSize = 0x84E8;
 constexpr unsigned kMaxViewportDims = 0x0D3A;
+constexpr unsigned kMaxTextureSize = 0x0D33;
 constexpr unsigned kVendor = 0x1F00;
 constexpr unsigned kRenderer = 0x1F01;
 constexpr unsigned kVersion = 0x1F02;
@@ -124,6 +125,7 @@ bool Gpu::LoadFunctions(const std::string& way) {
   gl->GetIntegerv(kMaxViewportDims, viewport);
   max_width_ = static_cast<uint32_t>(std::max(0, std::min(renderbuffer, viewport[0])));
   max_height_ = static_cast<uint32_t>(std::max(0, std::min(renderbuffer, viewport[1])));
+  max_texture_ = static_cast<uint32_t>(std::max(0, gl->Integer(kMaxTextureSize)));
   gl_ = std::move(gl);
   return true;
 }

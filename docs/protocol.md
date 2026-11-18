@@ -523,6 +523,7 @@ the game on its own while the launcher thinks it is in lockstep.
 | `ps2` | PS2 games: `console` in [`start`](#start) and in [`status`](#status), with the same methods and ports as PS1 ([ps2.md](ps2.md)) |
 | `ps1Lockstep` | [Lockstep](#lockstep) for PS1 games: `start.lockstep`, the method `lockstep`, and the messages `step` and `sync` |
 | `saveStates` | [Save states](#savestate-and-loadstate) for PS1 and PS2 games, for one player: `start.states` and the methods `saveState` and `loadState` |
+| `ps2ResolutionLimits` | A PS2 game's internal resolution (`pcsx2_upscale_multiplier`) is limited to what the host can pass on, as PS1's is ([`status`](#status)). A launcher offers a PS2 internal resolution only to a host that lists it: a `ps2` host without it gives LRPS2 the value as given, and a frame larger than 8192 × 8192 ends the game with `frameTooLarge` |
 
 Later versions add capabilities such as PS3;
 [netplay.md](netplay.md) proposes more for PS1 online play.
@@ -704,7 +705,7 @@ Loads and starts a PS1 game, or, with the `ps2` capability and `console`
 | `disc` | path | A `.cue`, `.chd`, `.pbp` or `.m3u` file; for a PS2 game a `.iso`, `.chd`, `.cso`, `.zso`, `.cue` or `.elf` file, and no `.m3u` |
 | `system` | path | The core's system directory (BIOS files). LRPS2 looks for the PS2 BIOS in `pcsx2/bios` in it ([ps2.md](ps2.md) "The BIOS") |
 | `saves` | path | Where memory cards are kept; the host creates it if needed. Memory card 1 is the file `<disc's name without its extension>.srm` in it, as libretro frontends name it, and is checked for changes every 5 seconds between frames, also while paused, and written whenever the game ends: to a file beside it, flushed to the disk, then renamed over it, so a crash or power cut leaves the old card or the new one. A card file the host cannot read is left as it is and never written over, and `status.cardUnreadable` is `true`. A game started with `lockstep` neither reads nor writes the file ([Lockstep](#lockstep), "The memory card") |
-| `options` | object of strings, optional | Core option values saved by the player, by key, including the internal resolution (`swanstation_GPU_ResolutionScale`). Unknown keys and values are ignored |
+| `options` | object of strings, optional | Core option values saved by the player, by key, including the internal resolution (`swanstation_GPU_ResolutionScale`, and for a PS2 game `pcsx2_upscale_multiplier`). Unknown keys and values are ignored |
 | `initialDisc` | integer 0 to 127, optional | Only for an `.m3u`: the index of the playlist entry to insert at boot. With any other `disc`, and for a PS2 game, it is an `argument` error |
 | `states` | path, optional | Capability `saveStates`: the folder where this game's save states are kept ([saveState and loadState](#savestate-and-loadstate)). The host creates it on the first save, and writes nothing else in it. Without it, `saveState` and `loadState` are `argument` errors. The launcher MUST NOT send it to a host without `saveStates` |
 | `lockstep` | object, optional | Capability `ps1Lockstep`: the game starts in [lockstep](#lockstep), as the `lockstep` method's argument says, on the host's empty memory card rather than the player's, and runs not even its first frame before a `step`. For a PS2 game it is an `argument` error |
@@ -870,6 +871,31 @@ larger than those starts the game at the largest one listed, and
 `resolutionError` says why until the player chooses another value. Without
 an OpenGL context, or when not even the smallest scale fits, every value is listed; a
 frame larger than 8192 × 8192 then ends the game with `frameTooLarge`.
+
+With the capability `ps2ResolutionLimits`, a PS2 game's internal resolution
+(`pcsx2_upscale_multiplier`, whose values are written `<n>x`, alone or
+followed by a space and a label, as in `"1x (Native)"`) is limited the same
+way, with the differences that follow from LRPS2 applying it only when the
+game loads (`restart` is `true`):
+
+- The host judges it at `start`, before the game loads, in the OpenGL context
+  it then makes for the game. When it can make one, `values` lists only the
+  scales whose largest frame fits, as above, and whose GS targets (1280 × 1280
+  pixels times the scale) fit the context's largest texture, 1x always
+  counting as fitting it (upstream PCSX2's rule), from then on,
+  also when the game later fails to load. When not even the smallest scale
+  fits, every value is listed and the check below ends the game.
+- A saved value larger than those starts the game at the largest one listed:
+  `selected` and `activeValue` are that value, and `resolutionError` says why
+  until the player chooses another. `activeValue` stays the value the game
+  started with; a value chosen while the game runs is used at the next start.
+- A game whose core then reports a larger frame than that value allows ends
+  before its first frame, with `errorCode` `other` and `resolutionError`
+  saying why.
+- While the game runs, `option` refuses `pcsx2_vr_mode` `"stereoscopic"`,
+  which puts two pictures side by side and doubles the frame's width, when
+  the doubled frame would not fit; a game started in stereo, or set to stereo
+  while it loads, is judged at that width.
 
 `discs` has `labels` (array of at most 128 strings, the discs `changeDisc`
 reaches), `inserted` (index of the inserted disc, or null while the tray is

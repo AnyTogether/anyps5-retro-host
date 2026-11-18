@@ -126,7 +126,25 @@ constexpr int64_t kStateReadMs = 3000;
 constexpr int64_t kStateTakeMs = 3500;
 constexpr char kStateExtension[] = ".state";
 
+// The internal resolutions the host limits (docs/host.md "Resolution limits"): SwanStation's, which
+// the core applies while it runs, and LRPS2's, which it applies only when it loads the game.
 constexpr char kResolutionOption[] = "swanstation_GPU_ResolutionScale";
+constexpr char kPs2ResolutionOption[] = "pcsx2_upscale_multiplier";
+// LRPS2's largest geometry at scale 1, which grows with the scale: 640 x 512, PAL's height whatever
+// the game's region, and twice as wide while pcsx2_vr_mode is "stereoscopic", the eyes side by side
+// (libretro/main.c, retro_get_system_av_info, at LRPS2_COMMIT).
+constexpr uint32_t kPs2Width = 640;
+constexpr uint32_t kPs2Height = 512;
+constexpr char kPs2VrOption[] = "pcsx2_vr_mode";
+constexpr char kPs2VrStereo[] = "stereoscopic";
+// The side of the GS's largest target at scale 1, which upstream PCSX2 keeps within the GPU's
+// largest texture (GSGetMaxUpscaleMultiplier, "Maximum GS target size is 1280x1280") and LRPS2 does
+// not check.
+constexpr uint32_t kPs2Target = 1280;
+// The OpenGL context LRPS2 asks for first, for the GET_PREFERRED_HW_RENDER the host answers
+// (libretro_set_hw_render, RETRO_HW_CONTEXT_OPENGL_CORE).
+constexpr unsigned kPs2GlMajor = 3;
+constexpr unsigned kPs2GlMinor = 3;
 
 // SwanStation options it applies only when the console boots. They take effect at the next start,
 // like the options SwanStation marks "(Restart)".
@@ -258,6 +276,25 @@ const char* RegionName(unsigned region) {
     default:
       return "";
   }
+}
+
+FrameLimit LimitsOf(const Gpu& gpu, uint32_t target) {
+  return FrameLimit{std::min(kMaxFrameSide, gpu.MaxWidth()), std::min(kMaxFrameSide, gpu.MaxHeight()), gpu.MaxTexture(),
+                    target};
+}
+
+std::string Size(uint64_t width, uint64_t height) { return std::to_string(width) + " x " + std::to_string(height); }
+
+// Why a scale whose largest geometry is width x height, and whose targets are scale times
+// frame.target on each side, is more than frame allows.
+std::string TooLarge(const std::string& asked, uint32_t scale, uint32_t width, uint32_t height, const FrameLimit& frame) {
+  if (width <= frame.width && height <= frame.height && frame.target) {
+    const uint64_t target = static_cast<uint64_t>(frame.target) * scale;
+    return asked + " would make the core draw into pictures of up to " + Size(target, target) + ", more than the " +
+           Size(frame.texture, frame.texture) + " this OpenGL renderer can hold";
+  }
+  return asked + " would make the game's picture up to " + Size(width, height) + ", more than the " +
+         Size(frame.width, frame.height) + " the host can pass on with this OpenGL renderer";
 }
 
 void PutU16(std::string& out, uint16_t value) {
@@ -502,6 +539,7 @@ void Game::RunGame() {
 
   retro_game_info game{config_.disc.c_str(), nullptr, 0, nullptr};
   const bool ps2 = config_.console == Console::kPs2;
+  if (ps2) LimitPs2ResolutionBeforeLoad();
   if (!Get<bool (*)(const retro_game_info*)>("retro_load_game")(&game)) {
     DropGpu();
     Get<void (*)()>("retro_deinit")();
@@ -510,6 +548,10 @@ void Game::RunGame() {
     else if (!UsesBios()) Finish("No PS1 BIOS was found.", "bios");
     else Finish("The disc could not be read.", "disc");
     return;
+  }
+  if (early_gpu_) {
+    gpu_.reset();
+    early_gpu_ = false;
   }
   if (!ps2 && (disc_missing_ || !UsesBios())) {
     DropGpu();
@@ -551,19 +593,27 @@ void Game::RunGame() {
   uint32_t reserve_height = info.geometry.max_height;
   if (gpu_) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (const auto geometry = LimitResolution(info.geometry.max_width, info.geometry.max_height)) {
+    if (ps2) {
+      if (!Ps2ResolutionFits(info.geometry.max_width, info.geometry.max_height)) {
+        end_error = "The game's internal resolution makes pictures larger than the host can pass on with this OpenGL "
+                    "renderer.";
+        end_code = "other";
+      }
+    } else if (const auto geometry = LimitResolution(info.geometry.max_width, info.geometry.max_height)) {
       std::tie(reserve_width, reserve_height) = *geometry;
     }
   } else {
     std::lock_guard<std::mutex> lock(mutex_);
     software_ = true;
   }
-  if (gpu_ && gpu_->Reserve(reserve_width, reserve_height, hw_depth_, hw_stencil_)) {
-    hardware_ = true;
-    if (hw_context_reset_) hw_context_reset_();
-  } else if (gpu_) {
-    end_error = "The host could not make a framebuffer on the GPU for the game.";
-    end_code = "other";
+  if (gpu_ && end_code.empty()) {
+    if (gpu_->Reserve(reserve_width, reserve_height, hw_depth_, hw_stencil_)) {
+      hardware_ = true;
+      if (hw_context_reset_) hw_context_reset_();
+    } else {
+      end_error = "The host could not make a framebuffer on the GPU for the game.";
+      end_code = "other";
+    }
   }
   RefreshDiscs();
   fps_ = info.timing.fps;
@@ -943,13 +993,20 @@ bool Game::Environment(unsigned command, void* data) {
       auto* request = static_cast<retro_hw_render_callback*>(data);
       const bool core = request->context_type == RETRO_HW_CONTEXT_OPENGL_CORE;
       if (!core && request->context_type != RETRO_HW_CONTEXT_OPENGL) return false;
-      gpu_.reset();
-      gpu_ = Gpu::Create(core ? request->version_major : 0, core ? request->version_minor : 0, core);
-      if (!gpu_) {
-        std::fprintf(stderr, "[host] No OpenGL context could be made; the core draws in software.\n");
-        return false;
+      const bool made_before = early_gpu_ && core && request->version_major == kPs2GlMajor &&
+                               request->version_minor == kPs2GlMinor;
+      early_gpu_ = false;
+      if (!made_before) {
+        gpu_.reset();
+        gpu_ = Gpu::Create(core ? request->version_major : 0, core ? request->version_minor : 0, core);
+        if (!gpu_) {
+          std::fprintf(stderr, "[host] No OpenGL context could be made; the core draws in software.\n");
+          return false;
+        }
+        std::fprintf(stderr, "[host] OpenGL: %s\n", gpu_->Description().c_str());
+      } else {
+        std::fprintf(stderr, "[host] OpenGL: the context made before the game loaded\n");
       }
-      std::fprintf(stderr, "[host] OpenGL: %s\n", gpu_->Description().c_str());
       request->get_current_framebuffer = OnCurrentFramebuffer;
       request->get_proc_address = OnProcAddress;
       hw_context_reset_ = request->context_reset;
@@ -1210,13 +1267,16 @@ bool Game::SetOption(const std::string& key, const std::string& value) {
     if (option.name != key || !option.visible || option.fixed) continue;
     const auto found = std::find(option.values.begin(), option.values.end(), value);
     if (found == option.values.end()) return false;
+    if (config_.console == Console::kPs2 && option.key == kPs2VrOption && value == kPs2VrStereo && !Ps2StereoFits()) {
+      return false;
+    }
     const auto selected = static_cast<size_t>(found - option.values.begin());
     if (selected != option.selected) {
       option.selected = selected;
       options_changed_ = true;
       display_refresh_ = true;
     }
-    if (option.key == kResolutionOption) resolution_refused_.clear();
+    if (option.key == kResolutionOption || option.key == kPs2ResolutionOption) resolution_refused_.clear();
     return true;
   }
   return false;
@@ -1311,45 +1371,125 @@ void* Game::ProcAddress(const char* name) const { return gpu_ ? gpu_->Proc(name)
 void Game::DropGpu() {
   if (hardware_ && hw_context_destroy_) hw_context_destroy_();
   hardware_ = false;
+  early_gpu_ = false;
   gpu_.reset();
 }
 
 std::optional<std::pair<uint32_t, uint32_t>> Game::LimitResolution(uint32_t max_width, uint32_t max_height) {
-  const uint32_t width_limit = std::min(kMaxFrameSide, gpu_->MaxWidth());
-  const uint32_t height_limit = std::min(kMaxFrameSide, gpu_->MaxHeight());
+  const FrameLimit frame = LimitsOf(*gpu_, 0);
   for (auto& option : options_) {
     if (option.key != kResolutionOption || option.fixed || option.restart || !option.read) continue;
     const auto active = std::find(option.values.begin(), option.values.end(), option.active);
     if (active == option.values.end()) return std::nullopt;
     const auto limit = retro_host::LimitResolution(option.values, option.selected,
                                                    static_cast<size_t>(active - option.values.begin()), max_width,
-                                                   max_height, width_limit, height_limit);
+                                                   max_height, frame.width, frame.height);
     if (!limit) return std::nullopt;
-    const std::string asked = option.labels[option.selected];
-    const bool moved = limit->selected != option.selected;
-    std::vector<std::string> values;
-    std::vector<std::string> labels;
-    for (const size_t i : limit->offered) {
-      if (i == limit->selected) option.selected = values.size();
-      values.push_back(option.values[i]);
-      labels.push_back(option.labels[i]);
-    }
-    option.values = std::move(values);
-    option.labels = std::move(labels);
-    if (moved) {
-      options_changed_ = true;
-      resolution_refused_ = asked + " would make the game's picture up to " +
-                            std::to_string(limit->refused_width) + " x " + std::to_string(limit->refused_height) +
-                            ", more than the " + std::to_string(width_limit) + " x " + std::to_string(height_limit) +
-                            " the host can pass on with this OpenGL renderer, so the game uses " +
-                            option.labels[option.selected] + ".";
-    }
+    ApplyResolutionLimit(option, *limit, frame, false);
     if (limit->active_offered) return std::nullopt;
     option.active = option.values[option.selected];
     options_changed_ = true;
     return std::make_pair(limit->width, limit->height);
   }
   return std::nullopt;
+}
+
+void Game::ApplyResolutionLimit(Option& option, const ResolutionLimit& limit, const FrameLimit& frame,
+                                bool next_start) {
+  const std::string asked = option.labels[option.selected];
+  const uint32_t asked_scale = ParseScale(option.values[option.selected]).value_or(0);
+  const bool moved = limit.selected != option.selected;
+  std::vector<std::string> values;
+  std::vector<std::string> labels;
+  for (const size_t i : limit.offered) {
+    if (i == limit.selected) option.selected = values.size();
+    values.push_back(option.values[i]);
+    labels.push_back(option.labels[i]);
+  }
+  option.values = std::move(values);
+  option.labels = std::move(labels);
+  if (!moved) return;
+  if (!option.restart) options_changed_ = true;
+  resolution_refused_ = TooLarge(asked, asked_scale, limit.refused_width, limit.refused_height, frame) +
+                        (next_start ? ", so the game starts at " + option.labels[option.selected] + " next time."
+                                    : ", so the game uses " + option.labels[option.selected] + ".");
+}
+
+void Game::LimitPs2ResolutionBeforeLoad() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto limited = [](const Option& option) { return option.key == kPs2ResolutionOption && !option.fixed; };
+    if (std::none_of(options_.begin(), options_.end(), limited)) return;
+  }
+  gpu_ = Gpu::Create(kPs2GlMajor, kPs2GlMinor, true);
+  if (!gpu_) {
+    std::fprintf(stderr, "[host] No OpenGL context could be made before the game loaded.\n");
+    return;
+  }
+  std::fprintf(stderr, "[host] OpenGL, made before the game loaded: %s\n", gpu_->Description().c_str());
+  early_gpu_ = true;
+  const FrameLimit frame = LimitsOf(*gpu_, kPs2Target);
+  std::lock_guard<std::mutex> lock(mutex_);
+  ps2_limit_ = frame;
+  const bool stereo = Ps2StereoChosen();
+  for (auto& option : options_) {
+    if (option.key != kPs2ResolutionOption || option.fixed) continue;
+    // Judged as if the core had drawn at the first scale listed, from the geometry the core's source
+    // gives for it.
+    const auto first = std::find_if(option.values.begin(), option.values.end(),
+                                    [](const std::string& value) { return ParseScale(value).has_value(); });
+    if (first == option.values.end()) return;
+    const uint32_t scale = *ParseScale(*first);
+    const auto limit = retro_host::LimitResolution(
+        option.values, option.selected, static_cast<size_t>(first - option.values.begin()),
+        kPs2Width * (stereo ? 2 : 1) * scale, kPs2Height * scale, frame.width, frame.height, frame.MaxScale());
+    if (!limit) return;
+    ApplyResolutionLimit(option, *limit, frame, false);
+    option.active = option.values[option.selected];
+    return;
+  }
+}
+
+bool Game::Ps2ResolutionFits(uint32_t max_width, uint32_t max_height) {
+  const FrameLimit frame = LimitsOf(*gpu_, kPs2Target);
+  ps2_limit_ = frame;
+  for (auto& option : options_) {
+    if (option.key != kPs2ResolutionOption || option.fixed) continue;
+    const auto active = std::find(option.values.begin(), option.values.end(), option.active);
+    const auto scale = ParseScale(option.active);
+    if (active == option.values.end() || !scale) return true;
+    const auto index = static_cast<size_t>(active - option.values.begin());
+    // A stereo VR chosen while the game loaded is applied by LRPS2 at its next GET_VARIABLE_UPDATE,
+    // so the frame is judged at the width it will then have.
+    if (Ps2StereoChosen()) max_width = std::max(max_width, kPs2Width * 2 * *scale);
+    const auto limit = retro_host::LimitResolution(option.values, option.selected, index, max_width, max_height,
+                                                   frame.width, frame.height, frame.MaxScale());
+    if (limit && limit->active_offered) {
+      ApplyResolutionLimit(option, *limit, frame, true);
+      return true;
+    }
+    resolution_refused_ = TooLarge(option.labels[index], *scale, max_width, max_height, frame) +
+                          ", so the host ended the game before its first frame.";
+    return false;
+  }
+  return true;
+}
+
+bool Game::Ps2StereoChosen() const {
+  for (const auto& option : options_) {
+    if (option.key == kPs2VrOption && !option.fixed) return option.values[option.selected] == kPs2VrStereo;
+  }
+  return false;
+}
+
+bool Game::Ps2StereoFits() const {
+  if (!ps2_limit_) return true;
+  for (const auto& option : options_) {
+    if (option.key != kPs2ResolutionOption || option.fixed) continue;
+    const auto scale = ParseScale(option.active);
+    return !scale || static_cast<uint64_t>(kPs2Width) * 2 * *scale <= ps2_limit_->width;
+  }
+  return true;
 }
 
 std::string Game::ResolutionError() const {

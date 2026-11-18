@@ -213,10 +213,21 @@ render interface and context negotiation, and to copy each image into the
 ring; Mesa's lavapipe would let Linux CI run it. Direct3D is not planned: it is
 Windows only, and the launcher's Linux build must behave the same.
 
-The internal resolution is `pcsx2_upscale_multiplier`, applied at the next
-start. The host's resolution limits ([host.md](host.md) "Resolution limits")
-know SwanStation's option only, so for PS2 the value goes to the core as given;
-a frame larger than 8192 × 8192 still ends the game with `frameTooLarge`.
+The internal resolution is `pcsx2_upscale_multiplier` (`1x (Native)`, `2x`,
+`4x`, `8x`), applied at the next start. With the capability
+`ps2ResolutionLimits` the host limits it as it limits SwanStation's
+([host.md](host.md) "Resolution limits", protocol.md "status"): LRPS2 reads it
+only while the game loads, so the host makes the game's OpenGL context before
+the load, offers the scales whose frames (640 × 512 times the scale, twice as
+wide in stereo VR) fit what it can pass on and whose GS targets (1280 × 1280
+times the scale, upstream PCSX2's rule, which never refuses 1x) fit the
+context's largest texture,
+starts a saved value that does not fit at the largest that does, and hands
+that context to LRPS2. On an RTX 4080 SUPER all four fit; 8x ran at 26 to 40
+frames a second in Jak and Daxter and Grand Theft Auto: Vice City, and 1x to
+4x at full speed. When the host cannot make a context before the load,
+every value is listed; when it cannot make one at all, LRPS2 draws in
+software.
 
 ## What the protocol gains
 
@@ -348,5 +359,7 @@ merged yet.
   and showing `bios`.
 - A camera for EyeToy games, the DEV9 ethernet adapter and the DEV9 hard
   disk, all fixed off for now (above).
-- Vulkan, `.m3u` playlists for PS2, the host's resolution limits for
-  `pcsx2_upscale_multiplier`, and protecting a memory card the core cannot read.
+- Vulkan, `.m3u` playlists for PS2, and protecting a memory card the core
+  cannot read.
+- A 3x internal resolution: LRPS2 lists none, and `start` with `"3x"` is
+  ignored (an unknown value) and the game runs at 1x.
