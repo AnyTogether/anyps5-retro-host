@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "game.h"
 #include "resolution.h"
 
 namespace {
@@ -23,6 +25,8 @@ std::vector<std::string> Scales(int last) {
   for (int i = 1; i <= last; ++i) values.push_back(std::to_string(i));
   return values;
 }
+
+uint32_t Ps2MaxScale(uint32_t texture) { return retro_host::FrameLimit{8192, 8192, texture, 1280}.MaxScale(); }
 
 }  // namespace
 
@@ -79,21 +83,29 @@ int main() {
          "other text with an x is not a scale");
 
   const std::vector<std::string> ps2 = {"1x (Native)", "2x", "4x", "8x"};
-  const auto ps2_8x = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, 8192 / 1280);
+  const auto ps2_8x = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, Ps2MaxScale(8192));
   Expect(ps2_8x && ps2_8x->offered == std::vector<size_t>({0, 1, 2}) && ps2_8x->selected == 2,
          "PS2 8x needs 10240 targets: an 8192 texture limit offers 1x to 4x");
   Expect(ps2_8x && ps2_8x->refused_scale && ps2_8x->refused_width == 5120 && ps2_8x->refused_height == 4096,
          "8x is refused for its targets, as its 5120 x 4096 frame fits");
   Expect(ps2_8x && ps2_8x->width == 2560 && ps2_8x->height == 2048, "4x of 640 x 512 is 2560 x 2048");
-  const auto ps2_large = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, 32768 / 1280);
+  const auto ps2_large = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, Ps2MaxScale(32768));
   Expect(ps2_large && ps2_large->offered.size() == 4 && ps2_large->selected == 3 && !ps2_large->refused_scale,
          "a 32768 texture limit offers PS2 8x");
-  const auto stereo = LimitResolution(ps2, 3, 0, 1280, 512, 8192, 8192, 32768 / 1280);
+  const auto stereo = LimitResolution(ps2, 3, 0, 1280, 512, 8192, 8192, Ps2MaxScale(32768));
   Expect(stereo && stereo->selected == 2 && !stereo->refused_scale && stereo->refused_width == 10240,
          "stereo PS2 8x is refused for its 10240-wide frame");
-  const auto small_texture = LimitResolution(ps2, 3, 2, 2560, 2048, 8192, 8192, 4096 / 1280);
+  const auto small_texture = LimitResolution(ps2, 3, 2, 2560, 2048, 8192, 8192, Ps2MaxScale(4096));
   Expect(small_texture && small_texture->offered == std::vector<size_t>({0, 1}) && !small_texture->active_offered,
          "a 4096 texture limit offers PS2 1x and 2x, judged from the geometry at 4x");
+  Expect(Ps2MaxScale(1024) == 1 && Ps2MaxScale(1279) == 1 && Ps2MaxScale(1280) == 1 && Ps2MaxScale(2560) == 2,
+         "the texture rule never goes below 1x, as upstream PCSX2's");
+  const auto tiny_texture = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, Ps2MaxScale(1024));
+  Expect(tiny_texture && tiny_texture->offered == std::vector<size_t>({0}) && tiny_texture->selected == 0 &&
+             tiny_texture->refused_scale,
+         "a 1024 texture limit still offers PS2 1x, and refuses 8x for its targets");
+  Expect(retro_host::FrameLimit{8192, 8192, 1024, 0}.MaxScale() == UINT32_MAX,
+         "a core whose targets the host does not judge has no texture rule");
 
   if (failures) return 1;
   std::puts("All resolution checks passed.");

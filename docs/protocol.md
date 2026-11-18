@@ -875,7 +875,8 @@ game loads (`restart` is `true`):
 - The host judges it at `start`, before the game loads, in the OpenGL context
   it then makes for the game. When it can make one, `values` lists only the
   scales whose largest frame fits, as above, and whose GS targets (1280 × 1280
-  pixels times the scale) fit the context's largest texture, from then on,
+  pixels times the scale) fit the context's largest texture, 1x always
+  counting as fitting it (upstream PCSX2's rule), from then on,
   also when the game later fails to load. When not even the smallest scale
   fits, every value is listed and the check below ends the game.
 - A saved value larger than those starts the game at the largest one listed:

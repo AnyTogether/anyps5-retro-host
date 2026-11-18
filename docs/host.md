@@ -174,9 +174,10 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   at 8x. The host offers the scales whose largest geometry fits as above and
   whose GS targets, 1280 × 1280 times the scale, fit the context's
   `GL_MAX_TEXTURE_SIZE`: upstream PCSX2 clamps the scale to that rule
-  (`GSGetMaxUpscaleMultiplier`, "Maximum GS target size is 1280x1280"), and
-  LRPS2 does not check it. A GPU whose largest texture is 8192 is offered 1x
-  to 4x, and one of 16384 or more all four. A start value that does not fit
+  (`GSGetMaxUpscaleMultiplier`, "Maximum GS target size is 1280x1280") but
+  never below 1x, and LRPS2 does not check it. A GPU whose largest texture is
+  8192 is offered 1x to 4x, one of 16384 or more all four, and one under 1280
+  still 1x. A start value that does not fit
   is changed to the largest that does before the core reads it, and
   `resolutionError` says why. Once loaded, the reported geometry is judged
   again in the drawing context; a value that does not fit there (a core that

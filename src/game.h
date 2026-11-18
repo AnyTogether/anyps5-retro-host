@@ -4,6 +4,7 @@
 #ifndef ANYPS5_RETRO_HOST_GAME_H_
 #define ANYPS5_RETRO_HOST_GAME_H_
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -34,14 +35,15 @@ struct ResolutionLimit;
 
 // What an OpenGL context lets a game's internal resolution reach: frames of at most 8192 x 8192
 // (protocol.md "Frame ring") and no larger than the context's framebuffer, and, for a core whose
-// targets the host judges, targets no larger than the context's largest texture.
+// targets the host judges, targets no larger than the context's largest texture, though never less
+// than scale 1 (upstream PCSX2's GSGetMaxUpscaleMultiplier).
 struct FrameLimit {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t texture = 0;
   // The side of the core's largest target at scale 1, or 0 when the host does not judge targets.
   uint32_t target = 0;
-  uint32_t MaxScale() const { return target ? texture / target : UINT32_MAX; }
+  uint32_t MaxScale() const { return target ? std::max<uint32_t>(texture / target, 1) : UINT32_MAX; }
 };
 
 // The console a game is for (protocol.md "start", console): PS1 on SwanStation, or, with the

@@ -220,7 +220,8 @@ The internal resolution is `pcsx2_upscale_multiplier` (`1x (Native)`, `2x`,
 only while the game loads, so the host makes the game's OpenGL context before
 the load, offers the scales whose frames (640 × 512 times the scale, twice as
 wide in stereo VR) fit what it can pass on and whose GS targets (1280 × 1280
-times the scale, upstream PCSX2's rule) fit the context's largest texture,
+times the scale, upstream PCSX2's rule, which never refuses 1x) fit the
+context's largest texture,
 starts a saved value that does not fit at the largest that does, and hands
 that context to LRPS2. On an RTX 4080 SUPER all four fit; 8x ran at 26 to 40
 frames a second in Jak and Daxter and Grand Theft Auto: Vice City, and 1x to
