@@ -383,7 +383,9 @@ with these rules:
   integer or a double holds every value exactly.
 - **Numbers.** *Number* means a JSON number whose value is finite as a
   64-bit IEEE double. `1e400` is out of range.
-- No binary data crosses the control stream in version 1.
+- No binary data crosses the control stream in version 1. A save state goes
+  through a file in the folder `start.states` names
+  ([saveState and loadState](#savestate-and-loadstate)).
 
 ### Paths
 
@@ -516,6 +518,7 @@ the game on its own while the launcher thinks it is in lockstep.
 | `gameTiming` | `timing` in [`status`](#status): the frame rate the host paces the game to and the console's region. A launcher may use it, for example to pace an online match ([netplay.md](netplay.md) "Frame rate", a proposal) |
 | `ps2` | PS2 games: `console` in [`start`](#start) and in [`status`](#status), with the same methods and ports as PS1 ([ps2.md](ps2.md)) |
 | `ps1Lockstep` | [Lockstep](#lockstep) for PS1 games: `start.lockstep`, the method `lockstep`, and the messages `step` and `sync` |
+| `saveStates` | [Save states](#savestate-and-loadstate) for PS1 and PS2 games, for one player: `start.states` and the methods `saveState` and `loadState` |
 
 Later versions add capabilities such as PS3;
 [netplay.md](netplay.md) proposes more for PS1 online play.
@@ -552,6 +555,9 @@ log. These codes are defined:
 | `busy` | `start` was called while a game is loaded |
 | `start` | The game could not be started; `message` says why |
 | `tooLarge` | The result would not fit in one message (1 MiB); this does not happen with reasonable data |
+
+`saveState` and `loadState` add codes of their own
+([saveState and loadState](#savestate-and-loadstate)).
 
 The host MUST reply to every call within 5 seconds. Long work, such as
 loading a game, runs after the reply, and `status` reports how it is going.
@@ -665,11 +671,13 @@ launcher does not have input focus, the launcher does not forward `rumble`.
 ## Methods
 
 All methods below have the `ps1` capability, except `lockstep`, which has
-`ps1Lockstep`. A call whose argument has the wrong
+`ps1Lockstep`, and `saveState` and `loadState`, which have `saveStates`. A
+call whose argument has the wrong
 type, or a value outside the range given below, is an `argument` error
 whether or not a game is loaded. With a valid argument and no game loaded,
 `status` returns `null`; `pause`, `stop` and `release` do nothing and return
-`null`; and `connectedPorts`, `changeDisc` and `option` return `false`.
+`null`; and `connectedPorts`, `changeDisc`, `option`, `saveState` and
+`loadState` return `false`.
 
 ### start
 
@@ -694,6 +702,7 @@ Loads and starts a PS1 game, or, with the `ps2` capability and `console`
 | `saves` | path | Where memory cards are kept; the host creates it if needed. Memory card 1 is the file `<disc's name without its extension>.srm` in it, as libretro frontends name it, and is checked for changes every 5 seconds between frames, also while paused, and written whenever the game ends: to a file beside it, flushed to the disk, then renamed over it, so a crash or power cut leaves the old card or the new one. A card file the host cannot read is left as it is and never written over, and `status.cardUnreadable` is `true`. A game started with `lockstep` neither reads nor writes the file ([Lockstep](#lockstep), "The memory card") |
 | `options` | object of strings, optional | Core option values saved by the player, by key, including the internal resolution (`swanstation_GPU_ResolutionScale`). Unknown keys and values are ignored |
 | `initialDisc` | integer 0 to 127, optional | Only for an `.m3u`: the index of the playlist entry to insert at boot. With any other `disc`, and for a PS2 game, it is an `argument` error |
+| `states` | path, optional | Capability `saveStates`: the folder where this game's save states are kept ([saveState and loadState](#savestate-and-loadstate)). The host creates it on the first save, and writes nothing else in it. Without it, `saveState` and `loadState` are `argument` errors. The launcher MUST NOT send it to a host without `saveStates` |
 | `lockstep` | object, optional | Capability `ps1Lockstep`: the game starts in [lockstep](#lockstep), as the `lockstep` method's argument says, on the host's empty memory card rather than the player's, and runs not even its first frame before a `step`. For a PS2 game it is an `argument` error |
 
 A PS2 game's memory card is the core's own: LRPS2 keeps card 1 as `<disc's
@@ -931,6 +940,142 @@ inside `retro_run`, where the host cannot unload it. Then the host sends the
 reply to `release` and exits. No game is loaded at that point, so the
 launcher does not show an error, and it starts a new host for the next game.
 
+### saveState and loadState
+
+Capability `saveStates`. `saveState` saves the running game's state to a
+file, and `loadState` loads one back, so a player can return to that moment
+later, also after the host has exited. These states are for one player on one
+machine; nothing here decides how an online match would start from a state.
+
+Argument: `{"slot":<integer 0 to 7>}` or `{"path":<path>}`, not both.
+
+- **A slot** is the file `<disc's name without its extension>.<slot>.state`
+  in `start.states`, so a game has 8 slots, which the launcher shows as it
+  likes. A new save in a slot replaces the state it held.
+- **A path** names any other `.state` file directly in `start.states`, for
+  example one the launcher saves when the player quits, to resume from later
+  (as RetroArch's auto save state and DuckStation's resume state do).
+
+The host reads and writes no other file for these methods. A game started
+without `start.states`, and a `path` that is not a `.state` file directly in
+that folder (compared as written, not in a folder under it), are `argument`
+errors. So is any call while the game is in [lockstep](#lockstep), or in a
+game started with `start.lockstep`, even after it left lockstep: such a game
+plays on the host's empty memory card, not the player's, and its state would
+carry that card into the player's game. On Windows a file name that Windows
+would not keep as written is an `argument` error too: one with a `:` (which
+names a stream of another file), another character Windows forbids in a
+name, or a trailing dot or space, and a device name such as `NUL.state` or
+`com1.0.state`, also when it is a slot of a disc named so.
+
+Both run on the game's thread between two frames, also while the game is
+paused, and the host replies once the work is done. A state loaded while the
+game is paused shows with the next frame, once it is resumed. Both return
+`{"bytes":<integer>,"micros":<integer>}`: the state file's size in bytes, and
+how long the host took, in microseconds. Both return `false` when no game is
+loaded, when it has not published its first frame (`status.ready`), when it
+has ended, or when the game's thread did not get to the call in time: within
+4 seconds of a `saveState`, and within 3.5 seconds of a `loadState`. Each
+call ends, file included, within 4.5 seconds, inside the 5-second reply
+limit:
+
+- A save whose file is not written by then is a `fileError`. A save that
+  late is not put in place, unless it had already reached its rename, so the
+  file holds the old state or the new one, whole.
+- A load reads and checks its file within 3 seconds of the call. A file not
+  read by then is a `fileError`, and the game is not touched.
+- The game's thread gives the core a load (`retro_unserialize`) only within
+  3.5 seconds of the call, so the core has at least 1 second to finish it. A
+  load not given to the core by then returns `false` with the game
+  untouched. A load that the core began but did
+  not finish within 4.5 seconds of the call ends the game with `errorCode`
+  `other`, and the reply is `false`. The stock cores load a state in well
+  under that second (about 30 ms for a PS1 state and 90 ms for a PS2 one on
+  a desktop), so this ending is for a core that hangs or a machine that
+  barely runs.
+- Until a late write or read has finished, every `saveState` and
+  `loadState` is a `fileError` at once.
+
+The 4.5 seconds count from when the host reads the call, and a call queued
+behind a slow one waits for it. So a launcher MUST NOT send another call
+after `saveState` or `loadState` until that reply has come; otherwise the
+second reply could come more than 5 seconds after its call was sent. Pings go
+on as usual; one sent meanwhile is answered right after the reply.
+
+`saveState` takes the core's state (`retro_serialize_size`, then
+`retro_serialize`, with `RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT` answering
+`RETRO_SAVESTATE_CONTEXT_NORMAL`) and writes the file as memory cards are
+written: to a file beside it, flushed to the disk, then renamed over it, so a
+crash or power cut leaves the old state or the new one. It creates
+`start.states` if needed. A save that the file cannot hold (a core state
+larger than 1 GiB, or a core name or build identity longer than 65535 bytes)
+is `coreRefused`, and nothing is written. `loadState` reads the file, checks
+its header and checksum, and gives the core's state to `retro_unserialize`.
+
+These error codes are added to those of [call and reply](#call-and-reply):
+
+| Code | Meaning |
+| --- | --- |
+| `noState` | `loadState`: there is no file there |
+| `badState` | `loadState`: the file is not a state file of a version this host reads, its header does not match its size, its checksum does not match its bytes, or its core state is larger than the running core's `retro_serialize_size`. The host does not read a file whose size is larger than the largest state file can be, and reads no further than that in one that grows as it is read |
+| `otherGame` | `loadState`: the state was saved from another game: the console or the disc's name differs |
+| `otherCore` | `loadState`: the state was saved by another core or core build: the core's name or build identity differs from this game's `status.core` (capability `coreIdentity`). A host release that moves to another core commit or patch set refuses the states of the one before, rather than giving the core data it may misread |
+| `coreRefused` | The core gave no state or one the file cannot hold (`saveState`), or refused the one in the file (`loadState`). The game runs on as the core leaves it |
+| `fileError` | The file could not be written or read, or not within the time above |
+
+The file is the header below, then the core's state. Integers are
+little-endian.
+
+| Offset | Size | Value |
+| --- | --- | --- |
+| 0 | 8 | The bytes `AP5STATE` |
+| 8 | 4 | 1, the file's version |
+| 12 | 4 | The header's size in bytes, H |
+| 16 | 8 | The size of the core's state, as `retro_serialize_size` gave it: 1 to 1073741824 |
+| 24 | 8 | How many bytes of it the file stores, S: the state up to its last byte that is not zero. The rest is zeros and is not stored |
+| 32 | 4 | The console: 1 for PS1, 2 for PS2 |
+| 36 | 4 | 0 |
+| 40 | 8 | The checksum: 64-bit FNV-1a (offset basis 14695981039346656037, prime 1099511628211) over every byte of the file, these 8 taken as zeros |
+| 48 | H - 48 | Three strings, each a 2-byte length and then that many bytes of UTF-8: the core's name and build identity, as `status.core` gives them, and the disc's name without its extension (the `.m3u`'s for a playlist) |
+
+The file is exactly H + S bytes long. The checksum turns a file damaged on
+the disk or half copied, for example by a folder synced to the cloud, into
+`badState` rather than a state the core loads: damage inside the game's
+memory or the memory card would not make the core refuse it. A load gives
+the core its state at its saved size, the bytes after S as zeros, and only
+when that size is not larger than the running core's
+`retro_serialize_size`, so a junk header never makes the host allocate more
+than the core uses. The disc is known by its name, not by
+a hash of its contents: hashing a PS2 disc of several GiB would make every
+load slow, and the launcher keeps a game's states by that name anyway.
+
+**The memory card.** A PS1 state holds memory card 1, since SwanStation
+saves its cards in its states. Loading a state puts the card back as it was
+when the state was saved, and the host writes that card to `saves` at its
+next check, as it writes any change. A game saved to the card after the state
+was saved is then lost, as with RetroArch's default. SwanStation's
+`Pad::DoStateMemcard` has the start of DuckStation's code that keeps the card
+the player has when the two differ, but never takes that path, and libretro
+gives a frontend no way to take a card out and put it back so a game reads it
+again. A load that ended the game with `other` (above) may still have
+replaced card 1: the core finishes the load after the reply, and the host
+writes the card when the game ends. A launcher that sees that ending after a
+`loadState` should tell the player that the memory card may now be the
+state's. A PS2 state does not hold the memory card: LRPS2 keeps its card file
+as it is. LRPS2 at c0d39a5 also ejects the cards for 60 ticks after a load
+when a card's CRC differs from the one in the state (`sio2Freeze` in
+`pcsx2/Sio.c`, with `McdEnableEjection` on by default), so the game reads
+the card again rather than trusting what the state remembered of it.
+
+**Keeping states.** A host release that changes a core (another commit or
+patch set) changes `status.core`, so every state saved before it is
+`otherCore`. That is intended. Release notes, and the launcher when a load
+gives `otherCore`, should tell players that their states from before stopped
+loading and why. A PS1 state also holds the disc image's absolute path,
+which SwanStation's `retro_serialize` adds (`libretro_host_interface.cpp` at
+631f0fb), so a state file carries the player's folder names. That is fine on
+one machine, and worth knowing if states ever leave it.
+
 ## Lockstep
 
 Capability `ps1Lockstep`, for PS1 games only: a PS2 game cannot enter
@@ -975,7 +1120,10 @@ run for a step, so:
 
 - `input` messages are kept, as always, but reach the core only after the
   game leaves lockstep;
-- `connectedPorts`, `changeDisc` and `option` return `false`;
+- `connectedPorts`, `changeDisc` and `option` return `false`, and
+  `saveState` and `loadState` are `argument` errors, also in a game started
+  with `start.lockstep` after it has left lockstep
+  ([saveState and loadState](#savestate-and-loadstate));
 - `pause` still works. A paused game takes steps but runs none until it is
   resumed. Since at most 600 steps wait, a launcher stops sending steps
   while its game is paused;
@@ -1237,8 +1385,8 @@ running. If a game was loaded:
   "error":"The emulator closed unexpectedly.","errorCode":"hostExited"}`, or
   with `"error":"The emulator stopped responding and was closed."` and
   `"errorCode":"hostHung"` after a missed limit. `pause`, `stop`, `release`
-  and `volume` report `null`; `connectedPorts`, `changeDisc` and `option`
-  report `false`. This lasts until the UI calls `release`.
+  and `volume` report `null`; `connectedPorts`, `changeDisc`, `option`,
+  `saveState` and `loadState` report `false`. This lasts until the UI calls `release`.
 - The UI shows the error and goes back to the library the same way it does
   for any game that has ended. The next game starts a new host.
 
@@ -1258,7 +1406,7 @@ test provides on its own system:
 - `${core}`: SwanStation;
 - `${disc}`: a one-disc game;
 - `${playlist}`: an `.m3u` of two discs, `${disc1}` and `${disc2}`;
-- `${system}` and `${saves}`: directories.
+- `${system}`, `${saves}` and `${states}`: directories.
 
 **`messages/`** has one file per message and per method:
 
@@ -1326,8 +1474,9 @@ or a different one.
 in the fixtures against the fields, types, ranges and order in this document.
 In a session, every `status` the host sends has the fields of the
 capabilities its `welcome` listed: `core` with `coreIdentity`, `timing`
-with `gameTiming` and `console` with `ps2`. A launcher sends `start.lockstep`,
-`lockstep` and `step` only to a host that listed `ps1Lockstep`; each `step`
+with `gameTiming` and `console` with `ps2`. A launcher sends `start.states`,
+`saveState` and `loadState` only to a host that listed `saveStates`, and
+`start.lockstep`, `lockstep` and `step` only to one that listed `ps1Lockstep`; each `step`
 is for the next lockstep frame, counting from 0 after `start.lockstep` or
 from the frame a `lockstep` reply named; and each `sync` follows the step for
 its frame, in frame order, for a frame that is a multiple of `check`.

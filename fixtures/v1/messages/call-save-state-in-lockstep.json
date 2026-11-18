@@ -1,0 +1,20 @@
+{
+  "description": "A game in lockstep saves no state: an argument error.",
+  "from": "launcher",
+  "message": {
+    "type": "call",
+    "id": 5,
+    "method": "saveState",
+    "args": {
+      "slot": 1
+    }
+  },
+  "reply": {
+    "type": "reply",
+    "id": 5,
+    "error": {
+      "code": "argument",
+      "message": "A game in lockstep, or started in lockstep, cannot save or load a state."
+    }
+  }
+}

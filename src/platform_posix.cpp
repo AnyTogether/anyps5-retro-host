@@ -340,6 +340,36 @@ std::optional<std::string> ReadWholeFile(const std::string& path) {
   return data.str();
 }
 
+FileRead ReadFileUpTo(const std::string& path, uint64_t limit, std::string& data) {
+  data.clear();
+  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return FileRead::kFailed;
+  // Closes the file on every way out, also when an allocation below throws.
+  const struct Closer {
+    int fd;
+    ~Closer() { close(fd); }
+  } closer{fd};
+  struct stat about{};
+  FileRead result = FileRead::kRead;
+  if (fstat(fd, &about) == 0 && S_ISREG(about.st_mode)) {
+    if (static_cast<uint64_t>(about.st_size) > limit) return FileRead::kTooLong;
+    data.reserve(static_cast<size_t>(about.st_size));
+  }
+  std::vector<char> chunk(size_t{1} << 16);
+  for (;;) {
+    const ssize_t got = read(fd, chunk.data(), chunk.size());
+    if (got < 0 && errno == EINTR) continue;
+    if (got < 0) result = FileRead::kFailed;
+    if (got <= 0) break;
+    if (data.size() + static_cast<uint64_t>(got) > limit) {
+      result = FileRead::kTooLong;
+      break;
+    }
+    data.append(chunk.data(), static_cast<size_t>(got));
+  }
+  return result;
+}
+
 namespace {
 
 // Asks the system to put the file's data on the disk before it returns. On macOS fsync only
@@ -364,12 +394,12 @@ bool WriteAll(int fd, const std::string& data) {
 
 }  // namespace
 
-bool WriteFileAtomically(const std::string& path, const std::string& data) {
+bool WriteFileAtomically(const std::string& path, const std::string& data, const std::function<bool()>& keep) {
   const std::string temporary = path + ".writing";
   const int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
   if (fd < 0) return false;
   const bool written = WriteAll(fd, data) && Flush(fd);
-  if (close(fd) != 0 || !written || std::rename(temporary.c_str(), path.c_str()) != 0) {
+  if (close(fd) != 0 || !written || (keep && !keep()) || std::rename(temporary.c_str(), path.c_str()) != 0) {
     unlink(temporary.c_str());
     return false;
   }
