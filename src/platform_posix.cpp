@@ -342,17 +342,20 @@ std::optional<std::string> ReadWholeFile(const std::string& path) {
 }
 
 std::optional<std::string> ReadFileUpTo(const std::string& path, uint64_t limit) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) return std::nullopt;
+  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return std::nullopt;
   std::string data;
   std::vector<char> chunk(size_t{1} << 16);
+  bool failed = false;
   while (data.size() <= limit) {
-    in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
-    const auto got = static_cast<uint64_t>(in.gcount());
-    if (got == 0) break;
-    data.append(chunk.data(), static_cast<size_t>(std::min<uint64_t>(got, limit + 1 - data.size())));
+    const ssize_t got = read(fd, chunk.data(), chunk.size());
+    if (got < 0 && errno == EINTR) continue;
+    if (got < 0) failed = true;
+    if (got <= 0) break;
+    data.append(chunk.data(), static_cast<size_t>(std::min<uint64_t>(static_cast<uint64_t>(got), limit + 1 - data.size())));
   }
-  if (in.bad()) return std::nullopt;
+  close(fd);
+  if (failed) return std::nullopt;
   return data;
 }
 

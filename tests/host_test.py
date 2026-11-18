@@ -1079,15 +1079,15 @@ def state_moments(path):
 
 
 def slow_files(session, states):
-    """Storage that does not answer: a FIFO beside slot 5 holds the write in open() until a reader
+    """Storage that does not answer: a FIFO beside slot 7 holds the write in open() until a reader
     comes, and a FIFO named slow.state holds the read. Each call is a fileError within the 5-second
     reply limit; while the late write waits, another save is a fileError at once; once the FIFO is
     read, the late write puts no file in place and removes what it wrote beside it; then saving
     works again."""
-    beside = states / 'game.5.state.writing'
+    beside = states / 'game.7.state.writing'
     os.mkfifo(beside)
     began = time.monotonic()
-    if session.error('saveState', {'slot': 5})['code'] != 'fileError':
+    if session.error('saveState', {'slot': 7})['code'] != 'fileError':
         raise c.Failed('a write that could not finish did not give fileError')
     took = time.monotonic() - began
     if not 4 <= took < 5:
@@ -1100,7 +1100,7 @@ def slow_files(session, states):
     deadline = time.monotonic() + 5
     while beside.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
-    if beside.exists() or (states / 'game.5.state').exists():
+    if beside.exists() or (states / 'game.7.state').exists():
         raise c.Failed('a late write was put in place or left its file beside the state')
     session.call('saveState', {'slot': 4})
     (states / 'game.4.state').unlink()
