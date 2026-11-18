@@ -28,7 +28,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/resolution.cpp`](../src/resolution.cpp) | Which internal resolutions a GPU game is offered (see "Resolution limits" below) |
 | [`src/ring.cpp`](../src/ring.cpp) | The frame ring writer: the header from protocol.md's byte table, slot choice, and capped doubling when a frame needs more room |
 | [`src/json.cpp`](../src/json.cpp) | A strict JSON reader (duplicate keys, found by sorting an object's keys, lone surrogates, invalid UTF-8 and non-finite numbers are errors) and a writer that sends every string as valid UTF-8, with U+FFFD for each sequence that is not |
-| [`src/paths.cpp`](../src/paths.cpp) | The path rules of protocol.md "Paths" for Windows and POSIX, and the `.m3u` entry for `initialDisc`, read as SwanStation reads it |
+| [`src/paths.cpp`](../src/paths.cpp) | The path rules of protocol.md "Paths" for Windows and POSIX, the `.m3u` entry for `initialDisc`, read as SwanStation reads it, and the Windows file name rule a state's name follows |
 | [`src/channel.cpp`](../src/channel.cpp) | Framing for the control stream, and the clock the watch thread reads for the write limit |
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
 | [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio, with the volume, mute and pause |
@@ -229,22 +229,42 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   (`<disc>.<slot>.state`), the launcher's folder holds the files, and any
   other `.state` name there (a resume state) goes through `path`. The header
   carries what a refusal needs, so a load never hands a core the state of
-  another core, core build, console or disc. The control thread hands the
-  save or load to the game's thread (`StateWork`), which runs it in its loop
-  before it looks at pause, so a paused game saves and loads too, and waits
-  up to the same 4 seconds the lockstep frame fence does. The file is written
-  or read on a thread of its own, which the control thread waits for until
-  4.5 seconds after the call, so slow storage cannot hold the reply (or a
-  `pong`) past the 5-second limit. The file's assembly, and on a load its
-  header and the core's state at full size, are made on that thread too, so
-  their time counts. A write that finishes later is removed rather than
+  another core, core build, console or disc, and a checksum (64-bit FNV-1a,
+  the hash `sync` already uses) turns a damaged or half-copied file into
+  `badState` instead of a state the core would load with damaged memory or a
+  damaged card. The control thread hands the save or load to the game's
+  thread (`StateWork`), which runs it in its loop before it looks at pause,
+  so a paused game saves and loads too. The file is written or read on a
+  thread of its own, so slow storage cannot hold the reply (or a `pong`) past
+  the 5-second limit, and the file's assembly and checksum are made on that
+  thread too, so their time counts. A save waits up to the same 4 seconds the
+  lockstep frame fence does for the game's thread, and its write until 4.5
+  seconds after the call. A write that finishes later is removed rather than
   renamed into place (`WriteFileAtomically`'s `keep`), unless it had already
   passed that check and was renaming, so the file is the old state or the
-  new one, whole. Until a late one has finished, every new `saveState` and
-  `loadState` is a `fileError` before it asks the game for anything, and no
-  other state file work starts, so two never share the
-  file beside a state. On Linux and macOS `host_test` holds a write and a
-  read with FIFOs to check this. Frame pacing starts
+  new one, whole. A load is the case where lateness can hurt, because once
+  the core has begun `retro_unserialize` nothing can stop it, and a load
+  that the reply calls failed must not change the game. So its deadlines are
+  staggered: the read, header and checksum must be done 3 seconds after the
+  call or it is a `fileError` with the game untouched, and the game's thread
+  begins it only until 3.5 seconds after the call (`StateWork::take_by`,
+  checked by the game's thread itself as it takes the work). The core then
+  has at least 1 second, against the 30 ms SwanStation and 90 ms LRPS2 were
+  measured to take, so ending the game with `other` after a load the core
+  began is left to a core that hangs. The file's bytes go to the game's
+  thread as read; that thread compares the state's size with the core's
+  `retro_serialize_size` before it expands the zero tail, so a junk header
+  cannot make the host allocate a GiB, and a file whose size on the disk is
+  larger than any state is refused before it is read. Until a late write or
+  read has finished, every new `saveState` and `loadState` is a `fileError`
+  before it asks the game for anything, and no other state file work starts
+  (also when no thread can be started for it), so two never share the file
+  beside a state. On Linux and macOS `host_test` holds a write and a read
+  with FIFOs to check the timing and the refusals. A write to a FIFO fails
+  at its flush, before `keep` is asked, so `files_test` checks `keep` on
+  `WriteFileAtomically` itself; that a late write's `keep` says false is
+  covered by reading `RunFileWork` only, since no test makes a write slow
+  and still successful. Frame pacing starts
   again when the save or load ends, so the game does not run fast to catch up
   the time it took. The core's state
   goes through the same buffer the `sync` state hash uses, and only its used
@@ -278,6 +298,13 @@ A crash gives none of these, so the tests expect the exact code.
   the same as byte by byte, and the used length and zero-tail hash of
   buffers of every size up to 40 bytes and of one the size of SwanStation's
   state.
+- `files_test` ([`tests/files_test.cpp`](../tests/files_test.cpp)) checks
+  the file helpers a state goes through: `WriteFileAtomically` asks `keep`
+  once the data is on the disk and, when it says false, leaves the old file
+  and nothing beside it; `ReadFileUpTo` reads a file at its limit and refuses
+  one past it, a missing file and a folder; and `IsWindowsFileName` refuses
+  a stream (`:`), the device names in any case, also with a superscript
+  digit, the characters Windows forbids and a trailing dot or space.
 - `resolution_test` checks which scales [`src/resolution.cpp`](../src/resolution.cpp)
   offers for a geometry and a limit, and which value it moves to.
 - [`tests/conformance.py`](../tests/conformance.py) is the fake launcher of
@@ -344,7 +371,9 @@ A crash gives none of these, so the tests expect the exact code.
   and memory card, and refuses any other bytes. While the system folder holds
   `fake-states`, each state it saves or loads adds `save <frame>` or `load
   <frame>` to `fake-states.txt` there, so a test sees which moment a game went
-  back to.
+  back to. While it holds `fake-slow-load`, `retro_unserialize` takes 5
+  seconds, longer than any load is given, so a test can end a game from the
+  control thread while its thread is inside the core.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
   not. Its fake launcher checks every `ring` (its size and the growth rule)
   and every `frame` (the newest slot's epoch is the one `start` returned, and
@@ -414,11 +443,24 @@ A crash gives none of these, so the tests expect the exact code.
     `.writing` file left; a load takes the game back to the frame saved, also
     while paused and in a new host; `fileError` for a folder where the file
     would be, and on Linux and macOS for a write and a read held by FIFOs
-    (answered within 5 seconds, a save refused at once while the late write
-    waits, no file put in place after it); and `noState`, `badState` (not a state, a
-    byte short, a byte long, version 2), `coreRefused` (after which the game
-    runs on), `otherGame` (another disc, and the same name for PS2) and
-    `otherCore` (another `library_version`);
+    (the write answered within 5 seconds and the read within 4 without the
+    core being given anything, a save refused at once while the late write
+    waits, no file put in place after it); on Windows `argument` for a
+    stream and two device names; and `noState`, `badState` (not a state, a
+    byte short, a byte long, version 2, one changed byte the core would have
+    taken, a state larger than the core's, and on Linux and macOS a sparse
+    file larger than any state, refused within a second), `coreRefused`
+    (after which the game runs on), `otherGame` (another disc, and the same
+    name for PS2) and `otherCore` (another `library_version`);
+  - the memory card in a PS1 state (`state_card_rollback`): a state saved on
+    card A and loaded into a game started on card B leaves card A in the card
+    file within the next 5-second check, as protocol.md "The memory card"
+    says;
+  - a load the core does not finish in time (`late_load`, `fake-slow-load`):
+    `false` within 4 to 5 seconds, the game ended with `other`, and `release`
+    and the host fine once the core returns. In the ThreadSanitizer job this
+    is the control thread ending the game while the game's thread is inside
+    `retro_unserialize`;
   - a core for the other console (`core_for_other_console`): the test core
     reporting `ParaLLEl PS2` for a PS1 game, or `SwanStation` or
     `SwanStation Debug` for a PS2 game, ends with `core` and no `status.core`;

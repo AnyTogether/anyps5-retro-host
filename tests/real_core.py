@@ -180,8 +180,8 @@ def save_and_load(status):
     and build status.core gives, and the game publishes frames after the load and has not ended."""
     saved = call('saveState', {'slot': 0})
     data = (work / 'states' / f'{disc.stem}.0.state').read_bytes()
-    header_bytes = struct.unpack_from('<I', data, 12)[0] if len(data) >= 40 else 0
-    texts, at = [], 40
+    header_bytes = struct.unpack_from('<I', data, 12)[0] if len(data) >= 48 else 0
+    texts, at = [], 48
     while len(texts) < 3 and at + 2 <= header_bytes:
         length = struct.unpack_from('<H', data, at)[0]
         texts.append(data[at + 2:at + 2 + length].decode('utf-8', 'replace'))

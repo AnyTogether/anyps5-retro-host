@@ -81,9 +81,13 @@ bool Exists(const std::string& path);
 bool IsDirectory(const std::string& path);
 bool CreateDirectories(const std::string& path);
 std::optional<std::string> ReadWholeFile(const std::string& path);
-// The file's first limit + 1 bytes at most, so a caller sees that a longer file is too long without
-// reading all of it; nothing when it cannot be opened or read.
-std::optional<std::string> ReadFileUpTo(const std::string& path, uint64_t limit);
+// How ReadFileUpTo ended: the whole file is in data; the file is longer than limit; or it could not
+// be opened or read.
+enum class FileRead { kRead, kTooLong, kFailed };
+// Reads the file at path into data when it is at most limit bytes. A file whose size says it is
+// longer is not read at all, and data is reserved at the size it says, so it grows only for a file
+// that grows while it is read; reading stops as soon as data would pass limit.
+FileRead ReadFileUpTo(const std::string& path, uint64_t limit, std::string& data);
 // Replaces the file at path with data: written beside it and flushed to the disk (fsync, or
 // F_FULLFSYNC on macOS; FlushFileBuffers on Windows), then renamed over it, and on Linux and macOS
 // the directory flushed too, so a power cut leaves the old file or the new one. A failed write

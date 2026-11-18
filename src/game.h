@@ -153,14 +153,17 @@ class Game {
 
   // The state file of slot 0 to 7 in the states folder, or empty when the game has none.
   std::string StatePath(unsigned slot) const;
-  // Whether path may name a state file of this game: a .state file directly in its states folder.
+  // Whether path may name a state file of this game: a .state file directly in its states folder,
+  // whose name on Windows names no stream and no device (IsWindowsFileName).
   bool IsStatePath(const std::string& path) const;
   // Saves the core's state to path, or loads it from there, between two frames (also while the
   // game is paused). Both are refused in a game that is in lockstep or was started in it, whose
-  // memory card is not the player's. Both wait at most 4 seconds for the game's thread, and end,
-  // file included, within 4.5 seconds of the call; a load that started but did not finish by then
-  // ends the game with errorCode other, and a file not written or read by then is a fileError, as is
-  // a call made while such a late file work has not finished.
+  // memory card is not the player's. Both end, file included, within 4.5 seconds of the call. A save
+  // waits at most 4 seconds for the game's thread. A load reads its file within 3 seconds, or is a
+  // fileError without touching the game, and the game's thread begins it only within 3.5 seconds,
+  // so the core has at least a second; one it began but did not finish by 4.5 seconds ends the game
+  // with errorCode other. A file not written by then is a fileError, as is a call made while a late
+  // file work has not finished.
   StateOutcome SaveState(const std::string& path);
   StateOutcome LoadState(const std::string& path);
 
@@ -375,15 +378,18 @@ class Game {
   // The savestate context the core is told about while the host serializes it.
   int savestate_context_ = 0;
   // A saveState or loadState for the game's thread (state_work_, guarded by mutex_; state_signal_
-  // is notified when one is done and when the game ends). A save hands back the bytes of the core's
-  // state that can be other than zero, and the full size the core gave; a load hands the core data,
-  // of the size it was saved at.
+  // is notified when one is taken, when it is done and when the game ends). The game's thread takes
+  // it only before take_by. A save hands back the bytes of the core's state that can be other than
+  // zero, and the full size the core gave; a load hands over the state file, whose core state starts
+  // at offset and is given to the core at size, the size it was saved at.
   struct StateWork {
     bool load = false;
     bool taken = false;
     bool done = false;
+    std::chrono::steady_clock::time_point take_by;
     StateResult result = StateResult::kDone;
     std::string data;
+    size_t offset = 0;
     size_t size = 0;
   };
   std::shared_ptr<StateWork> state_work_;
@@ -391,16 +397,20 @@ class Game {
   // Runs the waiting saveState or loadState, if there is one, on the game's thread between frames;
   // true when there was one, so the frame pacing starts again from now rather than catching up.
   bool RunStateWork();
-  // Hands work to the game's thread and waits for it; false when the game ended first or its thread
-  // did not finish it within 4 seconds or by deadline.
+  // Gives a load's state to the core on the game's thread: badState when it is larger than the
+  // core's retro_serialize_size, so no junk header makes the host allocate more than the core uses.
+  StateResult UnserializeState(StateWork& work);
+  // Hands work to the game's thread and waits for it; false when the game ended first, or its thread
+  // did not take it by its take_by or finish it by deadline.
   bool AwaitStateWork(const std::shared_ptr<StateWork>& work, std::chrono::steady_clock::time_point deadline);
   // The outcome a saveState or loadState ends with before it starts: the game has ended, is in
   // lockstep or was started in it, has not shown its first frame, or a late state file work has not
   // finished; nothing when it may go on.
   std::optional<StateOutcome> RefuseState() const;
   // The header protocol.md "saveState and loadState" gives a state file of this game, for a core
-  // state of size bytes of which stored are kept.
-  std::string StateHeader(uint64_t size, uint64_t stored) const;
+  // state of size bytes of which stored are kept, with its checksum field zero; nothing when a core
+  // name or build identity is longer than the header can hold.
+  std::optional<std::string> StateHeader(uint64_t size, uint64_t stored) const;
 
   // The size of the last picture published, whose pixels converted_ holds until the next one, and
   // its sync hash once a check has needed it. A picture published outside lockstep is hashed too

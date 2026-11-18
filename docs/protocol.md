@@ -960,7 +960,11 @@ that folder (compared as written, not in a folder under it), are `argument`
 errors. So is any call while the game is in [lockstep](#lockstep), or in a
 game started with `start.lockstep`, even after it left lockstep: such a game
 plays on the host's empty memory card, not the player's, and its state would
-carry that card into the player's game.
+carry that card into the player's game. On Windows a file name that Windows
+would not keep as written is an `argument` error too: one with a `:` (which
+names a stream of another file), another character Windows forbids in a
+name, or a trailing dot or space, and a device name such as `NUL.state` or
+`com1.0.state`, also when it is a slot of a disc named so.
 
 Both run on the game's thread between two frames, also while the game is
 paused, and the host replies once the work is done. A state loaded while the
@@ -968,32 +972,51 @@ game is paused shows with the next frame, once it is resumed. Both return
 `{"bytes":<integer>,"micros":<integer>}`: the state file's size in bytes, and
 how long the host took, in microseconds. Both return `false` when no game is
 loaded, when it has not published its first frame (`status.ready`), when it
-has ended, or when the game's thread did not get to the call within 4
-seconds. A load that the core began but did not finish within 4 seconds ends
-the game with `errorCode` `other`. Each call ends, file included, within 4.5
-seconds, inside the 5-second reply limit: a file not written or read by then
-is a `fileError`. A save that late is not put in place, unless it had already
-reached its rename, so the file holds the old state or the new one, whole.
-Until that late write or read has finished, every `saveState` and `loadState`
-is a `fileError` at once.
+has ended, or when the game's thread did not get to the call in time: within
+4 seconds of a `saveState`, and within 3.5 seconds of a `loadState`. Each
+call ends, file included, within 4.5 seconds, inside the 5-second reply
+limit:
+
+- A save whose file is not written by then is a `fileError`. A save that
+  late is not put in place, unless it had already reached its rename, so the
+  file holds the old state or the new one, whole.
+- A load reads and checks its file within 3 seconds of the call. A file not
+  read by then is a `fileError`, and the game is not touched.
+- The game's thread begins a load only within 3.5 seconds of the call, so the
+  core has at least 1 second to finish it. A load that the core began but did
+  not finish within 4.5 seconds of the call ends the game with `errorCode`
+  `other`, and the reply is `false`. The stock cores load a state in well
+  under that second (about 30 ms for a PS1 state and 90 ms for a PS2 one on
+  a desktop), so this ending is for a core that hangs or a machine that
+  barely runs.
+- Until a late write or read has finished, every `saveState` and
+  `loadState` is a `fileError` at once.
+
+The 4.5 seconds count from when the host reads the call, and a call queued
+behind a slow one waits for it. So a launcher MUST NOT send another call
+after `saveState` or `loadState` until that reply has come; otherwise the
+second reply could come more than 5 seconds after its call was sent. Pings go
+on as usual; one sent meanwhile is answered right after the reply.
 
 `saveState` takes the core's state (`retro_serialize_size`, then
 `retro_serialize`, with `RETRO_ENVIRONMENT_GET_SAVESTATE_CONTEXT` answering
 `RETRO_SAVESTATE_CONTEXT_NORMAL`) and writes the file as memory cards are
 written: to a file beside it, flushed to the disk, then renamed over it, so a
 crash or power cut leaves the old state or the new one. It creates
-`start.states` if needed. `loadState` reads the file, checks its header, and
-gives the core's state to `retro_unserialize`.
+`start.states` if needed. A save that the file cannot hold (a core state
+larger than 1 GiB, or a core name or build identity longer than 65535 bytes)
+is `coreRefused`, and nothing is written. `loadState` reads the file, checks
+its header and checksum, and gives the core's state to `retro_unserialize`.
 
 These error codes are added to those of [call and reply](#call-and-reply):
 
 | Code | Meaning |
 | --- | --- |
 | `noState` | `loadState`: there is no file there |
-| `badState` | `loadState`: the file is not a state file of a version this host reads, or its header does not match its size. The host reads no further than the largest state file can be, so a file far larger is refused without being read whole |
+| `badState` | `loadState`: the file is not a state file of a version this host reads, its header does not match its size, its checksum does not match its bytes, or its core state is larger than the running core's `retro_serialize_size`. The host does not read a file whose size is larger than the largest state file can be, and reads no further than that in one that grows as it is read |
 | `otherGame` | `loadState`: the state was saved from another game: the console or the disc's name differs |
 | `otherCore` | `loadState`: the state was saved by another core or core build: the core's name or build identity differs from this game's `status.core` (capability `coreIdentity`). A host release that moves to another core commit or patch set refuses the states of the one before, rather than giving the core data it may misread |
-| `coreRefused` | The core gave no state, or refused the one in the file. The game runs on as the core leaves it |
+| `coreRefused` | The core gave no state or one the file cannot hold (`saveState`), or refused the one in the file (`loadState`). The game runs on as the core leaves it |
 | `fileError` | The file could not be written or read, or not within the time above |
 
 The file is the header below, then the core's state. Integers are
@@ -1008,10 +1031,17 @@ little-endian.
 | 24 | 8 | How many bytes of it the file stores, S: the state up to its last byte that is not zero. The rest is zeros and is not stored |
 | 32 | 4 | The console: 1 for PS1, 2 for PS2 |
 | 36 | 4 | 0 |
-| 40 | H - 40 | Three strings, each a 2-byte length and then that many bytes of UTF-8: the core's name and build identity, as `status.core` gives them, and the disc's name without its extension (the `.m3u`'s for a playlist) |
+| 40 | 8 | The checksum: 64-bit FNV-1a (offset basis 14695981039346656037, prime 1099511628211) over every byte of the file, these 8 taken as zeros |
+| 48 | H - 48 | Three strings, each a 2-byte length and then that many bytes of UTF-8: the core's name and build identity, as `status.core` gives them, and the disc's name without its extension (the `.m3u`'s for a playlist) |
 
-The file is exactly H + S bytes long. A load gives the core its state at its
-saved size, the bytes after S as zeros. The disc is known by its name, not by
+The file is exactly H + S bytes long. The checksum turns a file damaged on
+the disk or half copied, for example by a folder synced to the cloud, into
+`badState` rather than a state the core loads: damage inside the game's
+memory or the memory card would not make the core refuse it. A load gives
+the core its state at its saved size, the bytes after S as zeros, and only
+when that size is not larger than the running core's
+`retro_serialize_size`, so a junk header never makes the host allocate more
+than the core uses. The disc is known by its name, not by
 a hash of its contents: hashing a PS2 disc of several GiB would make every
 load slow, and the launcher keeps a game's states by that name anyway.
 
@@ -1023,8 +1053,24 @@ was saved is then lost, as with RetroArch's default. SwanStation's
 `Pad::DoStateMemcard` has the start of DuckStation's code that keeps the card
 the player has when the two differ, but never takes that path, and libretro
 gives a frontend no way to take a card out and put it back so a game reads it
-again. A PS2 state does not hold the memory card: LRPS2 keeps its card file
-as it is.
+again. A load that ended the game with `other` (above) may still have
+replaced card 1: the core finishes the load after the reply, and the host
+writes the card when the game ends. A launcher that sees that ending after a
+`loadState` should tell the player that the memory card may now be the
+state's. A PS2 state does not hold the memory card: LRPS2 keeps its card file
+as it is. LRPS2 at c0d39a5 also ejects the cards for 60 ticks after a load
+when a card's CRC differs from the one in the state (`sio2Freeze` in
+`pcsx2/Sio.c`, with `McdEnableEjection` on by default), so the game reads
+the card again rather than trusting what the state remembered of it.
+
+**Keeping states.** A host release that changes a core (another commit or
+patch set) changes `status.core`, so every state saved before it is
+`otherCore`. That is intended. Release notes, and the launcher when a load
+gives `otherCore`, should tell players that their states from before stopped
+loading and why. A PS1 state also holds the disc image's absolute path,
+which SwanStation's `retro_serialize` adds (`libretro_host_interface.cpp` at
+631f0fb), so a state file carries the player's folder names. That is fine on
+one machine, and worth knowing if states ever leave it.
 
 ## Lockstep
 

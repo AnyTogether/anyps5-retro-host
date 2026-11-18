@@ -221,19 +221,26 @@ std::optional<std::string> ReadWholeFile(const std::string& path) {
   return data.str();
 }
 
-std::optional<std::string> ReadFileUpTo(const std::string& path, uint64_t limit) {
-  std::ifstream in(std::filesystem::path(Wide(path)), std::ios::binary);
-  if (!in) return std::nullopt;
-  std::string data;
+FileRead ReadFileUpTo(const std::string& path, uint64_t limit, std::string& data) {
+  data.clear();
+  const std::filesystem::path file(Wide(path));
+  std::ifstream in(file, std::ios::binary);
+  if (!in) return FileRead::kFailed;
+  std::error_code error;
+  if (std::filesystem::is_regular_file(file, error)) {
+    const uintmax_t size = std::filesystem::file_size(file, error);
+    if (!error && size > limit) return FileRead::kTooLong;
+    if (!error) data.reserve(static_cast<size_t>(size));
+  }
   std::vector<char> chunk(size_t{1} << 16);
-  while (data.size() <= limit) {
+  for (;;) {
     in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
     const auto got = static_cast<uint64_t>(in.gcount());
     if (got == 0) break;
-    data.append(chunk.data(), static_cast<size_t>(std::min<uint64_t>(got, limit + 1 - data.size())));
+    if (data.size() + got > limit) return FileRead::kTooLong;
+    data.append(chunk.data(), static_cast<size_t>(got));
   }
-  if (in.bad()) return std::nullopt;
-  return data;
+  return in.bad() ? FileRead::kFailed : FileRead::kRead;
 }
 
 bool WriteFileAtomically(const std::string& path, const std::string& data, const std::function<bool()>& keep) {

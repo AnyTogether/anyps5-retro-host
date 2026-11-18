@@ -15,6 +15,7 @@
 #include <functional>
 #include <iterator>
 #include <new>
+#include <system_error>
 #include <tuple>
 #include <utility>
 
@@ -103,17 +104,26 @@ constexpr int64_t kStepWaitMs = 10;
 // How long entering or leaving lockstep waits for the frame being run to end, and a saveState or
 // loadState for the game's thread to finish it.
 constexpr int64_t kFrameFenceMs = 4000;
-// A state file (protocol.md "saveState and loadState"): its first 8 bytes, its version, the size of
-// the header before its strings, and the largest core state the host reads back.
+// A state file (protocol.md "saveState and loadState"): its first 8 bytes, its version, where its
+// checksum is, the size of the header before its strings, the longest of those strings, and the
+// largest core state the host saves or reads back.
 constexpr char kStateMagic[8] = {'A', 'P', '5', 'S', 'T', 'A', 'T', 'E'};
 constexpr uint32_t kStateVersion = 1;
-constexpr size_t kStateFixedBytes = 40;
+constexpr size_t kStateChecksumAt = 40;
+constexpr size_t kStateFixedBytes = 48;
+constexpr size_t kMaxStateText = 65535;
 constexpr uint64_t kMaxStateBytes = uint64_t{1} << 30;
-// The largest state file: the fixed header, three strings of the longest length, and the largest state.
-constexpr uint64_t kMaxStateFileBytes = kStateFixedBytes + 3 * (2 + 65535) + kMaxStateBytes;
-// A saveState or loadState, file included, ends within this many milliseconds of its call, inside the
-// 5-second reply limit (protocol.md "Timeouts").
+// The largest header and the largest state file: the fixed header, three strings of the longest
+// length, and the largest state.
+constexpr uint64_t kMaxStateHeaderBytes = kStateFixedBytes + 3 * (2 + kMaxStateText);
+constexpr uint64_t kMaxStateFileBytes = kMaxStateHeaderBytes + kMaxStateBytes;
+static_assert(kMaxStateHeaderBytes <= UINT32_MAX, "a state header's size fits its 4-byte field");
+// A saveState or loadState, file included, ends within kStateCallMs milliseconds of its call, inside
+// the 5-second reply limit (protocol.md "Timeouts"). A load reads its file within kStateReadMs, and
+// the game's thread begins it only within kStateTakeMs, so the core has at least a second to finish.
 constexpr int64_t kStateCallMs = 4500;
+constexpr int64_t kStateReadMs = 3000;
+constexpr int64_t kStateTakeMs = 3500;
 constexpr char kStateExtension[] = ".state";
 
 constexpr char kResolutionOption[] = "swanstation_GPU_ResolutionScale";
@@ -265,6 +275,12 @@ uint64_t GetLittle(std::string_view bytes, size_t at, size_t width) {
   return value;
 }
 
+// The checksum of a state file: 64-bit FNV-1a over all of it, its checksum field taken as zeros.
+uint64_t StateChecksum(std::string_view file) {
+  const uint64_t head = Fnv(file.data(), kStateChecksumAt);
+  return Fnv(file.data() + kStateFixedBytes, file.size() - kStateFixedBytes, FnvZeros(8, head));
+}
+
 // What the header of a state file says (protocol.md "saveState and loadState").
 struct StateFileHeader {
   uint64_t header_bytes = 0;
@@ -277,10 +293,11 @@ struct StateFileHeader {
 };
 
 // The header of file, or nothing when file is not a state file of this version whose header and
-// data fill it exactly.
+// data fill it exactly and match its checksum.
 std::optional<StateFileHeader> ReadStateHeader(std::string_view file) {
   if (file.size() < kStateFixedBytes || file.substr(0, sizeof kStateMagic) != std::string_view(kStateMagic, 8) ||
-      GetLittle(file, 8, 4) != kStateVersion || GetLittle(file, 36, 4) != 0) {
+      GetLittle(file, 8, 4) != kStateVersion || GetLittle(file, 36, 4) != 0 ||
+      GetLittle(file, kStateChecksumAt, 8) != StateChecksum(file)) {
     return std::nullopt;
   }
   StateFileHeader header;
@@ -339,9 +356,10 @@ bool FileWorkRunning() {
 }
 
 // Runs work on a thread of its own and waits for it until deadline; true when it finished in time and
-// said true, false too while an earlier file work has not finished. Past the deadline the caller goes
-// on without it: wanted then says false, and a write asks it before its rename, so a late write is
-// dropped unless it was already being renamed. An exception in work counts as a failure.
+// said true, false too while an earlier file work has not finished or when no thread could be
+// started. Past the deadline the caller goes on without it: wanted then says false, and a write asks
+// it before its rename, so a late write is dropped unless it was already being renamed. An exception
+// in work counts as a failure.
 bool RunFileWork(std::function<bool(const std::function<bool()>& wanted)> work,
                  std::chrono::steady_clock::time_point deadline) {
   auto shared = std::make_shared<FileWork>();
@@ -354,23 +372,29 @@ bool RunFileWork(std::function<bool(const std::function<bool()>& wanted)> work,
     }
     slot.running = shared;
   }
-  std::thread([shared, work = std::move(work)] {
-    bool ok = false;
-    try {
-      ok = work([shared] {
+  try {
+    std::thread([shared, work = std::move(work)] {
+      bool ok = false;
+      try {
+        ok = work([shared] {
+          std::lock_guard<std::mutex> lock(shared->mutex);
+          return !shared->abandoned;
+        });
+      } catch (const std::exception&) {
+        ok = false;
+      }
+      {
         std::lock_guard<std::mutex> lock(shared->mutex);
-        return !shared->abandoned;
-      });
-    } catch (const std::exception&) {
-      ok = false;
-    }
-    {
-      std::lock_guard<std::mutex> lock(shared->mutex);
-      shared->done = true;
-      shared->ok = ok;
-    }
-    shared->signal.notify_all();
-  }).detach();
+        shared->done = true;
+        shared->ok = ok;
+      }
+      shared->signal.notify_all();
+    }).detach();
+  } catch (const std::system_error&) {
+    std::lock_guard<std::mutex> lock(shared->mutex);
+    shared->done = true;
+    return false;
+  }
   std::unique_lock<std::mutex> lock(shared->mutex);
   if (!shared->signal.wait_until(lock, deadline, [&] { return shared->done; })) {
     shared->abandoned = true;
@@ -1504,10 +1528,12 @@ bool Game::IsStatePath(const std::string& path) const {
       !IsSeparator(path[states.size()])) {
     return false;
   }
-  return std::none_of(path.begin() + static_cast<std::ptrdiff_t>(states.size() + 1), path.end(), IsSeparator);
+  const std::string_view name = std::string_view(path).substr(states.size() + 1);
+  if (std::any_of(name.begin(), name.end(), IsSeparator)) return false;
+  return !kWindows || IsWindowsFileName(name);
 }
 
-std::string Game::StateHeader(uint64_t size, uint64_t stored) const {
+std::optional<std::string> Game::StateHeader(uint64_t size, uint64_t stored) const {
   std::pair<std::string, std::string> identity;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1516,7 +1542,10 @@ std::string Game::StateHeader(uint64_t size, uint64_t stored) const {
   const std::string disc = Stem(config_.disc);
   const std::string* const texts[] = {&identity.first, &identity.second, &disc};
   size_t header_bytes = kStateFixedBytes;
-  for (const std::string* text : texts) header_bytes += 2 + text->size();
+  for (const std::string* text : texts) {
+    if (text->size() > kMaxStateText) return std::nullopt;
+    header_bytes += 2 + text->size();
+  }
   std::string header(kStateMagic, sizeof kStateMagic);
   PutU32(header, kStateVersion);
   PutU32(header, static_cast<uint32_t>(header_bytes));
@@ -1524,6 +1553,7 @@ std::string Game::StateHeader(uint64_t size, uint64_t stored) const {
   PutU64(header, stored);
   PutU32(header, ConsoleNumber(config_.console));
   PutU32(header, 0);
+  PutU64(header, 0);
   for (const std::string* text : texts) {
     PutU16(header, static_cast<uint16_t>(text->size()));
     header += *text;
@@ -1540,9 +1570,9 @@ bool Game::AwaitStateWork(const std::shared_ptr<StateWork>& work, std::chrono::s
   }
   if (!ready_) return false;
   state_work_ = work;
-  const auto until = std::min(deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(kFrameFenceMs));
-  state_signal_.wait_until(lock, until, [&] { return work->done || ended_; });
+  state_signal_.wait_until(lock, work->take_by, [&] { return work->taken || work->done || ended_; });
   if (state_work_ == work) state_work_.reset();
+  if (work->taken) state_signal_.wait_until(lock, deadline, [&] { return work->done || ended_; });
   if (work->done) return true;
   const bool unfinished_load = work->load && work->taken;
   lock.unlock();
@@ -1550,33 +1580,54 @@ bool Game::AwaitStateWork(const std::shared_ptr<StateWork>& work, std::chrono::s
   return false;
 }
 
+StateResult Game::UnserializeState(StateWork& work) {
+  const auto size_of = Get<size_t (*)()>("retro_serialize_size");
+  const auto unserialize = Get<bool (*)(const void*, size_t)>("retro_unserialize");
+  if (!size_of || !unserialize) return StateResult::kCoreRefused;
+  if (work.size > size_of()) return StateResult::kBadState;
+  try {
+    work.data.erase(0, work.offset);
+    work.data.resize(work.size, '\0');
+  } catch (const std::bad_alloc&) {
+    return StateResult::kCoreRefused;
+  }
+  return unserialize(work.data.data(), work.data.size()) ? StateResult::kDone : StateResult::kCoreRefused;
+}
+
 bool Game::RunStateWork() {
   std::shared_ptr<StateWork> work;
+  bool run = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     std::swap(work, state_work_);
     if (!work) return false;
-    work->taken = true;
     if (lockstep_ || config_.lockstep) {
       work->result = StateResult::kLockstep;
       work->done = true;
+    } else if (std::chrono::steady_clock::now() >= work->take_by) {
+      work->result = StateResult::kNotRunning;
+      work->done = true;
+    } else {
+      work->taken = true;
+      run = true;
     }
   }
-  if (!work->done) {
-    StateResult result = StateResult::kDone;
-    if (work->load) {
-      const auto unserialize = Get<bool (*)(const void*, size_t)>("retro_unserialize");
-      if (!unserialize || !unserialize(work->data.data(), work->data.size())) result = StateResult::kCoreRefused;
-    } else if (const std::string* state = Serialize()) {
-      try {
-        work->data.assign(state->data(), serialized_used_);
-        work->size = state->size();
-      } catch (const std::bad_alloc&) {
-        result = StateResult::kCoreRefused;
-      }
-    } else {
+  state_signal_.notify_all();
+  if (!run) return true;
+  StateResult result = StateResult::kDone;
+  if (work->load) {
+    result = UnserializeState(*work);
+  } else if (const std::string* state = Serialize(); state && state->size() <= kMaxStateBytes) {
+    try {
+      work->data.assign(state->data(), serialized_used_);
+      work->size = state->size();
+    } catch (const std::bad_alloc&) {
       result = StateResult::kCoreRefused;
     }
+  } else {
+    result = StateResult::kCoreRefused;
+  }
+  {
     std::lock_guard<std::mutex> lock(mutex_);
     work->result = result;
     work->done = true;
@@ -1609,23 +1660,31 @@ StateOutcome Game::SaveState(const std::string& path) {
   if (auto refused = RefuseState()) return *refused;
   StateOutcome outcome;
   auto work = std::make_shared<StateWork>();
+  work->take_by = began + std::chrono::milliseconds(kFrameFenceMs);
   if (!AwaitStateWork(work, deadline)) return outcome;
   outcome.result = work->result;
   if (outcome.result != StateResult::kDone) return outcome;
-  std::string header;
+  std::optional<std::string> header;
   try {
     header = StateHeader(work->size, work->data.size());
   } catch (const std::bad_alloc&) {
     outcome.result = StateResult::kFileError;
     return outcome;
   }
+  if (!header) {
+    outcome.result = StateResult::kCoreRefused;
+    return outcome;
+  }
   auto bytes = std::make_shared<uint64_t>(0);
   const std::string states = config_.states;
   const bool written = RunFileWork(
-      [work, header, path, states, bytes](const std::function<bool()>& wanted) {
-        std::string file = header;
+      [work, head = std::move(*header), path, states, bytes](const std::function<bool()>& wanted) {
+        std::string file = head;
         file += work->data;
         work->data = std::string();
+        std::string checksum;
+        PutU64(checksum, StateChecksum(file));
+        file.replace(kStateChecksumAt, checksum.size(), checksum);
         *bytes = file.size();
         return CreateDirectories(states) && WriteFileAtomically(path, file, wanted);
       },
@@ -1641,33 +1700,33 @@ StateOutcome Game::SaveState(const std::string& path) {
 
 StateOutcome Game::LoadState(const std::string& path) {
   const auto began = std::chrono::steady_clock::now();
-  const auto deadline = began + std::chrono::milliseconds(kStateCallMs);
+  const auto read_by = began + std::chrono::milliseconds(kStateReadMs);
   if (auto refused = RefuseState()) return *refused;
   StateOutcome outcome;
-  // The file's size, its header, and the core's state at its saved size, all made on the file's
-  // thread, so the time they take counts toward the deadline.
+  // The file and its header, read and checked on the file's thread, so the time they take counts
+  // toward read_by.
   struct Read {
     bool missing = false;
-    uint64_t bytes = 0;
     std::optional<StateFileHeader> header;
-    std::string data;
+    std::string file;
   };
   auto read = std::make_shared<Read>();
   const bool done = RunFileWork(
       [read, path](const std::function<bool()>&) {
         read->missing = !Exists(path);
         if (read->missing) return true;
-        auto file = ReadFileUpTo(path, kMaxStateFileBytes);
-        if (!file) return false;
-        read->bytes = file->size();
-        if (file->size() <= kMaxStateFileBytes) read->header = ReadStateHeader(*file);
-        if (!read->header) return true;
-        read->data.assign(static_cast<size_t>(read->header->size), '\0');
-        std::memcpy(read->data.data(), file->data() + read->header->header_bytes,
-                    static_cast<size_t>(read->header->stored));
+        switch (ReadFileUpTo(path, kMaxStateFileBytes, read->file)) {
+          case FileRead::kFailed:
+            return false;
+          case FileRead::kTooLong:
+            return true;
+          case FileRead::kRead:
+            break;
+        }
+        read->header = ReadStateHeader(read->file);
         return true;
       },
-      deadline);
+      read_by);
   if (!done) {
     outcome.result = StateResult::kFileError;
     return outcome;
@@ -1693,15 +1752,18 @@ StateOutcome Game::LoadState(const std::string& path) {
       return outcome;
     }
   }
-  if (std::chrono::steady_clock::now() >= deadline) {
+  if (std::chrono::steady_clock::now() >= read_by) {
     outcome.result = StateResult::kFileError;
     return outcome;
   }
   auto work = std::make_shared<StateWork>();
   work->load = true;
-  work->data = std::move(read->data);
-  const uint64_t bytes = read->bytes;
-  if (!AwaitStateWork(work, deadline)) return outcome;
+  work->take_by = began + std::chrono::milliseconds(kStateTakeMs);
+  work->size = static_cast<size_t>(header->size);
+  work->offset = static_cast<size_t>(header->header_bytes);
+  const uint64_t bytes = read->file.size();
+  work->data = std::move(read->file);
+  if (!AwaitStateWork(work, began + std::chrono::milliseconds(kStateCallMs))) return outcome;
   outcome.result = work->result;
   if (outcome.result != StateResult::kDone) return outcome;
   outcome.bytes = bytes;

@@ -11,7 +11,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -341,22 +340,33 @@ std::optional<std::string> ReadWholeFile(const std::string& path) {
   return data.str();
 }
 
-std::optional<std::string> ReadFileUpTo(const std::string& path, uint64_t limit) {
+FileRead ReadFileUpTo(const std::string& path, uint64_t limit, std::string& data) {
+  data.clear();
   const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (fd < 0) return std::nullopt;
-  std::string data;
+  if (fd < 0) return FileRead::kFailed;
+  struct stat about{};
+  FileRead result = FileRead::kRead;
+  if (fstat(fd, &about) == 0 && S_ISREG(about.st_mode)) {
+    if (static_cast<uint64_t>(about.st_size) > limit) {
+      close(fd);
+      return FileRead::kTooLong;
+    }
+    data.reserve(static_cast<size_t>(about.st_size));
+  }
   std::vector<char> chunk(size_t{1} << 16);
-  bool failed = false;
-  while (data.size() <= limit) {
+  for (;;) {
     const ssize_t got = read(fd, chunk.data(), chunk.size());
     if (got < 0 && errno == EINTR) continue;
-    if (got < 0) failed = true;
+    if (got < 0) result = FileRead::kFailed;
     if (got <= 0) break;
-    data.append(chunk.data(), static_cast<size_t>(std::min<uint64_t>(static_cast<uint64_t>(got), limit + 1 - data.size())));
+    if (data.size() + static_cast<uint64_t>(got) > limit) {
+      result = FileRead::kTooLong;
+      break;
+    }
+    data.append(chunk.data(), static_cast<size_t>(got));
   }
   close(fd);
-  if (failed) return std::nullopt;
-  return data;
+  return result;
 }
 
 namespace {
