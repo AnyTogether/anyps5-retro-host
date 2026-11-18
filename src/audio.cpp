@@ -4,9 +4,12 @@
 #include "audio.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <optional>
+#include <thread>
 
 #define MA_NO_DECODING
 #define MA_NO_ENCODING
@@ -42,7 +45,9 @@ struct AudioStream::Resampler {
 };
 
 std::unique_ptr<AudioStream> AudioStream::Make(double input_rate, uint32_t output_rate) {
-  if (!(input_rate >= 8000 && input_rate <= 192000) || output_rate < 8000 || output_rate > 192000) return nullptr;
+  // The output rate has no upper bound: OutputUnits scales any rate to 65536 or less (64000 for
+  // 384 and 768 kHz), and a device runs at whatever rate it is set to.
+  if (!(input_rate >= 8000 && input_rate <= 192000) || output_rate < 8000) return nullptr;
   std::unique_ptr<AudioStream> stream(new AudioStream(input_rate, output_rate));
   ma_resampler_config config = ma_resampler_config_init(ma_format_s16, 2, InputUnits(input_rate, output_rate),
                                                         OutputUnits(output_rate), ma_resample_algorithm_linear);
@@ -221,44 +226,117 @@ uint32_t AudioStream::Tail(int16_t* out, uint32_t frames) {
   return count;
 }
 
+VolumeRamp::VolumeRamp(uint32_t output_rate, float gain)
+    : step_(1.0f / std::max(1.0f, static_cast<float>(output_rate * AudioStream::kFadeSeconds))),
+      gain_(std::clamp(gain, 0.0f, 1.0f)) {}
+
+void VolumeRamp::Apply(int16_t* samples, uint32_t frames, float target) {
+  target = std::clamp(target, 0.0f, 1.0f);
+  if (gain_ == target && target >= 1.0f) return;
+  for (uint32_t i = 0; i < frames; ++i) {
+    if (gain_ != target) gain_ = gain_ < target ? std::min(target, gain_ + step_) : std::max(target, gain_ - step_);
+    for (int c = 0; c < 2; ++c) samples[i * 2 + c] = static_cast<int16_t>(samples[i * 2 + c] * gain_);
+  }
+}
+
 struct AudioOutput::Device {
   ma_device device;
+  bool initialized = false;
   std::unique_ptr<AudioStream> stream;
+  std::optional<VolumeRamp> volume;
+  double input_rate = 0;
   AudioOutput* owner = nullptr;
+  // Set by Close: the device's thread reads as if paused, and says when the fade has played out
+  // of the device's buffer, once that whole buffer's worth of silence has followed it.
+  std::atomic<bool> closing{false};
+  std::atomic<bool> faded{false};
+  uint64_t buffer_frames = 0;
+  uint64_t silent_frames = 0;
+  ~Device() {
+    if (initialized) ma_device_uninit(&device);
+  }
 };
 
 void AudioOutput::Fill(ma_device* device, void* out, const void*, ma_uint32 frames) {
   auto* state = static_cast<AudioOutput::Device*>(device->pUserData);
   auto* samples = static_cast<int16_t*>(out);
-  state->stream->Read(samples, frames, state->owner->paused_);
-  const float gain = state->owner->muted_ ? 0.0f : state->owner->level_.load();
-  if (gain >= 1.0f) return;
-  for (ma_uint32 i = 0; i < frames * 2; ++i) samples[i] = static_cast<int16_t>(samples[i] * gain);
+  const bool closing = state->closing.load(std::memory_order_acquire);
+  // Only a paused read that starts silent is all silence; the read that fades is not counted.
+  const bool silent_read = closing && state->stream->Silent();
+  state->stream->Read(samples, frames, closing || state->owner->paused_);
+  if (silent_read && (state->silent_frames += frames) >= state->buffer_frames)
+    state->faded.store(true, std::memory_order_release);
+  state->volume->Apply(samples, frames, state->owner->muted_ ? 0.0f : state->owner->level_.load());
 }
 
 AudioOutput::AudioOutput() = default;
 
 AudioOutput::~AudioOutput() { Close(); }
 
-void AudioOutput::Open(double sample_rate) {
-  Close();
-  std::lock_guard<std::mutex> lock(device_mutex_);
-  if (!(sample_rate >= 8000 && sample_rate <= 192000)) return;
+// Opens and starts the default output at device_rate (0 for the device's own) with a stream from
+// sample_rate to the rate the device runs at. Null, with failure saying why, when it cannot.
+std::unique_ptr<AudioOutput::Device> AudioOutput::Start(double sample_rate, uint32_t device_rate,
+                                                       std::string& failure) {
   auto device = std::make_unique<Device>();
   device->owner = this;
-  // The device runs at its own rate (sampleRate 0), so the stream's resampler is the only one.
+  device->input_rate = sample_rate;
   ma_device_config config = ma_device_config_init(ma_device_type_playback);
   config.playback.format = ma_format_s16;
   config.playback.channels = 2;
-  config.sampleRate = 0;
+  config.sampleRate = device_rate;
   config.periodSizeInMilliseconds = kDevicePeriodMs;
   config.periods = kDevicePeriods;
   config.dataCallback = &AudioOutput::Fill;
   config.pUserData = device.get();
-  if (ma_device_init(nullptr, &config, &device->device) != MA_SUCCESS) return;
+  const ma_result opened = ma_device_init(nullptr, &config, &device->device);
+  if (opened != MA_SUCCESS) {
+    failure = std::string("no output device could be opened (") + ma_result_description(opened) + ")";
+    return nullptr;
+  }
+  device->initialized = true;
   device->stream = AudioStream::Make(sample_rate, device->device.sampleRate);
-  if (!device->stream || ma_device_start(&device->device) != MA_SUCCESS) {
-    ma_device_uninit(&device->device);
+  if (!device->stream) {
+    char text[128];
+    std::snprintf(text, sizeof text, "no sound stream from %g Hz to the device's %u Hz", sample_rate,
+                  device->device.sampleRate);
+    failure = text;
+    return nullptr;
+  }
+  device->volume.emplace(device->device.sampleRate, muted_ ? 0.0f : level_.load());
+  const auto& playback = device->device.playback;
+  if (playback.internalSampleRate != 0)
+    device->buffer_frames = static_cast<uint64_t>(playback.internalPeriodSizeInFrames) * playback.internalPeriods *
+                            device->device.sampleRate / playback.internalSampleRate;
+  const ma_result started = ma_device_start(&device->device);
+  if (started != MA_SUCCESS) {
+    failure = std::string("the output device did not start (") + ma_result_description(started) + ")";
+    return nullptr;
+  }
+  return device;
+}
+
+void AudioOutput::Open(double sample_rate) {
+  {
+    // A SET_SYSTEM_AV_INFO that keeps the rate (a new geometry, say) keeps the sound playing.
+    std::lock_guard<std::mutex> lock(device_mutex_);
+    if (device_ && device_->input_rate == sample_rate) return;
+  }
+  Close();
+  std::lock_guard<std::mutex> lock(device_mutex_);
+  if (!(sample_rate >= 8000 && sample_rate <= 192000)) {
+    std::fprintf(stderr, "[host] Sound: none, the core's rate of %g Hz is not 8000 to 192000 Hz\n", sample_rate);
+    return;
+  }
+  // The device runs at its own rate (sampleRate 0), so the stream's resampler is the only one.
+  // Should that fail, the device is reopened at kFallbackRate and miniaudio converts to its rate.
+  std::string failure;
+  auto device = Start(sample_rate, 0, failure);
+  if (!device) {
+    std::fprintf(stderr, "[host] Sound: %s; reopening it at %u Hz\n", failure.c_str(), kFallbackRate);
+    device = Start(sample_rate, kFallbackRate, failure);
+  }
+  if (!device) {
+    std::fprintf(stderr, "[host] Sound: none, %s; the game runs without sound\n", failure.c_str());
     return;
   }
   const auto& playback = device->device.playback;
@@ -266,7 +344,7 @@ void AudioOutput::Open(double sample_rate) {
       playback.internalSampleRate == 0
           ? 0
           : 1000.0 * playback.internalPeriodSizeInFrames * playback.internalPeriods / playback.internalSampleRate;
-  std::fprintf(stderr, "[host] Sound: %s at %u Hz, %u periods of %u frames (%.0f ms), a %.0f ms cushion\n",
+  std::fprintf(stderr, "[host] Sound: %s at %u Hz, %u periods of %u frames (%.0f ms), an %.0f ms cushion\n",
                ma_get_backend_name(device->device.pContext->backend), device->device.sampleRate,
                playback.internalPeriods, playback.internalPeriodSizeInFrames, buffered_ms,
                AudioStream::kTargetSeconds * 1000);
@@ -276,7 +354,14 @@ void AudioOutput::Open(double sample_rate) {
 void AudioOutput::Close() {
   std::lock_guard<std::mutex> lock(device_mutex_);
   if (!device_) return;
-  ma_device_uninit(&device_->device);
+  // The device's thread fades the sound out as for a pause, within its next read, and the device
+  // stops once its buffer has played that fade. A device that stopped calling is given the time of
+  // twice the buffer asked for and two more periods (120 ms), then stopped anyway.
+  device_->closing.store(true, std::memory_order_release);
+  const auto give_up =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(kDevicePeriodMs * (2 * kDevicePeriods + 2));
+  while (!device_->faded.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < give_up)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   device_.reset();
 }
 

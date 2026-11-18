@@ -9,11 +9,16 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 struct ma_device;
 
 namespace retro_host {
+
+// The device's thread never waits for the game's thread, so the counters they share must not
+// hide a lock.
+static_assert(std::atomic<uint64_t>::is_always_lock_free, "AudioStream's counters must be lock-free");
 
 // The cushion between the game's thread and the sound device (host.md "Sound"). The game's
 // thread writes each frame's samples at the core's rate; the device's thread reads them at the
@@ -39,7 +44,8 @@ class AudioStream {
   // of 1/sqrt(2), which learns the clocks' difference about twice as fast as critical damping.
   static constexpr double kIntegralGain = kMaxRateChange * kMaxRateChange / (2 * kTargetSeconds);
 
-  // Interleaved stereo 16-bit samples in at input_rate, out at output_rate. Null when
+  // Interleaved stereo 16-bit samples in at input_rate (8 to 192 kHz), out at output_rate (any
+  // rate from 8 kHz up: devices run at 384 kHz and more). Null outside those rates, or when
   // miniaudio's resampler cannot be made.
   static std::unique_ptr<AudioStream> Make(double input_rate, uint32_t output_rate);
   ~AudioStream();
@@ -58,6 +64,9 @@ class AudioStream {
   uint64_t Dropped() const { return dropped_.load(std::memory_order_relaxed); }
   // Times the cushion ran dry while playing.
   uint64_t Underruns() const { return underruns_.load(std::memory_order_relaxed); }
+  // The device's thread. True when the last read ended silent, with every fade and ramp played
+  // out: after a pause has faded, the sound can be stopped without a click.
+  bool Silent() const { return !playing_ && tail_left_ == 0; }
 
   struct Resampler;
 
@@ -93,6 +102,20 @@ class AudioStream {
   uint32_t rate_in_ = 0;
 };
 
+// The gain the device's thread applies to what the cushion played. It moves toward the volume it
+// is given by at most a whole step from silence to full in AudioStream::kFadeSeconds, so a change
+// of volume or mute does not click.
+class VolumeRamp {
+ public:
+  VolumeRamp(uint32_t output_rate, float gain);
+  void Apply(int16_t* samples, uint32_t frames, float target);
+  float Gain() const { return gain_; }
+
+ private:
+  const float step_;
+  float gain_;
+};
+
 // The game's sound, played by the host itself (protocol.md "Processes"). Volume and mute last
 // for the host's whole run; a paused game is silent.
 class AudioOutput {
@@ -100,10 +123,16 @@ class AudioOutput {
   AudioOutput();
   ~AudioOutput();
 
-  // Opens the system's default output for interleaved stereo 16-bit samples at sample_rate. A
-  // machine with no output device plays nothing, and the game still runs.
+  // Opens the system's default output for interleaved stereo 16-bit samples at sample_rate, at
+  // the device's own rate, or at kFallbackRate when that fails. Keeps the open device, and what
+  // it has queued, when sample_rate is the rate it was opened for. A machine with no output
+  // device plays nothing, and the game still runs; the log says why.
   void Open(double sample_rate);
+  // Fades the sound out before the device stops.
   void Close();
+
+  // The rate the device is reopened at when its own rate fails.
+  static constexpr uint32_t kFallbackRate = 48000;
 
   // Queues frames of stereo samples from the core (AudioStream::Write).
   void Write(const int16_t* samples, size_t frames);
@@ -115,6 +144,7 @@ class AudioOutput {
 
  private:
   static void Fill(::ma_device* device, void* out, const void* in, uint32_t frames);
+  std::unique_ptr<Device> Start(double sample_rate, uint32_t device_rate, std::string& failure);
   std::mutex device_mutex_;
   std::unique_ptr<Device> device_;
   std::atomic<float> level_{1.0f};

@@ -31,7 +31,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/paths.cpp`](../src/paths.cpp) | The path rules of protocol.md "Paths" for Windows and POSIX, and the `.m3u` entry for `initialDisc`, read as SwanStation reads it |
 | [`src/channel.cpp`](../src/channel.cpp) | Framing for the control stream, and the clock the watch thread reads for the write limit |
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
-| [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio: the cushion between the game and the device, its rate control, fades and cuts (see "Sound" below), and the volume, mute and pause |
+| [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio: the cushion between the game and the device, its rate control, fades and cuts (see "Sound" below), opening the device at its own rate or 48 kHz, and the ramped volume, mute and pause |
 | [`tests/audio_test.cpp`](../tests/audio_test.cpp) | Drives the cushion with a simulated device clock and simulated frame timing, with no sound device (see "Tests" below) |
 | [`cores/apply-core-patches.sh`](../cores/apply-core-patches.sh), [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh), [`cores/patches`](../cores/patches) | The host's SwanStation and LRPS2 patches and the script that applies them; the SwanStation script runs it for `swanstation` (see "SwanStation patches" and "LRPS2 patches" below) |
 | [`tools/core_identity.py`](../tools/core_identity.py) | Computes the core build identity from the SwanStation or LRPS2 commit and `cores/patches` without a build, and compares what each system's core reported ([netplay.md](netplay.md) "Core build identity") |
@@ -246,19 +246,42 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
     them (miniaudio's default, 10 ms, is for low latency, and PulseAudio then
     holds one period: about 19 ms in all, measured). Backends round this as
     they need; the host logs what it got, `[host] Sound: <backend> at <rate>
-    Hz, <n> periods of <frames> frames (<ms>), a 80 ms cushion`. The sound
+    Hz, <n> periods of <frames> frames (<ms>), an 80 ms cushion`. The sound
     plays about 80 ms plus that buffer after the frame that made it: around
     100 ms with PulseAudio, up to 120 ms where both periods are queued.
+  - **Any device rate.** The device is opened at its own rate, which can be
+    far above 192 kHz: WASAPI in shared mode takes the mix format's rate and
+    CoreAudio the device's nominal rate, so a USB DAC set to 352.8 or 384 kHz
+    runs there. `AudioStream::Make` takes any output rate from 8 kHz up. If
+    the device cannot be opened or started, or no stream can be made for its
+    rate, the host logs why and reopens it at 48 kHz, where miniaudio
+    converts to the device's rate; if that fails too it logs `[host] Sound:
+    none, <why>; the game runs without sound` and the game runs silent.
+  - **Rate changes.** Every `SET_SYSTEM_AV_INFO` reopens the sound for the
+    core's rate. When the rate is the one already open (a new geometry, say)
+    the device and what is queued are kept, with no break. When it changes,
+    or the game ends, `Close` first has the device's thread read as for a
+    pause, so the sound fades out over 2.5 ms, and stops the device once
+    reads that were silent from their start (the read holding the fade is not
+    counted) add up to the device's whole buffer, so the fade itself has
+    played (or after 120 ms, twice the 40 ms asked for and two more periods,
+    if the device has stopped calling). A rate change or the end of a game
+    takes about 60 to 80 ms longer for it (77 ms measured on miniaudio's
+    null backend).
+  - **Volume and mute** move toward the launcher's level by at most the
+    whole range in 2.5 ms (`VolumeRamp`), like the fades, so muting
+    mid-sound does not click.
   - **One resampler.** The device runs at its own rate, and miniaudio's linear
     resampler (`ma_resampler`) converts from the core's rate in one step. The
     host gives it the two rates with `ma_resampler_set_rate` as a pair of
     integers whose output side is `output rate / ceil(output rate / 65536)`
-    (48000 for 48 kHz). Its 16-bit path multiplies the position within an
+    (48000 for 48 kHz, 64000 for 384 and for 768 kHz). Its 16-bit path multiplies the position within an
     output frame by 4096, and by that output integer when the rate changes, in
     32-bit integers, so a larger one overflows and clicks on every rate
     change; rates in thousandths of a hertz were tried first, and
     `audio_test` found the clicks. A step of the ratio is then at most
-    one over that integer, 1/48000 at 48 kHz, about 0.002%. (`ma_resampler_set_rate_ratio` takes a fraction
+    one over the core's side of the pair, 1/44100 for 44.1 kHz to 48 kHz,
+    about 0.002% (1/7350, about 0.014%, to a 384 kHz device). (`ma_resampler_set_rate_ratio` takes a fraction
     and cuts it to thousandths, 0.1%, too coarse for this.) Its low-pass
     filter is off when the two rates are within 2% of each other.
   - **Dynamic rate control.** As RetroArch does it (Arntzen, "Dynamic Rate
@@ -325,12 +348,13 @@ A crash gives none of these, so the tests expect the exact code.
   frame starts at its paced time or at once to catch up, as in `game.cpp`.
   The device reads 20 ms at a time (or, in two cases, any length from one
   frame to 40 ms). The core plays a 440 Hz tone on the left and a 330 Hz
-  tone on the right at 44.1 kHz to a 48 kHz device (and once 48 to 48). It
+  tone on the right at 44.1 kHz to a 48 kHz device (and once 48 to 48, and
+  once to a 384 kHz device). It
   counts gaps (exact zeros for 1 ms or more, including at the end), clicks
   (a step on either channel larger than 1.5 times its tone's largest), sound
   while paused, the fill after each read, and the left tone's pitch over
   0.25 s spans against the device's clock, for: exact rate; 2% of frames 25
-  to 65 ms late, with 20 ms and with varied reads; 90% and 110% speed; the
+  to 65 ms late, with 20 ms and with varied reads, and to a 384 kHz device; 90% and 110% speed; the
   device's clock 0.3% fast and slow for 10 minutes, and 0.3% fast with late
   frames; and a pause and resume, with 20 ms and with varied reads. It expects no gap, click or drop at exact
   rate, at most one gap in a minute of late frames, none as the clocks drift
@@ -339,7 +363,18 @@ A crash gives none of these, so the tests expect the exact code.
   anywhere, silence from 2.5 ms into a paused read, and a pitch within
   0.5% (plus 0.05% for the count) of 440 Hz. Two more checks read the
   cushion one frame at a time until it runs dry, and stop the device's reads
-  until the ring is full and then resume them; neither may click.
+  until the ring is full and then resume them; neither may click. It checks
+  that a stream is made for devices at 96, 192, 352.8, 384 and 768 kHz and
+  not below 8 kHz; that a rate change, the old stream read paused until it
+  is silent and then a new one at 32 kHz, does not click; and that
+  `VolumeRamp` reaches each volume and mute within 2.5 ms without a click.
+- `audio_threads` (`audio_test threads`) runs `AudioStream` on two real
+  threads for 3 s: one writes bursts of up to 1000 frames with random
+  sleeps, the other reads random lengths with random sleeps and flips the
+  pause. Everything played must be the tone, faded, or silence. The
+  thread-sanitizer CI job runs it under ThreadSanitizer, which reports a
+  race if the ring's release and acquire pairing is broken (making the
+  writer's store relaxed was tried, and it fails).
 - [`tests/conformance.py`](../tests/conformance.py) is the fake launcher of
   protocol.md "Fixtures". It starts the host as a launcher would (a
   socketpair at descriptor 3, or two pipes passed with a handle list on
@@ -607,7 +642,8 @@ A crash gives none of these, so the tests expect the exact code.
   `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
   supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
-  under ThreadSanitizer (on 24.04). The Windows runner's own `opengl32.dll`
+  under ThreadSanitizer (on 24.04), with `audio_threads` (the single-threaded
+  `audio` harness has nothing for it to find and runs in every other job). The Windows runner's own `opengl32.dll`
   makes no OpenGL 3.3 context, so the Windows job puts Mesa's (llvmpipe, with
   `GALLIUM_DRIVER=llvmpipe`) next to the host and the tests, which load it
   from their own folder: `mesa3d-26.2.4-release-msvc.7z` from

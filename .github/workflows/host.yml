@@ -51,6 +51,10 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
           "-DCMAKE_CXX_FLAGS=-fsanitize=thread -g -O1" "-DCMAKE_C_FLAGS=-fsanitize=thread -g -O1"
       - run: cmake --build build
+      - name: The sound cushion's writer and reader on two threads under ThreadSanitizer (host.md "Tests")
+        env:
+          TSAN_OPTIONS: halt_on_error=1 exitcode=66
+        run: setarch "$(uname -m)" -R ctest --test-dir build -R audio_threads --output-on-failure
       - name: Host tests and conformance sessions under ThreadSanitizer
         env:
           TSAN_OPTIONS: halt_on_error=1 exitcode=66

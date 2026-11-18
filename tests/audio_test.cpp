@@ -11,7 +11,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <atomic>
+#include <chrono>
+#include <cstring>
 #include <random>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -308,15 +312,136 @@ void ExpectStoppedDeviceRecovers() {
   Expect(sounded, name, "the tone plays again");
 }
 
+// Devices run at their own rate, up to 384 kHz and more (a USB DAC set to 384 kHz in Windows'
+// sound settings or Audio MIDI Setup); the stream is made for any of them.
+void ExpectHighDeviceRates() {
+  const char* name = "high device rates";
+  for (uint32_t rate : {96000u, 192000u, 352800u, 384000u, 768000u})
+    Expect(retro_host::AudioStream::Make(44100, rate) != nullptr, name, "a stream is made for the device's rate");
+  Expect(retro_host::AudioStream::Make(44100, 7999) == nullptr, name, "no stream for a device below 8 kHz");
+}
+
+// A change of the core's rate (SET_SYSTEM_AV_INFO) closes the device as a pause does: the old
+// stream is read paused until it is silent, then a stream at the new rate starts. Neither edge
+// may click, and the old stream is silent within one read.
+void ExpectRateChangeFades() {
+  const char* name = "rate change fades";
+  auto before = retro_host::AudioStream::Make(44100, 48000);
+  auto after = retro_host::AudioStream::Make(32000, 48000);
+  uint64_t sample = 0;
+  uint64_t next_sample = 0;
+  Steps steps;
+  std::vector<int16_t> out(960 * 2);
+  for (int i = 0; i < 50; ++i) {
+    WriteTone(*before, sample, 882, 44100);
+    before->Read(out.data(), 960, false);
+    steps.Add(out.data(), 960, 48000);
+  }
+  const bool sounding = out[0] != 0 || out[1] != 0;
+  before->Read(out.data(), 960, true);
+  steps.Add(out.data(), 960, 48000);
+  const bool silent = before->Silent();
+  bool sounded = false;
+  for (int i = 0; i < 50; ++i) {
+    WriteTone(*after, next_sample, 640, 32000);
+    after->Read(out.data(), 960, false);
+    steps.Add(out.data(), 960, 48000);
+    sounded = sounded || out[0] != 0;
+  }
+  std::printf("%-24s clicks %5d\n", name, steps.clicks);
+  Expect(sounding && silent, name, "the old stream is silent after one paused read");
+  Expect(sounded, name, "the new stream plays");
+  Expect(steps.clicks == 0, name, "no click as the rate changes");
+}
+
+// Volume and mute move over the fade's length, not at once.
+void ExpectVolumeRamps() {
+  const char* name = "volume and mute ramp";
+  const uint32_t rate = 48000;
+  const uint32_t fade = static_cast<uint32_t>(std::lround(rate * retro_host::AudioStream::kFadeSeconds));
+  retro_host::VolumeRamp volume(rate, 1.0f);
+  uint64_t sample = 0;
+  Steps steps;
+  std::vector<int16_t> out(960 * 2);
+  bool reached = true;
+  for (float target : {1.0f, 0.0f, 1.0f, 0.25f, 0.0f, 1.0f}) {
+    for (int i = 0; i < 10; ++i) {
+      for (uint32_t f = 0; f < 960; ++f, ++sample)
+        for (int c = 0; c < 2; ++c) out[f * 2 + c] = ToneAt(c, sample, rate);
+      volume.Apply(out.data(), 960, target);
+      steps.Add(out.data(), 960, rate);
+      if (i == 0) reached = reached && volume.Gain() == target;
+      if (i == 0 && target == 0.0f)
+        reached = reached && std::all_of(out.begin() + (fade + 1) * 2, out.end(), [](int16_t v) { return v == 0; });
+    }
+  }
+  std::printf("%-24s clicks %5d\n", name, steps.clicks);
+  Expect(steps.clicks == 0, name, "no click as the volume or mute changes");
+  Expect(reached, name, "the gain reaches the volume within the fade, and mute is silent after it");
+}
+
+// The game's thread writes bursts with random sleeps while the device's thread reads random
+// lengths and flips the pause, for a few seconds of real time (the ThreadSanitizer job runs it).
+// What is played is only ever the tone, faded, or silence.
+int Threads() {
+  const char* name = "two threads";
+  auto stream = retro_host::AudioStream::Make(44100, 48000);
+  std::atomic<bool> stop{false};
+  std::thread writer([&] {
+    std::mt19937 random(1);
+    uint64_t sample = 0;
+    std::vector<int16_t> samples;
+    while (!stop.load()) {
+      const size_t frames = 1 + random() % 1000;
+      samples.resize(frames * 2);
+      for (size_t i = 0; i < frames; ++i, ++sample)
+        for (int c = 0; c < 2; ++c) samples[i * 2 + c] = ToneAt(c, sample, 44100);
+      stream->Write(samples.data(), frames);
+      std::this_thread::sleep_for(std::chrono::microseconds(random() % 12000));
+    }
+  });
+  std::mt19937 random(2);
+  std::vector<int16_t> out(1000 * 2);
+  bool paused = false;
+  bool sounded = false;
+  bool bounded = true;
+  uint64_t reads = 0;
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (std::chrono::steady_clock::now() < end) {
+    if (random() % 50 == 0) paused = !paused;
+    const uint32_t frames = 1 + random() % 1000;
+    stream->Read(out.data(), frames, paused);
+    for (uint32_t i = 0; i < frames * 2; ++i) bounded = bounded && std::abs(out[i]) <= kAmplitude * 1.05;
+    sounded = sounded || std::any_of(out.begin(), out.begin() + frames * 2, [](int16_t v) { return v != 0; });
+    bounded = bounded && stream->Buffered() <= 44100;
+    ++reads;
+    std::this_thread::sleep_for(std::chrono::microseconds(random() % 10000));
+  }
+  stop = true;
+  writer.join();
+  std::printf("%-24s reads %6llu  underruns %5llu  dropped %8llu\n", name, static_cast<unsigned long long>(reads),
+              static_cast<unsigned long long>(stream->Underruns()), static_cast<unsigned long long>(stream->Dropped()));
+  Expect(sounded, name, "the tone plays");
+  Expect(bounded, name, "only the tone, faded, or silence is played, and the ring never holds more than it can");
+  if (failures) std::fprintf(stderr, "%d failure(s)\n", failures);
+  return failures ? 1 : 0;
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc > 1 && std::strcmp(argv[1], "threads") == 0) return Threads();
+  ExpectHighDeviceRates();
+
   Case exact{"exact rate"};
   Case late{"2% late frames"};
   late.late_share = 0.02;
   Case same_rate{"2% late, 48 kHz core"};
   same_rate.input_rate = 48000;
   same_rate.late_share = 0.02;
+  Case high_rate{"2% late, 384 kHz device"};
+  high_rate.output_rate = 384000;
+  high_rate.late_share = 0.02;
   Case varied{"2% late, varied reads"};
   varied.late_share = 0.02;
   varied.varied_reads = true;
@@ -350,7 +475,7 @@ int main() {
          "plays without a gap, click or drop");
   ExpectPitch(exact, exact_result);
 
-  for (const Case* test : {&late, &same_rate, &varied}) {
+  for (const Case* test : {&late, &same_rate, &high_rate, &varied}) {
     const Result result = Run(*test);
     Report(*test, result);
     Expect(result.gaps <= 1 && result.gap_longest <= retro_host::AudioStream::kTargetSeconds, test->name,
@@ -397,6 +522,8 @@ int main() {
 
   ExpectDrainedOneFrameAtATime();
   ExpectStoppedDeviceRecovers();
+  ExpectRateChangeFades();
+  ExpectVolumeRamps();
 
   if (failures) std::fprintf(stderr, "%d failure(s)\n", failures);
   return failures ? 1 : 0;
