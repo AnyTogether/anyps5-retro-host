@@ -344,13 +344,15 @@ FileRead ReadFileUpTo(const std::string& path, uint64_t limit, std::string& data
   data.clear();
   const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
   if (fd < 0) return FileRead::kFailed;
+  // Closes the file on every way out, also when an allocation below throws.
+  const struct Closer {
+    int fd;
+    ~Closer() { close(fd); }
+  } closer{fd};
   struct stat about{};
   FileRead result = FileRead::kRead;
   if (fstat(fd, &about) == 0 && S_ISREG(about.st_mode)) {
-    if (static_cast<uint64_t>(about.st_size) > limit) {
-      close(fd);
-      return FileRead::kTooLong;
-    }
+    if (static_cast<uint64_t>(about.st_size) > limit) return FileRead::kTooLong;
     data.reserve(static_cast<size_t>(about.st_size));
   }
   std::vector<char> chunk(size_t{1} << 16);
@@ -365,7 +367,6 @@ FileRead ReadFileUpTo(const std::string& path, uint64_t limit, std::string& data
     }
     data.append(chunk.data(), static_cast<size_t>(got));
   }
-  close(fd);
   return result;
 }
 

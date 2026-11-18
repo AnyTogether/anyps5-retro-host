@@ -237,9 +237,9 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   so a paused game saves and loads too. The file is written or read on a
   thread of its own, so slow storage cannot hold the reply (or a `pong`) past
   the 5-second limit, and the file's assembly and checksum are made on that
-  thread too, so their time counts. A save waits up to the same 4 seconds the
-  lockstep frame fence does for the game's thread, and its write until 4.5
-  seconds after the call. A write that finishes later is removed rather than
+  thread too, so their time counts. The game's thread takes a save only
+  within the same 4 seconds the lockstep frame fence waits, and the save,
+  serialization and write included, must end 4.5 seconds after the call. A write that finishes later is removed rather than
   renamed into place (`WriteFileAtomically`'s `keep`), unless it had already
   passed that check and was renaming, so the file is the old state or the
   new one, whole. A load is the case where lateness can hurt, because once
