@@ -66,6 +66,9 @@
  * fake-ps2-wide, it reports a largest geometry four times as wide as that, as a core whose geometry
  * the host did not foresee would.
  *
+ * While the system directory holds fake-gpu and fake-init-gl, it asks for its OpenGL 3.3 core
+ * context at the end of retro_init, after it has set its options, and not again in retro_load_game.
+ *
  * A game started with fake_region "pal" is a PAL game: 50 frames a second and RETRO_REGION_PAL, as
  * SwanStation gives for a PAL console; otherwise it runs at 60 and is NTSC. While the system
  * directory holds fake-refresh-50, an NTSC game switches to 50 frames a second through
@@ -407,6 +410,19 @@ static void hold_while_asked(const char* step) {
   }
 }
 
+static void context_reset(void);
+static void context_destroy(void);
+
+static void ask_for_gl(void) {
+  hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
+  hw.version_major = 3;
+  hw.version_minor = 3;
+  hw.context_reset = context_reset;
+  hw.context_destroy = context_destroy;
+  hw.bottom_left_origin = true;
+  if (!environment(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw)) memset(&hw, 0, sizeof hw);
+}
+
 RETRO_API void retro_init(void) {
   struct retro_log_callback log;
   unsigned version = 0;
@@ -450,6 +466,7 @@ RETRO_API void retro_init(void) {
   initial_disc = 0;
   tray_open = false;
   memset(card, 0, sizeof card);
+  if (gpu_wanted && in_system_directory("fake-init-gl")) ask_for_gl();
 }
 
 RETRO_API void retro_deinit(void) {
@@ -721,13 +738,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game) {
   if (gpu_wanted) {
     if (!ps2_game) read_scale();
     hold_while_asked("load");
-    hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
-    hw.version_major = 3;
-    hw.version_minor = 3;
-    hw.context_reset = context_reset;
-    hw.context_destroy = context_destroy;
-    hw.bottom_left_origin = true;
-    if (!environment(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw)) memset(&hw, 0, sizeof hw);
+    if (!hw.context_type) ask_for_gl();
   }
   /* SwanStation's lines, as its libretro log callback writes them: "[<channel or function>]
    * <message>". The disc's path comes first, so a path that holds the host's words must not count. */

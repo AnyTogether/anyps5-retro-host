@@ -886,10 +886,11 @@ game loads (`restart` is `true`):
 - A game whose core then reports a larger frame than that value allows ends
   before its first frame, with `errorCode` `other` and `resolutionError`
   saying why.
-- While the game runs, `option` refuses `pcsx2_vr_mode` `"stereoscopic"`,
-  which puts two pictures side by side and doubles the frame's width, when
-  the doubled frame would not fit; a game started in stereo, or set to stereo
-  while it loads, is judged at that width.
+- From the time that context is made, while the game loads and while it
+  runs, `option` refuses `pcsx2_vr_mode` `"stereoscopic"`, which puts two
+  pictures side by side and doubles the frame's width, when the doubled frame
+  would not fit; a game started in stereo, or set to stereo while it loads, is
+  judged at that width.
 
 `discs` has `labels` (array of at most 128 strings, the discs `changeDisc`
 reaches), `inserted` (index of the inserted disc, or null while the tray is

@@ -682,7 +682,8 @@ def ps2_limits(program, core, log, require_gpu):
     for the next start. With VR off, 8x fits the frame and is kept when the context's largest
     texture holds PCSX2's 10240 x 10240 targets, or starts at 4x saying so; while it runs at 8x,
     turning stereo on is refused. A core whose largest geometry is wider than LRPS2's ends the game
-    with other before any frame, and the next game in the same host starts."""
+    with other before any frame, and the next game in the same host starts. A core that asks for
+    its context in retro_init keeps it, and is judged in it before the load."""
     session = Session(program, core, log)
     key = 'pcsx2_upscale_multiplier'
     try:
@@ -793,6 +794,21 @@ def ps2_limits(program, core, log, require_gpu):
         if status['ended']:
             raise c.Failed(f'the game ended at 2x: {status["errorCode"]!r} {status["error"]!r}')
         finish()
+
+        (system / 'fake-init-gl').write_bytes(b'')
+        status = start(**{key: '8x', 'pcsx2_vr_mode': 'stereoscopic'})
+        if status['ended'] or not status['hardware']:
+            raise c.Failed(f'a core that asked for its context in retro_init lost it: {status}')
+        option = status['options'][key]
+        if option['values'] != ['1x (Native)', '2x', '4x'] or option['activeValue'] != '4x':
+            raise c.Failed(f'a context asked for in retro_init was not judged before the load: {option}')
+        if given() != [f'{key}=4x', 'pcsx2_vr_mode=stereoscopic']:
+            raise c.Failed(f'with the context asked for in retro_init, the core was given {given()}')
+        status = session.wait(frame_width(640 * 4), 30)
+        if status['ended']:
+            raise c.Failed(f'the game ended at 4x: {status["errorCode"]!r} {status["error"]!r}')
+        finish()
+        (system / 'fake-init-gl').unlink()
     finally:
         session.close()
 

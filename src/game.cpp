@@ -1421,13 +1421,16 @@ void Game::LimitPs2ResolutionBeforeLoad() {
     const auto limited = [](const Option& option) { return option.key == kPs2ResolutionOption && !option.fixed; };
     if (std::none_of(options_.begin(), options_.end(), limited)) return;
   }
-  gpu_ = Gpu::Create(kPs2GlMajor, kPs2GlMinor, true);
+  // A core that asked for a context before the load, in retro_init, keeps it and is judged in it.
   if (!gpu_) {
-    std::fprintf(stderr, "[host] No OpenGL context could be made before the game loaded.\n");
-    return;
+    gpu_ = Gpu::Create(kPs2GlMajor, kPs2GlMinor, true);
+    if (!gpu_) {
+      std::fprintf(stderr, "[host] No OpenGL context could be made before the game loaded.\n");
+      return;
+    }
+    std::fprintf(stderr, "[host] OpenGL, made before the game loaded: %s\n", gpu_->Description().c_str());
+    early_gpu_ = true;
   }
-  std::fprintf(stderr, "[host] OpenGL, made before the game loaded: %s\n", gpu_->Description().c_str());
-  early_gpu_ = true;
   const FrameLimit frame = LimitsOf(*gpu_, kPs2Target);
   std::lock_guard<std::mutex> lock(mutex_);
   ps2_limit_ = frame;

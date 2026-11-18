@@ -168,10 +168,11 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   keeps it, and `SET_HW_RENDER` hands that context over when the core asks
   for the same one, so the limits judged are those of the context that draws
   (a request for another context gets a new one, judged again after the
-  load; a core that asks for none drops it). LRPS2's largest geometry is 640
-  × 512 times the scale, PAL's height for every game, and twice as wide while
-  `pcsx2_vr_mode` is `stereoscopic` (`retro_get_system_av_info`): 5120 × 4096
-  at 8x. The host offers the scales whose largest geometry fits as above and
+  load; a core that asks for none drops it; a core that already asked for a
+  context, in `retro_init`, keeps it and is judged in it instead). LRPS2's
+  largest geometry is 640 × 512 times the scale, PAL's height for every game,
+  and twice as wide while `pcsx2_vr_mode` is `stereoscopic`
+  (`retro_get_system_av_info`): 5120 × 4096 at 8x. The host offers the scales whose largest geometry fits as above and
   whose GS targets, 1280 × 1280 times the scale, fit the context's
   `GL_MAX_TEXTURE_SIZE`: upstream PCSX2 clamps the scale to that rule
   (`GSGetMaxUpscaleMultiplier`, "Maximum GS target size is 1280x1280") but
@@ -423,7 +424,8 @@ A crash gives none of these, so the tests expect the exact code.
   `fake-ps2-video.txt`, and draws LRPS2's sizes for an NTSC game (frames 640
   × 448 times the scale, largest geometry 640 × 512 times it, twice as wide
   in stereo); `fake-ps2-wide` makes it report a largest geometry four times
-  as wide.
+  as wide, and `fake-init-gl` makes it ask for its context at the end of
+  `retro_init` instead of in `retro_load_game`.
   `retro_unserialize` takes back a state it saved, frame count, inputs, rumble
   and memory card, and refuses any other bytes. While the system folder holds
   `fake-states`, each state it saves or loads adds `save <frame>` or `load
@@ -551,8 +553,10 @@ A crash gives none of these, so the tests expect the exact code.
     saying so; a core reporting a wider
     geometry than LRPS2's (`fake-ps2-wide`) must end with `other` and
     `resolutionError` before any frame, and the next game in the same host
-    must start. It is skipped without a context, unless `--require-gpu` is
-    given;
+    must start; a core that asks for its context in `retro_init`
+    (`fake-init-gl`) must keep it, draw with it, and have its saved 8x in
+    stereo start at 4x. It is skipped without a context, unless
+    `--require-gpu` is given;
   - Linux: an OpenGL game run under `strace -f -e trace=%network`
     (`gpu_network`) with `DISPLAY` set to an X server over TCP
     (`127.0.0.1:9`) must make no call protocol.md "Network" forbids, so a host
