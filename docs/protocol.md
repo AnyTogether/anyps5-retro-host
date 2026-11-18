@@ -63,7 +63,9 @@ another until the launcher exits or the host fails.
 The host has no window, no console and no dialog boxes. It draws only into the
 frame ring. The **launcher's window is the target for screenshots, capture,
 Remote Play and focus** for an emulated game. The host plays the game's audio
-itself, so per-process audio capture uses the host's process id.
+itself, so per-process audio capture uses the host's process id. It keeps
+about 80 ms of sound queued, so a frame's sound plays about 80 ms plus the
+sound device's own buffer after the frame is published (host.md "Sound").
 
 **Process id.** The launcher uses the process id it got when it started the
 host (from `CreateProcessW` or `posix_spawn`) for audio capture, focus and

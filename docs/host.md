@@ -32,7 +32,8 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/paths.cpp`](../src/paths.cpp) | The path rules of protocol.md "Paths" for Windows and POSIX, the `.m3u` entry for `initialDisc`, read as SwanStation reads it, and the Windows file name rule a state's name follows |
 | [`src/channel.cpp`](../src/channel.cpp) | Framing for the control stream, and the clock the watch thread reads for the write limit |
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
-| [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio, with the volume, mute and pause |
+| [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio: the cushion between the game and the device, its rate control, fades and cuts (see "Sound" below), opening the device at its own rate or 48 kHz, and the ramped volume, mute and pause |
+| [`tests/audio_test.cpp`](../tests/audio_test.cpp) | Drives the cushion with a simulated device clock and simulated frame timing, with no sound device (see "Tests" below) |
 | [`cores/apply-core-patches.sh`](../cores/apply-core-patches.sh), [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh), [`cores/patches`](../cores/patches) | The host's SwanStation and LRPS2 patches and the script that applies them; the SwanStation script runs it for `swanstation` (see "SwanStation patches" and "LRPS2 patches" below) |
 | [`tools/core_identity.py`](../tools/core_identity.py) | Computes the core build identity from the SwanStation or LRPS2 commit and `cores/patches` without a build, and compares what each system's core reported ([netplay.md](netplay.md) "Core build identity") |
 | [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
@@ -264,6 +265,101 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 - **A stuck core.** A game limit marks the game ended at once. If the core
   never returns from `retro_run`, `release` replies and then the host exits,
   as protocol.md "release" says.
+- **Sound.** The host plays the game's sound itself
+  ([`src/audio.cpp`](../src/audio.cpp)). The core writes each frame's
+  samples in one burst at its own rate; the device reads them at its own rate
+  and on its own clock. `AudioStream` sits between the two: one writer (the
+  game's thread), one reader (the device's thread), and neither waits for the
+  other. The game is paced by `steady_clock` alone. Nothing the sound does is
+  read by the game's thread, so the sound can never change when or how frames
+  run, and lockstep stays deterministic ([netplay.md](netplay.md)).
+  - **A cushion of 80 ms.** The reader keeps about 80 ms queued after each
+    read of the device, and after running dry plays again only once the whole
+    80 ms (and the read in hand) is queued, so the next late frame does not
+    cause another gap at once. A frame's samples arrive in one burst, so the
+    fill swings by about a frame around the target: a frame up to about 60 ms
+    late (the target less one frame at 60 fps) leaves no gap at any phase of
+    the device's reads once the fill has settled (see the rate control
+    below for how a clock difference moves it at first). A launcher run on a busy machine measured frame
+    intervals with a p99 of 62 to 72 ms, frames 45 to 55 ms late. In
+    `audio_test`, with 2% of frames 25 to 65 ms late and the device's clock
+    0.3% fast for 10 minutes, a 64 ms target (RetroArch's default) left 79
+    gaps, 72 ms left 31, and 80 ms left 11. DuckStation's default is 50 ms
+    plus a 20 ms device buffer.
+  - **The device's buffer.** The device is asked for periods of 20 ms, two of
+    them (miniaudio's default, 10 ms, is for low latency, and PulseAudio then
+    holds one period: about 19 ms in all, measured). Backends round this as
+    they need; the host logs what it got, `[host] Sound: <backend> at <rate>
+    Hz, <n> periods of <frames> frames (<ms>), an 80 ms cushion`. The sound
+    plays about 80 ms plus that buffer after the frame that made it: around
+    100 ms with PulseAudio, up to 120 ms where both periods are queued.
+  - **Any device rate.** The device is opened at its own rate, which can be
+    far above 192 kHz: WASAPI in shared mode takes the mix format's rate and
+    CoreAudio the device's nominal rate, so a USB DAC set to 352.8 or 384 kHz
+    runs there. `AudioStream::Make` takes any output rate from 8 kHz up. If
+    the device cannot be opened or started, or no stream can be made for its
+    rate, the host logs why and reopens it at 48 kHz, where miniaudio
+    converts to the device's rate; if that fails too it logs `[host] Sound:
+    none, <why>; the game runs without sound` and the game runs silent.
+  - **Rate changes.** Every `SET_SYSTEM_AV_INFO` reopens the sound for the
+    core's rate. When the rate is the one already open (a new geometry, say)
+    the device and what is queued are kept, with no break. When it changes,
+    or the game ends, `Close` first has the device's thread read as for a
+    pause, so the sound fades out over 2.5 ms, and stops the device once
+    reads that were silent from their start (the read holding the fade is not
+    counted) add up to the device's whole buffer, so the fade itself has
+    played (or after 120 ms, twice the 40 ms asked for and two more periods,
+    if the device has stopped calling). A rate change or the end of a game
+    takes about 60 to 80 ms longer for it (77 ms measured on miniaudio's
+    null backend).
+  - **Volume and mute** move toward the launcher's level by at most the
+    whole range in 2.5 ms (`VolumeRamp`), like the fades, so muting
+    mid-sound does not click.
+  - **One resampler.** The device runs at its own rate, and miniaudio's linear
+    resampler (`ma_resampler`) converts from the core's rate in one step. The
+    host gives it the two rates with `ma_resampler_set_rate` as a pair of
+    integers whose output side is `output rate / ceil(output rate / 65536)`
+    (48000 for 48 kHz, 64000 for 384 and for 768 kHz). Its 16-bit path multiplies the position within an
+    output frame by 4096, and by that output integer when the rate changes, in
+    32-bit integers, so a larger one overflows and clicks on every rate
+    change; rates in thousandths of a hertz were tried first, and
+    `audio_test` found the clicks. A step of the ratio is then at most
+    one over the core's side of the pair, 1/44100 for 44.1 kHz to 48 kHz,
+    about 0.002% (1/7350, about 0.014%, to a 384 kHz device). (`ma_resampler_set_rate_ratio` takes a fraction
+    and cuts it to thousandths, 0.1%, too coarse for this.) Its low-pass
+    filter is off when the two rates are within 2% of each other.
+  - **Dynamic rate control.** As RetroArch does it (Arntzen, "Dynamic Rate
+    Control for Retro Game Emulators", 2012), the ratio moves in proportion to
+    how far the fill, averaged over 0.25 s, is from the target, by at most
+    0.5%, so the pitch moves by at most 0.5% (8.6 cents, under a tenth of a
+    semitone). The proportional term
+    alone leaves the fill off the target by the clocks' difference over 0.5%
+    (60% of the cushion for a 0.3% difference), so this host adds a slow
+    integral term, held within the same 0.5%, that learns that difference.
+    Its gain, 0.5% squared over (2 times 80 ms) per second, gives a damping
+    ratio of 1/sqrt(2). With the device's clock 0.3% fast the fill sags to
+    about 40 ms at first and is back at 80 ms after about 90 s; differences
+    of a real sound card's crystal (around 0.01%) move it by a millisecond or
+    two.
+  - **Fades.** 2.5 ms fades (DuckStation's are 128 frames) end the sound
+    before a gap and start it after one, and end it when the game pauses (a
+    read shorter than the fade plays nothing more, and the last frame played
+    ramps down).
+    When less than 2.5 ms is left to fade, or a read took exactly what was
+    queued and the next finds nothing, the last frame played ramps down to
+    silence over 2.5 ms instead, and the sound starts again only after that
+    ramp. What is queued is kept over a pause and played after it, faded in.
+  - **Too much sound.** A fill above twice the target (a game running fast,
+    or a burst after a stall) is cut back to the target: the oldest queued
+    frames are dropped, and the first frames kept are crossfaded over 2.5 ms
+    with those that would have played next, so the cut has no edge. A full
+    ring (1 s, which only a device that has stopped reading allows) drops the
+    write in hand; when the device reads again, the last frame it played
+    ramps down, what is queued is dropped, and the sound starts again from a
+    full cushion. Nothing ever cuts the sound off in the middle of a write.
+  - **Below full speed** nothing removes the holes: the core makes less sound
+    than the device plays. They become a few gaps of about 80 ms, faded,
+    instead of constant crackle.
 - **Save states** (protocol.md "saveState and loadState") follow what
   players know from the two emulators most of them use. RetroArch numbers
   slots per game (`<content>.state`, `.state1`, ...) and has an auto state
@@ -356,6 +452,40 @@ A crash gives none of these, so the tests expect the exact code.
   offers for a geometry, a frame limit and a largest scale, which value it
   moves to, and which values it reads as scales: SwanStation's digits and
   LRPS2's `<n>x` forms (`1x (Native)`), and not `2X`, `02x` or `2x(Native)`.
+- `audio_test` ([`tests/audio_test.cpp`](../tests/audio_test.cpp)) drives
+  `AudioStream` with a simulated device clock and simulated frame timing,
+  with no device, so it is silent on every system. Each frame takes 4 ms of
+  work, its samples are written only when that work is done, and the next
+  frame starts at its paced time or at once to catch up, as in `game.cpp`.
+  The device reads 20 ms at a time (or, in two cases, any length from one
+  frame to 40 ms). The core plays a 440 Hz tone on the left and a 330 Hz
+  tone on the right at 44.1 kHz to a 48 kHz device (and once 48 to 48, and
+  once to a 384 kHz device). It
+  counts gaps (exact zeros for 1 ms or more, including at the end), clicks
+  (a step on either channel larger than 1.5 times its tone's largest), sound
+  while paused, the fill after each read, and the left tone's pitch over
+  0.25 s spans against the device's clock, for: exact rate; 2% of frames 25
+  to 65 ms late, with 20 ms and with varied reads, and to a 384 kHz device; 90% and 110% speed; the
+  device's clock 0.3% fast and slow for 10 minutes, and 0.3% fast with late
+  frames; and a pause and resume, with 20 ms and with varied reads. It expects no gap, click or drop at exact
+  rate, at most one gap in a minute of late frames, none as the clocks drift
+  (and gaps from at most 2% of the late frames when both happen for 10
+  minutes), no gap longer than the target with late frames, no clicks
+  anywhere, silence from 2.5 ms into a paused read, and a pitch within
+  0.5% (plus 0.05% for the count) of 440 Hz. Two more checks read the
+  cushion one frame at a time until it runs dry, and stop the device's reads
+  until the ring is full and then resume them; neither may click. It checks
+  that a stream is made for devices at 96, 192, 352.8, 384 and 768 kHz and
+  not below 8 kHz; that a rate change, the old stream read paused until it
+  is silent and then a new one at 32 kHz, does not click; and that
+  `VolumeRamp` reaches each volume and mute within 2.5 ms without a click.
+- `audio_threads` (`audio_test threads`) runs `AudioStream` on two real
+  threads for 3 s: one writes bursts of up to 1000 frames with random
+  sleeps, the other reads random lengths with random sleeps and flips the
+  pause. Everything played must be the tone, faded, or silence. The
+  thread-sanitizer CI job runs it under ThreadSanitizer, which reports a
+  race if the ring's release and acquire pairing is broken (making the
+  writer's store relaxed was tried, and it fails).
 - [`tests/conformance.py`](../tests/conformance.py) is the fake launcher of
   protocol.md "Fixtures". It starts the host as a launcher would (a
   socketpair at descriptor 3, or two pipes passed with a handle list on
@@ -684,7 +814,8 @@ A crash gives none of these, so the tests expect the exact code.
   `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
   supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
-  under ThreadSanitizer (on 24.04). The Windows runner's own `opengl32.dll`
+  under ThreadSanitizer (on 24.04), with `audio_threads` (the single-threaded
+  `audio` harness has nothing for it to find and runs in every other job). The Windows runner's own `opengl32.dll`
   makes no OpenGL 3.3 context, so the Windows job puts Mesa's (llvmpipe, with
   `GALLIUM_DRIVER=llvmpipe`) next to the host and the tests, which load it
   from their own folder: `mesa3d-26.2.4-release-msvc.7z` from
