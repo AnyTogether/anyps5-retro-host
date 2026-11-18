@@ -807,6 +807,8 @@ def ps2_vr_off(program, core, log, require_gpu):
         if {'pcsx2_vr_mode', 'pcsx2_vr_depth'} & set(status['options']):
             raise c.Failed(f'the VR options are in status: {sorted(status["options"])}')
         active = status['options'][key]['activeValue']
+        if active != '8x' and '10240 x 10240' not in status['resolutionError']:
+            raise c.Failed(f'8x asked in stereo started at {active}, not as 8x without stereo would: {status}')
         given = (system / 'fake-ps2-video.txt').read_text(encoding='utf-8').splitlines()
         if given != [f'{key}={active}', 'pcsx2_vr_mode=disabled']:
             raise c.Failed(f'the core was given {given}')
