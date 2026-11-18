@@ -672,9 +672,9 @@ def gpu_limits(program, core, log, require_gpu):
 
 def ps2_limits(program, core, log, require_gpu):
     """A PS2 GPU game's internal resolution (capability ps2ResolutionLimits): the fake core reads
-    pcsx2_upscale_multiplier only while it loads, as LRPS2 does, and its largest geometry is 640 x
-    512 times the scale, twice as wide with pcsx2_vr_mode "stereoscopic". The host judges the value
-    in the context it makes before the game loads: a saved 8x in stereo, 10240 pixels wide, more
+    pcsx2_upscale_multiplier only while it loads, where LRPS2 applies it, and its largest geometry
+    is 640 x 512 times the scale, twice as wide with pcsx2_vr_mode "stereoscopic". The host judges
+    the value in the context it makes before the game loads: a saved 8x in stereo, 10240 pixels wide, more
     than protocol.md's 8192, starts at 4x, which is the value the core is given, and 8x is refused
     for the next start. With VR off, 8x fits the frame and is kept when the context's largest
     texture holds PCSX2's 10240 x 10240 targets, or starts at 4x saying so; while it runs at 8x,

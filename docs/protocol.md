@@ -860,7 +860,7 @@ frame larger than 8192 × 8192 then ends the game with `frameTooLarge`.
 With the capability `ps2ResolutionLimits`, a PS2 game's internal resolution
 (`pcsx2_upscale_multiplier`, whose values are written `<n>x`, alone or
 followed by a space and a label, as in `"1x (Native)"`) is limited the same
-way, with the differences that follow from LRPS2 reading it only while the
+way, with the differences that follow from LRPS2 applying it only when the
 game loads (`restart` is `true`):
 
 - The host judges it at `start`, before the game loads, in the OpenGL context

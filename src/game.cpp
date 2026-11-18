@@ -102,7 +102,7 @@ constexpr int64_t kStepWaitMs = 10;
 constexpr int64_t kFrameFenceMs = 4000;
 
 // The internal resolutions the host limits (docs/host.md "Resolution limits"): SwanStation's, which
-// the core reads while it runs, and LRPS2's, which it reads only while it loads the game.
+// the core applies while it runs, and LRPS2's, which it applies only when it loads the game.
 constexpr char kResolutionOption[] = "swanstation_GPU_ResolutionScale";
 constexpr char kPs2ResolutionOption[] = "pcsx2_upscale_multiplier";
 // LRPS2's largest geometry at scale 1, which grows with the scale: 640 x 512, PAL's height whatever

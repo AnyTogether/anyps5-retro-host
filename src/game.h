@@ -223,7 +223,7 @@ class Game {
   // instead, and the largest geometry at it is returned; otherwise std::nullopt, as the core's
   // geometry fits. Called with mutex_ held, on the game's thread, with gpu_ made.
   std::optional<std::pair<uint32_t, uint32_t>> LimitResolution(uint32_t max_width, uint32_t max_height);
-  // A PS2 game's internal resolution, which LRPS2 reads once, in retro_load_game, before it asks for
+  // A PS2 game's internal resolution, which LRPS2 applies only in retro_load_game, before it asks for
   // its OpenGL context (docs/host.md "Resolution limits"). Before the game loads, the host makes the
   // context LRPS2 asks for (gpu_, early_gpu_), offers only the scales whose largest geometry, 640 x
   // 512 times the scale, fits it, and gives the core the largest of them when the value asked for

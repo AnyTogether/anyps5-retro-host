@@ -54,8 +54,8 @@
  * While the system directory holds both fake-ps2 and fake-gpu, it offers LRPS2's internal
  * resolution and VR options (pcsx2_upscale_multiplier and pcsx2_vr_mode, with LRPS2's titles,
  * values and defaults) instead of SwanStation's internal resolution, and a PS2 game reads them only
- * in retro_load_game, before it asks for an OpenGL 3.3 core context, as LRPS2 does; it writes what it
- * read to fake-ps2-video.txt there. It then draws as LRPS2 draws an NTSC game: frames of 640 x 448
+ * in retro_load_game, where LRPS2 applies them, before it asks for an OpenGL 3.3 core context; it
+ * writes what it read to fake-ps2-video.txt there. It then draws as LRPS2 draws an NTSC game: frames of 640 x 448
  * times the scale, and a largest geometry of 640 x 512 times the scale, twice as wide with VR
  * "stereoscopic" (libretro/main.c, retro_get_system_av_info). While the system directory holds
  * fake-ps2-wide, it reports a largest geometry four times as wide as that, as a core whose geometry

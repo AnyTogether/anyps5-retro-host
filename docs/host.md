@@ -158,9 +158,10 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 
   LRPS2's internal resolution (`pcsx2_upscale_multiplier`, capability
   `ps2ResolutionLimits`) has the values `1x (Native)`, `2x`, `4x` and `8x`
-  and is read once, in `retro_load_game`, before LRPS2 asks for its OpenGL
-  context; its live change is switched off in LRPS2 ("crashes when changed
-  on-the-fly", `check_variables` in `libretro/main.c` at `LRPS2_COMMIT`). So
+  and is applied only at load, in `retro_load_game`, before LRPS2 asks for its
+  OpenGL context; LRPS2 reads it again at each option update, but applying a
+  change there is switched off ("crashes when changed on-the-fly",
+  `check_variables` in `libretro/main.c` at `LRPS2_COMMIT`). So
   the host judges it before the game loads, in the context LRPS2 will draw
   in: for a PS2 game whose core lists the option, the game's thread makes the
   OpenGL 3.3 core context LRPS2 asks for first (`libretro_set_hw_render`) and
