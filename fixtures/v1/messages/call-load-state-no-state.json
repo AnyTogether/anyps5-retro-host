@@ -1,0 +1,20 @@
+{
+  "description": "Load a slot that holds no state.",
+  "from": "launcher",
+  "message": {
+    "type": "call",
+    "id": 5,
+    "method": "loadState",
+    "args": {
+      "slot": 7
+    }
+  },
+  "reply": {
+    "type": "reply",
+    "id": 5,
+    "error": {
+      "code": "noState",
+      "message": "There is no state file there."
+    }
+  }
+}

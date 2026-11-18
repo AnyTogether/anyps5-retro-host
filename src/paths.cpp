@@ -69,7 +69,30 @@ bool PosixPath(std::string_view path) {
   return GoodSegments(parts);
 }
 
+char Upper(char c) { return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c; }
+
 }  // namespace
+
+bool IsWindowsFileName(std::string_view name) {
+  if (name.empty() || name.back() == '.' || name.back() == ' ') return false;
+  for (const char c : name) {
+    if (static_cast<unsigned char>(c) < 0x20 || std::string_view("<>:\"/\\|?*").find(c) != std::string_view::npos) {
+      return false;
+    }
+  }
+  std::string_view base = name.substr(0, name.find('.'));
+  while (!base.empty() && base.back() == ' ') base.remove_suffix(1);
+  std::string device;
+  for (const char c : base) device.push_back(Upper(c));
+  for (const char* reserved : {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}) {
+    if (device == reserved) return false;
+  }
+  const std::string_view port = std::string_view(device).substr(0, 3);
+  if (device.size() < 4 || (port != "COM" && port != "LPT")) return true;
+  const std::string_view number = std::string_view(device).substr(3);
+  if (number.size() == 1 && number[0] >= '0' && number[0] <= '9') return false;
+  return number != "\xC2\xB9" && number != "\xC2\xB2" && number != "\xC2\xB3";
+}
 
 bool IsProtocolPath(std::string_view path, bool windows) {
   if (path.find('\0') != std::string_view::npos) return false;

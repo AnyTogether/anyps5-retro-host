@@ -139,7 +139,7 @@ def place(root, core):
     (system / 'fake-bios.bin').write_bytes(b'\0' * 16)
     return {'core': str(core), 'disc': str(discs / 'game.cue'), 'playlist': str(discs / 'game.m3u'),
             'disc1': str(discs / 'disc1.cue'), 'disc2': str(discs / 'disc2.cue'), 'system': str(system),
-            'saves': str(root / 'saves')}
+            'saves': str(root / 'saves'), 'states': str(root / 'states')}
 
 
 def fill(value, paths):
