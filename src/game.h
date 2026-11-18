@@ -394,6 +394,10 @@ class Game {
   // Hands work to the game's thread and waits for it; false when the game ended first or its thread
   // did not finish it within 4 seconds or by deadline.
   bool AwaitStateWork(const std::shared_ptr<StateWork>& work, std::chrono::steady_clock::time_point deadline);
+  // The outcome a saveState or loadState ends with before it starts: the game has ended, is in
+  // lockstep or was started in it, has not shown its first frame, or a late state file work has not
+  // finished; nothing when it may go on.
+  std::optional<StateOutcome> RefuseState() const;
   // The header protocol.md "saveState and loadState" gives a state file of this game, for a core
   // state of size bytes of which stored are kept.
   std::string StateHeader(uint64_t size, uint64_t stored) const;

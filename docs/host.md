@@ -235,9 +235,14 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   up to the same 4 seconds the lockstep frame fence does. The file is written
   or read on a thread of its own, which the control thread waits for until
   4.5 seconds after the call, so slow storage cannot hold the reply (or a
-  `pong`) past the 5-second limit. A write that finishes later is removed
-  rather than renamed into place (`WriteFileAtomically`'s `keep`), and until
-  it has finished no other state file work starts, so two never share the
+  `pong`) past the 5-second limit. The file's assembly, and on a load its
+  header and the core's state at full size, are made on that thread too, so
+  their time counts. A write that finishes later is removed rather than
+  renamed into place (`WriteFileAtomically`'s `keep`), unless it had already
+  passed that check and was renaming, so the file is the old state or the
+  new one, whole. Until a late one has finished, every new `saveState` and
+  `loadState` is a `fileError` before it asks the game for anything, and no
+  other state file work starts, so two never share the
   file beside a state. On Linux and macOS `host_test` holds a write and a
   read with FIFOs to check this. Frame pacing starts
   again when the save or load ends, so the game does not run fast to catch up

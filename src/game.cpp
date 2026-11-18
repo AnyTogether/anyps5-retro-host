@@ -309,30 +309,50 @@ std::optional<StateFileHeader> ReadStateHeader(std::string_view file) {
 
 uint32_t ConsoleNumber(Console console) { return console == Console::kPs2 ? 2 : 1; }
 
+// A state file's write or read, on a thread of its own (RunFileWork).
+struct FileWork {
+  std::mutex mutex;
+  std::condition_variable signal;
+  bool done = false;
+  bool ok = false;
+  bool abandoned = false;
+};
+
+// The host's last file work. Only one runs at a time in the host, so a late one and a new one never
+// share a file beside a state.
+struct FileWorkSlot {
+  std::mutex mutex;
+  std::shared_ptr<FileWork> running;
+};
+
+FileWorkSlot& LastFileWork() {
+  static FileWorkSlot slot;
+  return slot;
+}
+
+bool FileWorkRunning() {
+  FileWorkSlot& slot = LastFileWork();
+  std::lock_guard<std::mutex> lock(slot.mutex);
+  if (!slot.running) return false;
+  std::lock_guard<std::mutex> running_lock(slot.running->mutex);
+  return !slot.running->done;
+}
+
 // Runs work on a thread of its own and waits for it until deadline; true when it finished in time and
-// said true. Past the deadline the caller goes on without it: wanted then says false, and a write
-// asks it before its rename, so a late write is dropped unless it was already being renamed. Only one
-// file work runs at a time in the host: while a late one has not finished, a new one is refused, so
-// two never share a file beside a state.
+// said true, false too while an earlier file work has not finished. Past the deadline the caller goes
+// on without it: wanted then says false, and a write asks it before its rename, so a late write is
+// dropped unless it was already being renamed. An exception in work counts as a failure.
 bool RunFileWork(std::function<bool(const std::function<bool()>& wanted)> work,
                  std::chrono::steady_clock::time_point deadline) {
-  struct Shared {
-    std::mutex mutex;
-    std::condition_variable signal;
-    bool done = false;
-    bool ok = false;
-    bool abandoned = false;
-  };
-  static std::mutex running_mutex;
-  static std::shared_ptr<Shared> running;
-  auto shared = std::make_shared<Shared>();
+  auto shared = std::make_shared<FileWork>();
   {
-    std::lock_guard<std::mutex> lock(running_mutex);
-    if (running) {
-      std::lock_guard<std::mutex> running_lock(running->mutex);
-      if (!running->done) return false;
+    FileWorkSlot& slot = LastFileWork();
+    std::lock_guard<std::mutex> lock(slot.mutex);
+    if (slot.running) {
+      std::lock_guard<std::mutex> running_lock(slot.running->mutex);
+      if (!slot.running->done) return false;
     }
-    running = shared;
+    slot.running = shared;
   }
   std::thread([shared, work = std::move(work)] {
     bool ok = false;
@@ -1565,41 +1585,7 @@ bool Game::RunStateWork() {
   return true;
 }
 
-StateOutcome Game::SaveState(const std::string& path) {
-  const auto began = std::chrono::steady_clock::now();
-  const auto deadline = began + std::chrono::milliseconds(kStateCallMs);
-  StateOutcome outcome;
-  auto work = std::make_shared<StateWork>();
-  if (!AwaitStateWork(work, deadline)) return outcome;
-  outcome.result = work->result;
-  if (outcome.result != StateResult::kDone) return outcome;
-  auto file = std::make_shared<std::string>();
-  try {
-    *file = StateHeader(work->size, work->data.size());
-    *file += work->data;
-  } catch (const std::bad_alloc&) {
-    outcome.result = StateResult::kFileError;
-    return outcome;
-  }
-  work->data = std::string();
-  const std::string states = config_.states;
-  const bool written = RunFileWork(
-      [file, path, states](const std::function<bool()>& wanted) {
-        return CreateDirectories(states) && WriteFileAtomically(path, *file, wanted);
-      },
-      deadline);
-  if (!written) {
-    outcome.result = StateResult::kFileError;
-    return outcome;
-  }
-  outcome.bytes = file->size();
-  outcome.micros = MicrosSince(began);
-  return outcome;
-}
-
-StateOutcome Game::LoadState(const std::string& path) {
-  const auto began = std::chrono::steady_clock::now();
-  const auto deadline = began + std::chrono::milliseconds(kStateCallMs);
+std::optional<StateOutcome> Game::RefuseState() const {
   StateOutcome outcome;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1610,16 +1596,76 @@ StateOutcome Game::LoadState(const std::string& path) {
     }
     if (!ready_) return outcome;
   }
+  if (FileWorkRunning()) {
+    outcome.result = StateResult::kFileError;
+    return outcome;
+  }
+  return std::nullopt;
+}
+
+StateOutcome Game::SaveState(const std::string& path) {
+  const auto began = std::chrono::steady_clock::now();
+  const auto deadline = began + std::chrono::milliseconds(kStateCallMs);
+  if (auto refused = RefuseState()) return *refused;
+  StateOutcome outcome;
+  auto work = std::make_shared<StateWork>();
+  if (!AwaitStateWork(work, deadline)) return outcome;
+  outcome.result = work->result;
+  if (outcome.result != StateResult::kDone) return outcome;
+  std::string header;
+  try {
+    header = StateHeader(work->size, work->data.size());
+  } catch (const std::bad_alloc&) {
+    outcome.result = StateResult::kFileError;
+    return outcome;
+  }
+  auto bytes = std::make_shared<uint64_t>(0);
+  const std::string states = config_.states;
+  const bool written = RunFileWork(
+      [work, header, path, states, bytes](const std::function<bool()>& wanted) {
+        std::string file = header;
+        file += work->data;
+        work->data = std::string();
+        *bytes = file.size();
+        return CreateDirectories(states) && WriteFileAtomically(path, file, wanted);
+      },
+      deadline);
+  if (!written) {
+    outcome.result = StateResult::kFileError;
+    return outcome;
+  }
+  outcome.bytes = *bytes;
+  outcome.micros = MicrosSince(began);
+  return outcome;
+}
+
+StateOutcome Game::LoadState(const std::string& path) {
+  const auto began = std::chrono::steady_clock::now();
+  const auto deadline = began + std::chrono::milliseconds(kStateCallMs);
+  if (auto refused = RefuseState()) return *refused;
+  StateOutcome outcome;
+  // The file's size, its header, and the core's state at its saved size, all made on the file's
+  // thread, so the time they take counts toward the deadline.
   struct Read {
     bool missing = false;
-    std::optional<std::string> file;
+    uint64_t bytes = 0;
+    std::optional<StateFileHeader> header;
+    std::string data;
   };
   auto read = std::make_shared<Read>();
   const bool done = RunFileWork(
       [read, path](const std::function<bool()>&) {
         read->missing = !Exists(path);
-        if (!read->missing) read->file = ReadFileUpTo(path, kMaxStateFileBytes);
-        return read->missing || read->file.has_value();
+        if (read->missing) return true;
+        auto file = ReadFileUpTo(path, kMaxStateFileBytes);
+        if (!file) return false;
+        read->bytes = file->size();
+        if (file->size() <= kMaxStateFileBytes) read->header = ReadStateHeader(*file);
+        if (!read->header) return true;
+        read->data.assign(static_cast<size_t>(read->header->size), '\0');
+        std::memcpy(read->data.data(), file->data() + read->header->header_bytes,
+                    static_cast<size_t>(read->header->stored));
+        return true;
       },
       deadline);
   if (!done) {
@@ -1630,8 +1676,7 @@ StateOutcome Game::LoadState(const std::string& path) {
     outcome.result = StateResult::kNoState;
     return outcome;
   }
-  auto& file = read->file;
-  const auto header = file->size() <= kMaxStateFileBytes ? ReadStateHeader(*file) : std::nullopt;
+  const auto& header = read->header;
   if (!header) {
     outcome.result = StateResult::kBadState;
     return outcome;
@@ -1648,17 +1693,14 @@ StateOutcome Game::LoadState(const std::string& path) {
       return outcome;
     }
   }
-  auto work = std::make_shared<StateWork>();
-  work->load = true;
-  try {
-    work->data.assign(static_cast<size_t>(header->size), '\0');
-  } catch (const std::bad_alloc&) {
+  if (std::chrono::steady_clock::now() >= deadline) {
     outcome.result = StateResult::kFileError;
     return outcome;
   }
-  std::memcpy(work->data.data(), file->data() + header->header_bytes, static_cast<size_t>(header->stored));
-  const uint64_t bytes = file->size();
-  file.reset();
+  auto work = std::make_shared<StateWork>();
+  work->load = true;
+  work->data = std::move(read->data);
+  const uint64_t bytes = read->bytes;
   if (!AwaitStateWork(work, deadline)) return outcome;
   outcome.result = work->result;
   if (outcome.result != StateResult::kDone) return outcome;
