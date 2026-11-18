@@ -10,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 #include "channel.h"
 #include "platform.h"
@@ -220,7 +221,22 @@ std::optional<std::string> ReadWholeFile(const std::string& path) {
   return data.str();
 }
 
-bool WriteFileAtomically(const std::string& path, const std::string& data) {
+std::optional<std::string> ReadFileUpTo(const std::string& path, uint64_t limit) {
+  std::ifstream in(std::filesystem::path(Wide(path)), std::ios::binary);
+  if (!in) return std::nullopt;
+  std::string data;
+  std::vector<char> chunk(size_t{1} << 16);
+  while (data.size() <= limit) {
+    in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    const auto got = static_cast<uint64_t>(in.gcount());
+    if (got == 0) break;
+    data.append(chunk.data(), static_cast<size_t>(std::min<uint64_t>(got, limit + 1 - data.size())));
+  }
+  if (in.bad()) return std::nullopt;
+  return data;
+}
+
+bool WriteFileAtomically(const std::string& path, const std::string& data, const std::function<bool()>& keep) {
   const std::wstring target = Wide(path);
   if (target.empty()) return false;
   const std::wstring temporary = target + L".writing";
@@ -236,7 +252,7 @@ bool WriteFileAtomically(const std::string& path, const std::string& data) {
     sent += wrote;
   }
   written = written && FlushFileBuffers(file);
-  if (!CloseHandle(file) || !written ||
+  if (!CloseHandle(file) || !written || (keep && !keep()) ||
       !MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
     DeleteFileW(temporary.c_str());
     return false;

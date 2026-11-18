@@ -4,8 +4,8 @@
 # How the host is put together
 
 The host implements [protocol version 1](protocol.md) with the `ps1`,
-`coreIdentity`, `gameTiming`, `ps2` ([ps2.md](ps2.md) for PS2) and
-`ps1Lockstep` capabilities. It is a small C++17 program with three threads:
+`coreIdentity`, `gameTiming`, `ps2` ([ps2.md](ps2.md) for PS2),
+`ps1Lockstep` and `saveStates` capabilities. It is a small C++17 program with three threads:
 
 | Thread | Does |
 | --- | --- |
@@ -23,7 +23,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | --- | --- |
 | [`src/main.cpp`](../src/main.cpp) | The command line, the process setup, then the host |
 | [`src/host.cpp`](../src/host.cpp) | The protocol: `hello`, the order rules, every method's argument checks and replies, and the limits |
-| [`src/game.cpp`](../src/game.cpp) | One loaded game: the libretro callbacks, core options, disc control, the memory card, input, rumble, pixel conversion, and lockstep: the queue of steps, the frame fence, pacing and the `sync` hashes. The picture's hash is taken when a check needs it, from the last picture published, which the conversion buffer holds until the next one, so a check after frames run outside lockstep or after a duplicate frame hashes the picture on screen, and a picture no check needs is not hashed |
+| [`src/game.cpp`](../src/game.cpp) | One loaded game: the libretro callbacks, core options, disc control, the memory card, input, rumble, pixel conversion, lockstep: the queue of steps, the frame fence, pacing and the `sync` hashes, and save states: the state file's header, and the save or load the control thread hands to the game's thread, which runs it between two frames. The picture's hash is taken when a check needs it, from the last picture published, which the conversion buffer holds until the next one, so a check after frames run outside lockstep or after a duplicate frame hashes the picture on screen, and a picture no check needs is not hashed |
 | [`src/hash.h`](../src/hash.h), [`src/hash.cpp`](../src/hash.cpp) | The `sync` hashes: 64-bit FNV-1a, a run of zero bytes hashed as a power of the FNV prime (the same value, without a byte at a time), and the used length of a state buffer, found from its end 8 bytes at a time. A check clears and hashes byte by byte only the part of the core's state buffer the state fills (about a third of SwanStation's 11 MiB) |
 | [`src/resolution.cpp`](../src/resolution.cpp) | Which internal resolutions a GPU game is offered (see "Resolution limits" below) |
 | [`src/ring.cpp`](../src/ring.cpp) | The frame ring writer: the header from protocol.md's byte table, slot choice, and capped doubling when a frame needs more room |
@@ -220,6 +220,36 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 - **A stuck core.** A game limit marks the game ended at once. If the core
   never returns from `retro_run`, `release` replies and then the host exits,
   as protocol.md "release" says.
+- **Save states** (protocol.md "saveState and loadState") follow what
+  players know from the two emulators most of them use. RetroArch numbers
+  slots per game (`<content>.state`, `.state1`, ...) and has an auto state
+  saved on quit; DuckStation has numbered per-game slots and a resume state,
+  and refuses a state whose header version its build cannot read. The host keeps
+  that model with nothing of its own to decide: a slot is a file name
+  (`<disc>.<slot>.state`), the launcher's folder holds the files, and any
+  other `.state` name there (a resume state) goes through `path`. The header
+  carries what a refusal needs, so a load never hands a core the state of
+  another core, core build, console or disc. The control thread hands the
+  save or load to the game's thread (`StateWork`), which runs it in its loop
+  before it looks at pause, so a paused game saves and loads too, and waits
+  up to the same 4 seconds the lockstep frame fence does. The file is written
+  or read on a thread of its own, which the control thread waits for until
+  4.5 seconds after the call, so slow storage cannot hold the reply (or a
+  `pong`) past the 5-second limit. A write that finishes later is removed
+  rather than renamed into place (`WriteFileAtomically`'s `keep`), and until
+  it has finished no other state file work starts, so two never share the
+  file beside a state. On Linux and macOS `host_test` holds a write and a
+  read with FIFOs to check this. Frame pacing starts
+  again when the save or load ends, so the game does not run fast to catch up
+  the time it took. The core's state
+  goes through the same buffer the `sync` state hash uses, and only its used
+  length is stored, so SwanStation's 11 MiB buffer makes a file of about 4
+  MiB. No core patch was needed: stock SwanStation and LRPS2 save and load
+  through `retro_serialize` and `retro_unserialize`, with the context
+  `RETRO_SAVESTATE_CONTEXT_NORMAL`. The patches on the netplay branches that
+  make a loaded state replay the same frames bit for bit are not taken, since
+  one player loading a state does not need that, and the core build identity
+  stays as it is.
 
 ## Exit codes
 
@@ -305,6 +335,11 @@ A crash gives none of these, so the tests expect the exact code.
   game: without `pcsx2/bios/fake-ps2-bios.bin` it logs LRPS2's message for a
   missing BIOS and fails, with `fake-ps2-fail` it fails without it, and a
   game that loads writes the option values it read to `fake-ps2-options.txt`.
+  `retro_unserialize` takes back a state it saved, frame count, inputs, rumble
+  and memory card, and refuses any other bytes. While the system folder holds
+  `fake-states`, each state it saves or loads adds `save <frame>` or `load
+  <frame>` to `fake-states.txt` there, so a test sees which moment a game went
+  back to.
 - [`tests/host_test.py`](../tests/host_test.py) covers what the fixtures do
   not. Its fake launcher checks every `ring` (its size and the growth rule)
   and every `frame` (the newest slot's epoch is the one `start` returned, and
@@ -364,6 +399,21 @@ A crash gives none of these, so the tests expect the exact code.
     with `restart` `true`; the `lockstep` method returns `false` for it; and a
     PS1 game after it in the same host is `console` `ps1` with SwanStation's
     analog controller;
+  - save states (`save_states`, capability `saveStates`): `saveState` and
+    `loadState` return `false` with no game loaded and are `argument` errors
+    for a bad argument, a game started without `start.states`, a path outside
+    the folder (another folder, a folder under it, a name that only starts
+    like it, a file that is not `.state`, the folder itself), a game in
+    lockstep and a game started in lockstep, also after it left it; a slot
+    and a path save a file whose header is checked field by field, with no
+    `.writing` file left; a load takes the game back to the frame saved, also
+    while paused and in a new host; `fileError` for a folder where the file
+    would be, and on Linux and macOS for a write and a read held by FIFOs
+    (answered within 5 seconds, a save refused at once while the late write
+    waits, no file put in place after it); and `noState`, `badState` (not a state, a
+    byte short, a byte long, version 2), `coreRefused` (after which the game
+    runs on), `otherGame` (another disc, and the same name for PS2) and
+    `otherCore` (another `library_version`);
   - a core for the other console (`core_for_other_console`): the test core
     reporting `ParaLLEl PS2` for a PS1 game, or `SwanStation` or
     `SwanStation Debug` for a PS2 game, ends with `core` and no `status.core`;
@@ -456,7 +506,9 @@ A crash gives none of these, so the tests expect the exact code.
   `ntsc` or `pal`, a frame rate of about 50 or 60, and no more frames in 10
   seconds than that rate allows. `--core-identity-out` writes `status.core`, and `real-core.yml`'s
   `same-core` job checks that Windows, both Linux runners and macOS wrote the
-  same one. With `--expect-opengl`, which `real-core.yml` passes on Linux and macOS, the test also
+  same one. The first game is also saved to slot 0 and loaded back: the
+  state file must name `status.core` and the disc, and the game must publish
+  30 frames in the 2 seconds after the load without ending. With `--expect-opengl`, which `real-core.yml` passes on Linux and macOS, the test also
   fails when the host made no OpenGL context, so neither system can slip back
   to the core's software renderer unnoticed. The Windows runner makes no
   OpenGL 3.3 context, so there the core draws in software. The `hello`

@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -340,6 +341,21 @@ std::optional<std::string> ReadWholeFile(const std::string& path) {
   return data.str();
 }
 
+std::optional<std::string> ReadFileUpTo(const std::string& path, uint64_t limit) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return std::nullopt;
+  std::string data;
+  std::vector<char> chunk(size_t{1} << 16);
+  while (data.size() <= limit) {
+    in.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+    const auto got = static_cast<uint64_t>(in.gcount());
+    if (got == 0) break;
+    data.append(chunk.data(), static_cast<size_t>(std::min<uint64_t>(got, limit + 1 - data.size())));
+  }
+  if (in.bad()) return std::nullopt;
+  return data;
+}
+
 namespace {
 
 // Asks the system to put the file's data on the disk before it returns. On macOS fsync only
@@ -364,12 +380,12 @@ bool WriteAll(int fd, const std::string& data) {
 
 }  // namespace
 
-bool WriteFileAtomically(const std::string& path, const std::string& data) {
+bool WriteFileAtomically(const std::string& path, const std::string& data, const std::function<bool()>& keep) {
   const std::string temporary = path + ".writing";
   const int fd = open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
   if (fd < 0) return false;
   const bool written = WriteAll(fd, data) && Flush(fd);
-  if (close(fd) != 0 || !written || std::rename(temporary.c_str(), path.c_str()) != 0) {
+  if (close(fd) != 0 || !written || (keep && !keep()) || std::rename(temporary.c_str(), path.c_str()) != 0) {
     unlink(temporary.c_str());
     return false;
   }

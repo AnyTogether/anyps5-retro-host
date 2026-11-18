@@ -13,7 +13,10 @@
  * card as it was at the first frame (as a PS1 game reads the card at boot) and of every controller
  * input it has read, and the last buttons of ports 1 and 2. Its serialized state holds
  * those, the rumble state and the memory card, so a sync's state hash changes when any of them
- * does.
+ * does. retro_unserialize takes such a state back, frame count and card included, and refuses
+ * any other bytes. While the system directory holds fake-states, each state saved or loaded adds
+ * a line "save <frame>" or "load <frame>" to fake-states.txt there, the frame count it holds, so a
+ * test can see which moment a game went back to.
  *
  * When the system directory holds fake-gpu, it also offers SwanStation's internal resolution
  * option (swanstation_GPU_ResolutionScale, 1x to 16x) and asks for an OpenGL 3.3 core context.
@@ -791,16 +794,36 @@ RETRO_API bool retro_serialize(void* data, size_t size) {
   unsigned char* out = data;
   const uint32_t motors = (rumbling[0] ? 1u : 0u) | (rumbling[1] ? 2u : 0u);
   const uint32_t words[6] = {frame_count, memory[1], memory[2], memory[3], motors, 0};
+  FILE* file;
   if (size < STATE_BYTES) return false;
   memcpy(out, STATE_MAGIC, 8);
   memcpy(out + 8, words, sizeof words);
   memcpy(out + 8 + sizeof words, card, CARD_BYTES);
+  if (in_system_directory("fake-states") && (file = open_in_system_directory("fake-states.txt", "ab"))) {
+    fprintf(file, "save %u\n", frame_count);
+    fclose(file);
+  }
   return true;
 }
 RETRO_API bool retro_unserialize(const void* data, size_t size) {
-  (void)data;
-  (void)size;
-  return false;
+  const unsigned char* in = data;
+  uint32_t words[6];
+  FILE* file;
+  if (size < STATE_BYTES || memcmp(in, STATE_MAGIC, 8) != 0) return false;
+  memcpy(words, in + 8, sizeof words);
+  frame_count = words[0];
+  memory[0] = frame_count;
+  memory[1] = words[1];
+  memory[2] = words[2];
+  memory[3] = words[3];
+  rumbling[0] = (words[4] & 1u) != 0;
+  rumbling[1] = (words[4] & 2u) != 0;
+  memcpy(card, in + 8 + sizeof words, CARD_BYTES);
+  if (in_system_directory("fake-states") && (file = open_in_system_directory("fake-states.txt", "ab"))) {
+    fprintf(file, "load %u\n", frame_count);
+    fclose(file);
+  }
+  return true;
 }
 RETRO_API void retro_cheat_reset(void) {}
 RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char* code) {

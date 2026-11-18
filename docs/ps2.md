@@ -30,8 +30,11 @@ speed in play (Jak and Daxter's title screen read 93 %, and one Vice City
 drive was slower while the whole GPU was busy), played sound and took
 controller input, and the memory cards of Jak and Daxter and TimeSplitters
 kept their saves across a host restart. None of this
-is in CI. **Not seen yet**: PS2 games on Linux and macOS, save states, and
-the core options other than `pcsx2_upscale_multiplier`. "Releases" below says
+is in CI. A save state of Jak and Daxter's title screen was saved, loaded
+back in the same host and in a new one, also on Windows only
+([protocol.md](protocol.md) "saveState and loadState"). **Not seen yet**: PS2
+games on Linux and macOS, and the core options other than
+`pcsx2_upscale_multiplier`. "Releases" below says
 whether the release zips hold LRPS2.
 
 ## Which core
@@ -324,7 +327,7 @@ loads and reports a missing BIOS.
 
 ## Not done yet
 
-- Booting in CI, and seeing Linux and macOS, save states and the core
+- Booting in CI, and seeing Linux and macOS, save states on them, and the core
   options other than `pcsx2_upscale_multiplier` work in a running
   PS2 game.
 - Release packaging (above).

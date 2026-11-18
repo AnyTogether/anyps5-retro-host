@@ -51,6 +51,9 @@ struct GameConfig {
   std::string disc;
   std::string system;
   std::string saves;
+  // Where save states may be written (protocol.md "start", states), or empty when the launcher gave
+  // no folder.
+  std::string states;
   std::vector<std::pair<std::string, std::string>> options;
   std::optional<unsigned> initial_disc;
   std::optional<LockstepConfig> lockstep;
@@ -82,6 +85,28 @@ struct SyncPoint {
 // What became of a step (protocol.md "step"): queued, dropped because the game has ended, or
 // refused because the game is not in lockstep, the frame is not the next one, or too many wait.
 enum class StepResult { kTaken, kIgnored, kRefused };
+
+// What became of a saveState or loadState (protocol.md "saveState and loadState"): done; no game
+// to save or load, or none the game's thread got to in time; refused in a game that is in lockstep
+// or was started in it; or one of the errors protocol.md names.
+enum class StateResult {
+  kDone,
+  kNotRunning,
+  kLockstep,
+  kNoState,
+  kBadState,
+  kOtherCore,
+  kOtherGame,
+  kCoreRefused,
+  kFileError,
+};
+
+struct StateOutcome {
+  StateResult result = StateResult::kNotRunning;
+  // The state file's size in bytes, and how long the host took, in microseconds.
+  uint64_t bytes = 0;
+  int64_t micros = 0;
+};
 
 // What a running game hands back to the host: frames to publish and rumble to forward. Called
 // on the game's thread.
@@ -125,6 +150,19 @@ class Game {
   bool LeaveLockstep();
   // Queues the input for one lockstep frame.
   StepResult Step(uint64_t frame, const StepInput& input);
+
+  // The state file of slot 0 to 7 in the states folder, or empty when the game has none.
+  std::string StatePath(unsigned slot) const;
+  // Whether path may name a state file of this game: a .state file directly in its states folder.
+  bool IsStatePath(const std::string& path) const;
+  // Saves the core's state to path, or loads it from there, between two frames (also while the
+  // game is paused). Both are refused in a game that is in lockstep or was started in it, whose
+  // memory card is not the player's. Both wait at most 4 seconds for the game's thread, and end,
+  // file included, within 4.5 seconds of the call; a load that started but did not finish by then
+  // ends the game with errorCode other, and a file not written or read by then is a fileError, as is
+  // a call made while such a late file work has not finished.
+  StateOutcome SaveState(const std::string& path);
+  StateOutcome LoadState(const std::string& path);
 
   // Asks the game to end. Ended() turns true once the core is unloaded.
   void Stop();
@@ -336,6 +374,30 @@ class Game {
   std::optional<StepInput> step_input_;
   // The savestate context the core is told about while the host serializes it.
   int savestate_context_ = 0;
+  // A saveState or loadState for the game's thread (state_work_, guarded by mutex_; state_signal_
+  // is notified when one is done and when the game ends). A save hands back the bytes of the core's
+  // state that can be other than zero, and the full size the core gave; a load hands the core data,
+  // of the size it was saved at.
+  struct StateWork {
+    bool load = false;
+    bool taken = false;
+    bool done = false;
+    StateResult result = StateResult::kDone;
+    std::string data;
+    size_t size = 0;
+  };
+  std::shared_ptr<StateWork> state_work_;
+  std::condition_variable state_signal_;
+  // Runs the waiting saveState or loadState, if there is one, on the game's thread between frames;
+  // true when there was one, so the frame pacing starts again from now rather than catching up.
+  bool RunStateWork();
+  // Hands work to the game's thread and waits for it; false when the game ended first or its thread
+  // did not finish it within 4 seconds or by deadline.
+  bool AwaitStateWork(const std::shared_ptr<StateWork>& work, std::chrono::steady_clock::time_point deadline);
+  // The header protocol.md "saveState and loadState" gives a state file of this game, for a core
+  // state of size bytes of which stored are kept.
+  std::string StateHeader(uint64_t size, uint64_t stored) const;
+
   // The size of the last picture published, whose pixels converted_ holds until the next one, and
   // its sync hash once a check has needed it. A picture published outside lockstep is hashed too
   // when the first check after it comes, and one that no check needs is never hashed.

@@ -81,12 +81,18 @@ bool Exists(const std::string& path);
 bool IsDirectory(const std::string& path);
 bool CreateDirectories(const std::string& path);
 std::optional<std::string> ReadWholeFile(const std::string& path);
+// The file's first limit + 1 bytes at most, so a caller sees that a longer file is too long without
+// reading all of it; nothing when it cannot be opened or read.
+std::optional<std::string> ReadFileUpTo(const std::string& path, uint64_t limit);
 // Replaces the file at path with data: written beside it and flushed to the disk (fsync, or
 // F_FULLFSYNC on macOS; FlushFileBuffers on Windows), then renamed over it, and on Linux and macOS
 // the directory flushed too, so a power cut leaves the old file or the new one. A failed write
 // removes the file beside it; a directory that cannot be opened or flushed (other than on a file
-// system that does not flush directories) makes it return false after the rename.
-bool WriteFileAtomically(const std::string& path, const std::string& data);
+// system that does not flush directories) makes it return false after the rename. When keep is
+// given and says false once the data is on the disk, the file beside it is removed instead of renamed,
+// and the call returns false.
+bool WriteFileAtomically(const std::string& path, const std::string& data,
+                         const std::function<bool()>& keep = nullptr);
 
 }  // namespace retro_host
 

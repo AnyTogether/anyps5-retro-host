@@ -4,13 +4,14 @@
 """Host behaviour the fixtures do not cover: a stuck core, the core's names in status.core, the
 frame rate and region in status.timing and the rate a game is paced to, the memory card, ring growth, epochs across games, how the host leaves when the launcher goes, many
 start, volume and stop calls in a row, the internal resolutions a GPU game is offered, an OpenGL
-game's network calls, a PS2 game (capability ps2, docs/ps2.md) as the host runs LRPS2, and a core
-started for the other console."""
+game's network calls, a PS2 game (capability ps2, docs/ps2.md) as the host runs LRPS2, a core
+started for the other console, and save states (capability saveStates)."""
 
 import argparse
 import os
 import shutil
 import signal
+import struct
 import sys
 import tempfile
 import threading
@@ -1053,6 +1054,241 @@ def core_for_other_console(program, core, log):
             os.environ['FAKE_CORE_NAME'] = saved
 
 
+def state_header(data):
+    """The fields of a state file's header (protocol.md "saveState and loadState")."""
+    if data[:8] != b'AP5STATE':
+        raise c.Failed(f'a state file starts with {data[:8]!r}')
+    version, header_bytes, size, stored, console, zero = struct.unpack_from('<IIQQII', data, 8)
+    at, texts = 40, []
+    for _ in range(3):
+        length, = struct.unpack_from('<H', data, at)
+        texts.append(data[at + 2:at + 2 + length].decode('utf-8'))
+        at += 2 + length
+    if at != header_bytes or len(data) != header_bytes + stored or stored > size or zero != 0:
+        raise c.Failed(f'a state file of {len(data)} bytes has a header of {header_bytes}, size {size}, stored {stored}')
+    return {'version': version, 'size': size, 'console': console, 'core': texts[0], 'build': texts[1],
+            'disc': texts[2]}
+
+
+def state_moments(path):
+    """The frames the fake core saved and loaded states at, in order, from fake-states.txt."""
+    if not path.exists():
+        return []
+    return [(kind, int(frame)) for kind, frame in
+            (line.split() for line in path.read_text(encoding='utf-8').splitlines())]
+
+
+def slow_files(session, states):
+    """Storage that does not answer: a FIFO beside slot 5 holds the write in open() until a reader
+    comes, and a FIFO named slow.state holds the read. Each call is a fileError within the 5-second
+    reply limit; while the late write waits, another save is a fileError at once; once the FIFO is
+    read, the late write puts no file in place and removes what it wrote beside it; then saving
+    works again."""
+    beside = states / 'game.5.state.writing'
+    os.mkfifo(beside)
+    began = time.monotonic()
+    if session.error('saveState', {'slot': 5})['code'] != 'fileError':
+        raise c.Failed('a write that could not finish did not give fileError')
+    took = time.monotonic() - began
+    if not 4 <= took < 5:
+        raise c.Failed(f'a write that could not finish was answered after {took:.2f} s')
+    began = time.monotonic()
+    if session.error('saveState', {'slot': 4})['code'] != 'fileError' or time.monotonic() - began > 1:
+        raise c.Failed('a save while a late write waits was not refused at once')
+    with open(beside, 'rb') as reader:
+        reader.read()
+    deadline = time.monotonic() + 5
+    while beside.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if beside.exists() or (states / 'game.5.state').exists():
+        raise c.Failed('a late write was put in place or left its file beside the state')
+    session.call('saveState', {'slot': 4})
+    (states / 'game.4.state').unlink()
+    slow = states / 'slow.state'
+    os.mkfifo(slow)
+    began = time.monotonic()
+    if session.error('loadState', {'path': str(slow)})['code'] != 'fileError':
+        raise c.Failed('a read that could not finish did not give fileError')
+    if not 4 <= time.monotonic() - began < 5:
+        raise c.Failed(f'a read that could not finish was answered after {time.monotonic() - began:.2f} s')
+    with open(slow, 'wb'):
+        pass
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            session.call('saveState', {'slot': 4})
+            break
+        except c.Failed:
+            time.sleep(0.1)
+    else:
+        raise c.Failed('saving did not work again after a late read finished')
+    slow.unlink()
+    (states / 'game.4.state').unlink()
+
+
+def save_states(program, core, log):
+    """saveState and loadState (capability saveStates): a slot or a .state file directly in
+    start.states; the file's header; a load that takes the game back to the frame saved, also
+    while paused and in a new host; fileError for a folder where the file would be, and on Linux and
+    macOS for storage that does not answer (slow_files); noState, badState, otherGame (another disc, or the same name
+    for the other console), otherCore (another core build) and coreRefused, after which the game
+    runs on; argument errors for a bad argument, a path outside the folder, a game started without
+    start.states, a game in lockstep and a game started in lockstep, also after it left lockstep;
+    and false with no game loaded."""
+    first = Session(program, core, log)
+    states = Path(first.paths['states'])
+    system = Path(first.paths['system'])
+    (system / 'fake-states').write_bytes(b'')
+    moments = system / 'fake-states.txt'
+    try:
+        wrong = [{}, {'slot': 8}, {'slot': -1}, {'slot': 1.5}, {'slot': '0'}, {'path': 'game.0.state'},
+                 {'slot': 0, 'path': str(states / 'game.0.state')}, 3, None]
+        for method in ('saveState', 'loadState'):
+            if first.call(method, {'slot': 0}) is not False:
+                raise c.Failed(f'{method} with no game loaded did not return false')
+            for args in wrong:
+                if first.error(method, args)['code'] != 'argument':
+                    raise c.Failed(f'{method} {args!r} was not an argument error')
+
+        first.start()
+        first.wait(lambda s: s and s['ready'], 10)
+        if first.error('saveState', {'slot': 0})['code'] != 'argument':
+            raise c.Failed('a game started without start.states saved a state')
+        first.call('stop')
+        first.wait(lambda s: s['ended'], 5)
+        first.call('release')
+
+        first.start(states=str(states))
+        first.wait(lambda s: s and s['ready'], 10)
+        outside = [Path(first.paths['saves']) / 'game.0.state', states / 'sub' / 'game.0.state',
+                   states / 'game.srm', Path(str(states) + 'x') / 'game.0.state', states]
+        for path in outside:
+            for method in ('saveState', 'loadState'):
+                if first.error(method, {'path': str(path)})['code'] != 'argument':
+                    raise c.Failed(f'{method} at {path} was not an argument error')
+        if first.error('loadState', {'slot': 3})['code'] != 'noState':
+            raise c.Failed('an empty slot did not give noState')
+
+        first.read_frames(10)
+        saved = first.call('saveState', {'slot': 0})
+        slot0 = states / 'game.0.state'
+        data = slot0.read_bytes()
+        header = state_header(data)
+        if (saved['bytes'] != len(data) or not isinstance(saved['micros'], int) or saved['micros'] < 0 or
+                header != {'version': 1, 'size': header['size'], 'console': 1, 'core': 'fake', 'build': '1',
+                           'disc': 'game'}):
+            raise c.Failed(f'saveState gave {saved} and a file with header {header}')
+        if slot0.with_name(slot0.name + '.writing').exists():
+            raise c.Failed('a saved state left its half-written file beside it')
+        at = state_moments(moments)[-1][1]
+        first.read_frames(30)
+        first.call('saveState', {'path': str(states / 'before.state')})
+        before = state_moments(moments)[-1][1]
+        loaded = first.call('loadState', {'slot': 0})
+        first.call('saveState', {'path': str(states / 'after.state')})
+        after = state_moments(moments)[-2:]
+        if loaded['bytes'] != len(data) or after[0] != ('load', at) or not at <= after[1][1] < before:
+            raise c.Failed(f'saved at frame {at}, played to {before}, loading gave {loaded} and {after}')
+
+        first.call('pause', True)
+        first.call('saveState', {'slot': 1})
+        paused = state_moments(moments)[-1][1]
+        first.call('loadState', {'slot': 1})
+        if state_moments(moments)[-1] != ('load', paused):
+            raise c.Failed(f'a paused game saved at {paused} and loaded {state_moments(moments)[-1]}')
+        first.call('pause', False)
+
+        bad = {'game.2.state': b'not a state', 'game.3.state': data[:-1], 'game.4.state': data + b'\0',
+               'game.5.state': data[:8] + struct.pack('<I', 2) + data[12:]}
+        for name, contents in bad.items():
+            (states / name).write_bytes(contents)
+            if first.error('loadState', {'path': str(states / name)})['code'] != 'badState':
+                raise c.Failed(f'{name} did not give badState')
+        (states / 'game.7.state').mkdir()
+        for method in ('saveState', 'loadState'):
+            if first.error(method, {'slot': 7})['code'] != 'fileError':
+                raise c.Failed(f'{method} on a folder named like a state did not give fileError')
+        (states / 'game.7.state').rmdir()
+        refused = bytearray(data)
+        refused[struct.unpack_from('<I', data, 12)[0]] ^= 0xFF
+        (states / 'game.6.state').write_bytes(bytes(refused))
+        if first.error('loadState', {'slot': 6})['code'] != 'coreRefused':
+            raise c.Failed('a state the core refused did not give coreRefused')
+        first.read_frames(10)
+        if first.call('status')['ended']:
+            raise c.Failed('a refused state ended the game')
+        if not c.WINDOWS:
+            slow_files(first, states)
+
+        first.call('saveState', {'slot': 0})
+        if state_header(slot0.read_bytes())['disc'] != 'game' or len(list(states.glob('*.writing'))):
+            raise c.Failed('a second save in slot 0 did not replace it cleanly')
+        if first.call('lockstep', {'check': 60}) is False:
+            raise c.Failed('the game did not enter lockstep')
+        for method in ('saveState', 'loadState'):
+            if first.error(method, {'slot': 0})['code'] != 'argument':
+                raise c.Failed(f'{method} in lockstep was not an argument error')
+        first.call('lockstep', False)
+        first.call('stop')
+        first.wait(lambda s: s['ended'], 5)
+        first.call('release')
+
+        first.start(states=str(states), lockstep={'check': 60})
+        for method in ('saveState', 'loadState'):
+            if first.error(method, {'slot': 0})['code'] != 'argument':
+                raise c.Failed(f'{method} in a game started in lockstep was not an argument error')
+        first.host.send_message({'type': 'step', 'frame': 0, 'ports': [
+            {'buttons': 0, 'leftX': 0, 'leftY': 0, 'rightX': 0, 'rightY': 0}]})
+        first.wait(lambda s: s and s['ready'], 10)
+        first.call('lockstep', False)
+        if first.error('saveState', {'slot': 0})['code'] != 'argument':
+            raise c.Failed('a game started in lockstep saved a state after it left lockstep')
+        first.call('stop')
+        first.wait(lambda s: s['ended'], 5)
+        first.call('release')
+
+        iso = first.work / 'discs' / 'game.iso'
+        iso.write_bytes(b'\0' * 2048)
+        (system / 'fake-ps2').write_bytes(b'')
+        (system / 'pcsx2' / 'bios').mkdir(parents=True)
+        (system / 'pcsx2' / 'bios' / 'fake-ps2-bios.bin').write_bytes(b'')
+        for disc, extra in ((first.paths['disc1'], {}), (str(iso), {'console': 'ps2'})):
+            first.start(disc, states=str(states), **extra)
+            first.wait(lambda s: s and s['ready'], 10)
+            if first.error('loadState', {'path': str(slot0)})['code'] != 'otherGame':
+                raise c.Failed(f'a state of game.cue loaded into {disc} {extra}')
+            first.call('stop')
+            first.wait(lambda s: s['ended'], 5)
+            first.call('release')
+        (system / 'fake-ps2').unlink()
+
+        saved_version = os.environ.get('FAKE_CORE_VERSION')
+        try:
+            for version, code in ((None, None), ('2', 'otherCore')):
+                if version:
+                    os.environ['FAKE_CORE_VERSION'] = version
+                later = Session(program, core, log)
+                try:
+                    later.call('start', {'core': first.paths['core'], 'disc': first.paths['disc'],
+                                         'system': str(system), 'saves': first.paths['saves'], 'states': str(states)})
+                    later.wait(lambda s: s and s['ready'], 10)
+                    if code is None:
+                        later.call('loadState', {'slot': 0})
+                    elif later.error('loadState', {'slot': 0})['code'] != code:
+                        raise c.Failed(f'a state of core build 1 loaded into core build {version}')
+                    later.call('stop')
+                    later.wait(lambda s: s['ended'], 5)
+                finally:
+                    later.close()
+        finally:
+            if saved_version is None:
+                os.environ.pop('FAKE_CORE_VERSION', None)
+            else:
+                os.environ['FAKE_CORE_VERSION'] = saved_version
+    finally:
+        first.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', required=True, type=Path)
@@ -1071,7 +1307,8 @@ def main():
     tests = {test.__name__: test for test in (
         stuck_core, unloadable, core_identity, game_timing, restart_option, labels_not_utf8, memory_card, card_wrong_size, ring_growth, epochs,
         launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, option_keys_not_utf8,
-        rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory, ps2_game, core_for_other_console)}
+        rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory, ps2_game, core_for_other_console,
+        save_states)}
     for test in (many_games, gpu_limits, gpu_network):
         tests[test.__name__] = lambda program, core, log, test=test: test(program, core, log, options.require_gpu)
     chosen = [(name, test) for name, test in tests.items() if not options.names or name in options.names]

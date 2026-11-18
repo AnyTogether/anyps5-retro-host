@@ -140,6 +140,8 @@ def start_args(args, name=None):
     obj(args, 'start args')
     for field in ('core', 'disc', 'system', 'saves'):
         path(args.get(field), f'start.{field}')
+    if 'states' in args:
+        path(args['states'], 'start.states')
     need(args.get('console', 'ps1') in ('ps1', 'ps2'), 'start.console must be "ps1" or "ps2"')
     ps2 = args.get('console') == 'ps2'
     if ps2:
@@ -249,6 +251,25 @@ def lockstep_result(value, name=None):
     integer(obj(value, 'lockstep result').get('frame'), 0, U32[1], 'lockstep.frame')
 
 
+def state_args(args, name='state args'):
+    obj(args, name)
+    need(('slot' in args) != ('path' in args), f'{name} has exactly one of slot and path')
+    if 'slot' in args:
+        integer(args['slot'], 0, 7, f'{name}.slot')
+    else:
+        path(args['path'], f'{name}.path')
+        need(re.fullmatch(r'\$\{[a-z0-9]+\}', args['path']) or args['path'].lower().endswith('.state'),
+             f'{name}.path is a .state file')
+
+
+def state_result(value, name=None):
+    if value is False:
+        return
+    result = obj(value, 'state result')
+    integer(result.get('bytes'), 1, 2**53, 'state.bytes')
+    integer(result.get('micros'), 0, 2**53, 'state.micros')
+
+
 def port_state(value, name):
     obj(value, name)
     integer(value.get('buttons'), 0, 65535, f'{name}.buttons')
@@ -275,7 +296,12 @@ METHODS = {
     'stop': (none, none),
     'release': (none, none),
     'lockstep': (lockstep_args, lockstep_result),
+    'saveState': (state_args, state_result),
+    'loadState': (state_args, state_result),
 }
+# The error codes protocol.md "call and reply" defines, with the methods of saveStates' own.
+ERROR_CODES = {'unknownMethod', 'argument', 'busy', 'start', 'tooLarge'}
+STATE_ERROR_CODES = {'noState', 'badState', 'otherCore', 'otherGame', 'coreRefused', 'fileError'}
 
 
 def check_args_of(message):
@@ -315,6 +341,8 @@ def check_message(message, calls, check_args=True):
             error = obj(message['error'], 'error')
             string(error.get('code'), 'error.code')
             string(error.get('message'), 'error.message')
+            if method in ('saveState', 'loadState'):
+                need(error['code'] in ERROR_CODES | STATE_ERROR_CODES, f'{method} has no error code {error["code"]}')
         elif method in METHODS:
             METHODS[method][1](message['result'], f'{method} result')
     elif kind == 'input':
@@ -486,6 +514,9 @@ def order(message, sender, calls, state, step):
         if message.get('method') == 'lockstep' or (message.get('method') == 'start' and isinstance(args, dict) and
                                                     'lockstep' in args):
             need('ps1Lockstep' in state['capabilities'], 'start.lockstep, lockstep and step need ps1Lockstep')
+        if message.get('method') in ('saveState', 'loadState') or (message.get('method') == 'start' and
+                                                                   isinstance(args, dict) and 'states' in args):
+            need('saveStates' in state['capabilities'], 'start.states, saveState and loadState need saveStates')
         state['called'].add(message.get('id'))
         state['waiting'].append(('call', message.get('id'), message.get('method'), clock))
         state['callArgs'][message.get('id')] = args
