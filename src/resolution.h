@@ -15,7 +15,7 @@ namespace retro_host {
 // The internal resolution values a GPU game can be offered (docs/host.md, "Resolution limits").
 // Each value is a whole scale; the core's largest geometry grows with it, so a value fits when
 // max_width x max_height, reported while the core drew at values[active], times value / active
-// stays within width_limit x height_limit.
+// stays within width_limit x height_limit, and the scale is at most max_scale.
 struct ResolutionLimit {
   // Indexes into values of the values offered, in their order. A value that is not a whole
   // scale of 1 or more cannot be judged and stays offered.
@@ -31,14 +31,19 @@ struct ResolutionLimit {
   // The largest geometry the value asked for would have had, when it is not offered.
   uint32_t refused_width = 0;
   uint32_t refused_height = 0;
+  // The value asked for is not offered only because its scale is above max_scale: its geometry fits.
+  bool refused_scale = false;
 };
 
 // std::nullopt when values[active] is not a whole scale, or when no scale fits.
 std::optional<ResolutionLimit> LimitResolution(const std::vector<std::string>& values, size_t selected,
                                                size_t active, uint32_t max_width, uint32_t max_height,
-                                               uint32_t width_limit, uint32_t height_limit);
+                                               uint32_t width_limit, uint32_t height_limit,
+                                               uint32_t max_scale = UINT32_MAX);
 
-// The whole scale value names (decimal digits, 1 to 1024), or std::nullopt.
+// The whole scale value names, 1 to 1024: decimal digits without a leading zero, as SwanStation
+// writes them ("4"), or those digits and "x", alone or followed by a space and a label, as LRPS2
+// writes them ("4x", "1x (Native)"); otherwise std::nullopt.
 std::optional<uint32_t> ParseScale(const std::string& value);
 
 }  // namespace retro_host
