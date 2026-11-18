@@ -1,0 +1,24 @@
+{
+  "description": "Load the state in slot 0 back into the game.",
+  "from": "launcher",
+  "message": {
+    "type": "call",
+    "id": 5,
+    "method": "loadState",
+    "args": {
+      "slot": 0
+    }
+  },
+  "reply": {
+    "type": "reply",
+    "id": 5,
+    "result": {
+      "bytes": 64,
+      "micros": 11227
+    }
+  },
+  "anyValueFor": [
+    "result.bytes",
+    "result.micros"
+  ]
+}

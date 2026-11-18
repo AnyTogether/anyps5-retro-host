@@ -30,8 +30,11 @@ speed in play (Jak and Daxter's title screen read 93 %, and one Vice City
 drive was slower while the whole GPU was busy), played sound and took
 controller input, and the memory cards of Jak and Daxter and TimeSplitters
 kept their saves across a host restart. None of this
-is in CI. **Not seen yet**: PS2 games on Linux and macOS, save states, and
-the core options other than `pcsx2_upscale_multiplier`. "Releases" below says
+is in CI. A save state of Jak and Daxter's title screen was saved, loaded
+back in the same host and in a new one, also on Windows only
+([protocol.md](protocol.md) "saveState and loadState"). **Not seen yet**: PS2
+games on Linux and macOS, and the core options other than
+`pcsx2_upscale_multiplier`. "Releases" below says
 whether the release zips hold LRPS2.
 
 ## Which core
@@ -242,9 +245,13 @@ All of it is behind the `ps2` capability ([protocol.md](protocol.md)
   option is fixed off.
 - **Memory cards**: one card per game, as for PS1. With
   `pcsx2_shared_memory_cards` fixed off, LRPS2 keeps card 1 as `<disc's name
-  without its extension>.ps2` in `saves` (and creates it, formatted, when it
-  is missing) and has no card 2. That name and format are per LRPS2's source,
-  not yet seen in a running game. Unlike PS1's `.srm`, the core reads and
+  without its extension>.ps2` in `saves` and has no card 2. When the file is
+  missing, LRPS2 creates a blank, unformatted 8 MiB card (every byte 0xFF,
+  `create_card` in `pcsx2/MemoryCardFile.c`), so a game asks to format it
+  before its first save; a player who declines cannot save. In a test with
+  real games, Jak and Daxter and TimeSplitters: Future Perfect both asked to
+  format the new card, saved after formatting, and found their saves again
+  after the host was restarted. Unlike PS1's `.srm`, the core reads and
   writes this file itself, so the host's rule that a card it cannot read is
   never written over does not cover it yet. Shared cards are not used: they
   would live in the system directory, and one card holding every game's saves
@@ -333,7 +340,7 @@ merged yet.
 
 ## Not done yet
 
-- Booting in CI, and seeing Linux and macOS, save states and the core
+- Booting in CI, and seeing Linux and macOS, save states on them, and the core
   options other than `pcsx2_upscale_multiplier` work in a running
   PS2 game.
 - The launcher side, not yet planned by the launchers: the proposed Settings ›

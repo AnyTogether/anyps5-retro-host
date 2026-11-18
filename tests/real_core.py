@@ -8,7 +8,9 @@ checks the core build identity in status.core (docs/netplay.md "Core build ident
 it to a file, so CI can compare the identity each system's build reports. It checks status.timing (the
 frame rate the host paces the game to and the console's region) on an auto-detected console and on a
 PAL console running a program that sets a PAL video mode, and that the game publishes no more frames a
-second than that rate.
+second than that rate. It saves the first game's state to a slot and loads it back (capability
+saveStates, docs/protocol.md "saveState and loadState"), and checks that the state file names
+SwanStation's build and that the game runs on after the load.
 The renderer is whichever the machine allows: with no OpenGL context the host must say why a scale
 above 1x does not apply."""
 
@@ -147,7 +149,8 @@ def start(game, region=None):
     if region:
         core_options['swanstation_Console_Region'] = region
     result = call('start', {'core': str(Path(options.core).resolve()), 'system': str(system),
-                            'saves': str(work / 'saves'), 'disc': str(game), 'options': core_options})
+                            'saves': str(work / 'saves'), 'states': str(work / 'states'), 'disc': str(game),
+                            'options': core_options})
     state['epoch'] = result['epoch']
     status = wait_status(lambda s: s['ready'] or s['ended'], 60, 'the game was not ready')
     if status['ended']:
@@ -170,6 +173,29 @@ def start(game, region=None):
     if status['hardware'] and max(int(value) for value in scales) > 8:
         raise c.Failed(f'scales whose largest geometry, 1024 x 512 times the scale, passes 8192 are offered: {scales}')
     return status
+
+
+def save_and_load(status):
+    """Saves the running game's state to slot 0 and loads it back: the file's header names the core
+    and build status.core gives, and the game publishes frames after the load and has not ended."""
+    saved = call('saveState', {'slot': 0})
+    data = (work / 'states' / f'{disc.stem}.0.state').read_bytes()
+    header_bytes = struct.unpack_from('<I', data, 12)[0] if len(data) >= 48 else 0
+    texts, at = [], 48
+    while len(texts) < 3 and at + 2 <= header_bytes:
+        length = struct.unpack_from('<H', data, at)[0]
+        texts.append(data[at + 2:at + 2 + length].decode('utf-8', 'replace'))
+        at += 2 + length
+    core = status.get('core') or {}
+    if data[:8] != b'AP5STATE' or saved['bytes'] != len(data) or texts != [core.get('name'), core.get('version'),
+                                                                          disc.stem]:
+        raise c.Failed(f'saveState gave {saved} and a file of {len(data)} bytes naming {texts}')
+    loaded = call('loadState', {'slot': 0})
+    first = state['frames']
+    drain(2)
+    if state['frames'] - first < 30 or call('status')['ended']:
+        raise c.Failed(f'the game did not run on after loading its state ({state["frames"] - first} frames in 2 s)')
+    print(f'save state: {saved["bytes"]} bytes saved in {saved["micros"]} us and loaded in {loaded["micros"]} us')
 
 
 def check_timing(status, region=None):
@@ -268,6 +294,7 @@ try:
         raise c.Failed('no two pictures that are not black differ: the game is not running')
     if status['hardware'] and (width < 640 or height < 480):
         raise c.Failed('a 2x GPU picture is at least 640x480')
+    save_and_load(status)
     stop()
     # A second game, on a new context where the host has the GPU: the corner program shows whether
     # pictures reach the ring the right way up and in the right colours.

@@ -437,10 +437,12 @@ identity when it adds a SwanStation patch:
    runs one frame for each `step` the launcher sends, with exactly the input
    in it, and sends hashes of what chosen frames left behind (`sync`), so two
    players' launchers can compare them.
-4. `saveState` and `loadState`, with the SwanStation patches a state needs
-   to bring back everything that affects later frames, so that the launcher
-   can keep states in memory and, if the maintainers agree to it, a friend
-   can join a running game from the other player's state (proposal).
+4. States for a match: one player's save states are built (`saveStates`,
+   protocol.md "saveState and loadState"), files only and refused in
+   lockstep. A match would need more: the SwanStation patches a state needs
+   to bring back everything that affects later frames, states the launcher
+   can keep in memory and, if the maintainers agree to it, a friend joining
+   a running game from the other player's state (proposal).
 5. `ps1Rollback`: the host runs frames on predicted input and, when the real
    input differs, loads the state before the first wrong frame and runs
    again, between two frames.

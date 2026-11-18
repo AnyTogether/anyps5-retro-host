@@ -30,6 +30,13 @@ bool IsCoreAbsolute(std::string_view name, bool windows);
 std::optional<std::string> PlaylistEntry(std::string_view m3u_path, std::string_view text, unsigned index,
                                          bool windows);
 
+// Whether name, one segment of a path, is a file name Windows keeps as written: not empty, ending
+// in neither a dot nor a space, with no control character and none of < > : " / \ | ? * (a colon
+// would name an alternate data stream of another file), and not a device name such as NUL.state:
+// CON, PRN, AUX, NUL, COM0 to COM9, LPT0 to LPT9 (also with a superscript 1, 2 or 3), CONIN$ or
+// CONOUT$, in any case, before its first dot and any spaces before that.
+bool IsWindowsFileName(std::string_view name);
+
 // Whether path ends with extension (".cue"), ignoring ASCII case.
 bool HasExtension(std::string_view path, std::string_view extension);
 
