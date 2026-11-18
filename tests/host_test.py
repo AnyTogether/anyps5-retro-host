@@ -7,7 +7,8 @@ start, volume and stop calls in a row, the internal resolutions a GPU game is of
 game's internal resolution (capability ps2ResolutionLimits), an OpenGL game's network calls, a PS2
 game (capability ps2, docs/ps2.md) as the host runs LRPS2, a core started for the other console, and
 save states (capability saveStates): their files, a load that puts memory card 1 back, and a load
-the core does not finish in time."""
+the core does not finish in time, and how fast a game runs and which GPU draws it (capability
+gamePerformance)."""
 
 import argparse
 import os
@@ -797,6 +798,128 @@ def ps2_limits(program, core, log, require_gpu):
         session.close()
 
 
+def performance(program, core, log, require_gpu):
+    """status.performance (capability gamePerformance) is null until the game has played 5 seconds
+    since it started or resumed or since the core applied an option, and then gives the speed, from
+    the frames that had a picture, and the work, the median retro_run time over a frame's time. The
+    fake core keeps up; with fake-slow each retro_run takes 40 ms, so it runs at most 25 of its 60
+    frames a second with work above 2, and with fake-dupe it passes no pixels, so the speed falls
+    to 0 while the work stays low. It is null at once after a resume, an option the core applied, a
+    saved state, a disc change and a new frame rate, while paused, once ended and in lockstep. status.gpu
+    is null for a game drawn in software and names the OpenGL context of a GPU game."""
+    session = Session(program, core, log)
+    system = Path(session.paths['system'])
+
+    def measured(test, seconds=15):
+        return session.wait(lambda s: s['ended'] or (s['performance'] is not None and test(s['performance'])),
+                            seconds)
+
+    def playing(status, how):
+        if status['ended']:
+            raise c.Failed(f'the game ended {how}: {status["errorCode"]!r} {status["error"]!r}')
+        performance = status['performance']
+        print(f'      {how}: speed {performance["speed"]}, work {performance["work"]}')
+        if performance['seconds'] != 5 or performance['work'] is None:
+            raise c.Failed(f'{how}: performance {performance}')
+        return performance
+
+    try:
+        session.start(session.paths['playlist'], states=session.paths['states'])
+        status = session.wait(lambda s: s and s['ready'], 10)
+        if status.get('performance', 'missing') is not None or status.get('gpu', 'missing') is not None:
+            raise c.Failed(f'a game that has just started gave performance {status.get("performance", "missing")!r} '
+                           f'and gpu {status.get("gpu", "missing")!r}')
+        kept_up = playing(measured(lambda p: True), 'keeping up')
+        if not 0.5 < kept_up['speed'] < 1.05 or not kept_up['work'] < 2:
+            raise c.Failed(f'a game that keeps up gave {kept_up}')
+
+        (system / 'fake-slow').write_bytes(b'')
+        slow = playing(measured(lambda p: p['speed'] < 0.45), 'with 40 ms more a frame')
+        if not slow['work'] > 2:
+            raise c.Failed(f'a frame of more than 40 ms at 60 frames a second gave work {slow["work"]}')
+        (system / 'fake-slow').unlink()
+
+        (system / 'fake-dupe').write_bytes(b'')
+        dupes = playing(measured(lambda p: p['speed'] == 0), 'passing no pixels')
+        if not dupes['work'] < 2:
+            raise c.Failed(f'frames without pixels gave work {dupes["work"]}')
+        (system / 'fake-dupe').unlink()
+        playing(measured(lambda p: p['speed'] > 0.5), 'pixels again')
+
+        session.call('pause', True)
+        if session.call('status')['performance'] is not None:
+            raise c.Failed('a paused game gave performance')
+        session.call('pause', False)
+        if session.call('status')['performance'] is not None:
+            raise c.Failed('a game that has just resumed gave performance')
+        playing(measured(lambda p: True, 10), 'after resuming')
+
+        if session.call('option', {'key': 'fake_color', 'value': 'green'}) is not True:
+            raise c.Failed('the color option was not taken')
+        status = session.wait(lambda s: s['options']['fake_color']['activeValue'] == 'green', 3)
+        if status['performance'] is not None:
+            raise c.Failed(f'a game whose core has just applied an option gave performance {status["performance"]}')
+
+        playing(measured(lambda p: True, 10), 'before a save')
+        if not isinstance(session.call('saveState', {'slot': 0}), dict):
+            raise c.Failed('the state was not saved')
+        if session.call('status')['performance'] is not None:
+            raise c.Failed('a game that has just saved a state gave performance')
+        playing(measured(lambda p: True, 10), 'before a disc change')
+        if session.call('changeDisc', 1) is not True:
+            raise c.Failed('changeDisc to the second disc was refused')
+        status = session.wait(lambda s: s['discs']['inserted'] == 1 and not s['discs']['busy'], 5)
+        if status['performance'] is not None:
+            raise c.Failed(f'a game whose disc has just changed gave performance {status["performance"]}')
+        playing(measured(lambda p: True, 10), 'before 50 frames a second')
+        (system / 'fake-refresh-50').write_bytes(b'')
+        status = session.wait(lambda s: s['timing']['fps'] == 50.0, 5)
+        if status['performance'] is not None:
+            raise c.Failed(f'a game that has just changed its frame rate gave performance {status["performance"]}')
+        (system / 'fake-refresh-50').unlink()
+        session.call('stop')
+        status = session.wait(lambda s: s['ended'], 5)
+        if status['performance'] is not None or status['gpu'] is not None:
+            raise c.Failed(f'an ended game drawn in software gave {status}')
+        session.call('release')
+
+        session.start(lockstep={'check': 60})
+        steps = 6 * 60 + 30
+        for frame in range(steps):
+            session.host.send_message({'type': 'step', 'frame': frame, 'ports': [
+                {'buttons': 0, 'leftX': 0, 'leftY': 0, 'rightX': 0, 'rightY': 0}]})
+        session.read(lambda m: m.get('type') == 'sync' and m['frame'] == steps - 30, 30)
+        status = session.call('status')
+        if status['ended'] or status['performance'] is not None:
+            raise c.Failed(f'a game in lockstep gave {status}')
+        session.call('stop')
+        session.wait(lambda s: s['ended'], 5)
+        session.call('release')
+
+        (system / 'fake-gpu').write_bytes(b'')
+        session.start()
+        status = session.wait(lambda s: s and (s['ready'] or s['ended']), 30)
+        if status['ended']:
+            raise c.Failed(f'a GPU game ended at start: {status["errorCode"]!r} {status["error"]!r}')
+        if not status['hardware']:
+            if status['gpu'] is not None:
+                raise c.Failed(f'a game drawn in software gave gpu {status["gpu"]}')
+            if require_gpu:
+                raise c.Failed('the host made no OpenGL context')
+            return 'gpu skipped: the host made no OpenGL context here'
+        gpu = status['gpu']
+        print(f'      gpu: {gpu}')
+        if (not isinstance(gpu, dict) or set(gpu) != {'renderer', 'vendor', 'maxTexture'} or
+                not gpu['renderer'] or not gpu['vendor'] or gpu['maxTexture'] < 1024):
+            raise c.Failed(f'a GPU game gave gpu {gpu!r}')
+        session.call('stop')
+        status = session.wait(lambda s: s['ended'], 10)
+        if status['gpu'] != gpu:
+            raise c.Failed(f'an ended GPU game gave gpu {status["gpu"]!r}, not {gpu!r}')
+    finally:
+        session.close()
+
+
 def discs(program, core, log):
     """initialDisc picks the disc a playlist boots with, changeDisc swaps discs and refuses what it
     cannot do, and a game with one disc has no discs in status."""
@@ -1576,7 +1699,7 @@ def main():
         launcher_stops_reading, launcher_exits, log_lines_with_paths, core_data_bounds, option_keys_not_utf8,
         rumble_and_ports, discs, wrong_parent, no_dll_from_working_directory, ps2_game, core_for_other_console,
         save_states, state_card_rollback, slow_load_setup, late_load)}
-    for test in (many_games, gpu_limits, ps2_limits, gpu_network):
+    for test in (many_games, gpu_limits, ps2_limits, gpu_network, performance):
         tests[test.__name__] = lambda program, core, log, test=test: test(program, core, log, options.require_gpu)
     chosen = [(name, test) for name, test in tests.items() if not options.names or name in options.names]
     for name, test in chosen:

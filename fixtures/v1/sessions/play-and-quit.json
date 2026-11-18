@@ -34,7 +34,8 @@
           "ps2",
           "ps1Lockstep",
           "saveStates",
-          "ps2ResolutionLimits"
+          "ps2ResolutionLimits",
+          "gamePerformance"
         ],
         "pixelFormat": "rgba8"
       },
@@ -212,7 +213,9 @@
           "timing": {
             "fps": 59.81733322143555,
             "region": "ntsc"
-          }
+          },
+          "performance": null,
+          "gpu": null
         }
       },
       "anyValueFor": [
@@ -302,7 +305,9 @@
           "timing": {
             "fps": 59.81733322143555,
             "region": "ntsc"
-          }
+          },
+          "performance": null,
+          "gpu": null
         }
       },
       "anyValueFor": [

@@ -206,6 +206,23 @@ def status_result(value, name=None, report=False):
         need(is_number(timing.get('fps')) and 1 < timing['fps'] < 1000,
              'status.timing.fps must be a number above 1 and below 1000')
         need(timing.get('region') in ('ntsc', 'pal', ''), 'status.timing.region must be "ntsc", "pal" or ""')
+    if value.get('performance') is not None:
+        performance = obj(value['performance'], 'status.performance')
+        need(set(performance) == {'speed', 'work', 'seconds'}, 'status.performance has speed, work and seconds')
+        need(is_number(performance.get('speed')) and performance['speed'] >= 0,
+             'status.performance.speed is a number of 0 or more')
+        need(performance.get('work') is None or (is_number(performance['work']) and performance['work'] >= 0),
+             'status.performance.work is a number of 0 or more, or null')
+        need(performance.get('seconds') == 5, 'status.performance.seconds is 5')
+        need(value.get('timing') is not None and not value['ended'],
+             'status.performance needs timing and a game that has not ended')
+    if value.get('gpu') is not None:
+        gpu = obj(value['gpu'], 'status.gpu')
+        for field in ('renderer', 'vendor'):
+            string(gpu.get(field), f'status.gpu.{field}')
+            need(len(gpu[field].encode('utf-8')) <= 256, f'status.gpu.{field} is at most 256 bytes')
+        integer(gpu.get('maxTexture'), 0, U32[1], 'status.gpu.maxTexture')
+        need(value['hardware'] or value['ended'], 'status.gpu comes with hardware, or stays once the game has ended')
     if 'discs' in value:
         discs = obj(value['discs'], 'status.discs')
         labels = discs.get('labels')
@@ -569,7 +586,8 @@ def order(message, sender, calls, state, step):
 def capability_fields(status, state):
     """A status the host sends has every field of the capabilities its welcome listed (protocol.md
     "status")."""
-    for capability, field in (('coreIdentity', 'core'), ('gameTiming', 'timing'), ('ps2', 'console')):
+    for capability, field in (('coreIdentity', 'core'), ('gameTiming', 'timing'), ('ps2', 'console'),
+                              ('gamePerformance', 'performance'), ('gamePerformance', 'gpu')):
         if capability in state['capabilities']:
             need(field in status, f'a host that lists {capability} sends status.{field}')
 

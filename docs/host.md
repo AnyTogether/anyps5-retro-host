@@ -5,7 +5,7 @@
 
 The host implements [protocol version 1](protocol.md) with the `ps1`,
 `coreIdentity`, `gameTiming`, `ps2` ([ps2.md](ps2.md) for PS2), `ps1Lockstep`,
-`saveStates` and `ps2ResolutionLimits` capabilities. It is a small C++17
+`saveStates`, `ps2ResolutionLimits` and `gamePerformance` capabilities. It is a small C++17
 program with three threads:
 
 | Thread | Does |
@@ -27,6 +27,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/game.cpp`](../src/game.cpp) | One loaded game: the libretro callbacks, core options, disc control, the memory card, input, rumble, pixel conversion, lockstep: the queue of steps, the frame fence, pacing and the `sync` hashes, and save states: the state file's header, and the save or load the control thread hands to the game's thread, which runs it between two frames. The picture's hash is taken when a check needs it, from the last picture published, which the conversion buffer holds until the next one, so a check after frames run outside lockstep or after a duplicate frame hashes the picture on screen, and a picture no check needs is not hashed |
 | [`src/hash.h`](../src/hash.h), [`src/hash.cpp`](../src/hash.cpp) | The `sync` hashes: 64-bit FNV-1a, a run of zero bytes hashed as a power of the FNV prime (the same value, without a byte at a time), and the used length of a state buffer, found from its end 8 bytes at a time. A check clears and hashes byte by byte only the part of the core's state buffer the state fills (about a third of SwanStation's 11 MiB) |
 | [`src/resolution.cpp`](../src/resolution.cpp) | Which internal resolutions a GPU game is offered (see "Resolution limits" below) |
+| [`src/performance.cpp`](../src/performance.cpp) | `status.performance`: the frames of the last 5 seconds of play, how many had a picture and the median time of their `retro_run` (see "Game performance" below) |
 | [`src/ring.cpp`](../src/ring.cpp) | The frame ring writer: the header from protocol.md's byte table, slot choice, and capped doubling when a frame needs more room |
 | [`src/json.cpp`](../src/json.cpp) | A strict JSON reader (duplicate keys, found by sorting an object's keys, lone surrogates, invalid UTF-8 and non-finite numbers are errors) and a writer that sends every string as valid UTF-8, with U+FFFD for each sequence that is not |
 | [`src/paths.cpp`](../src/paths.cpp) | The path rules of protocol.md "Paths" for Windows and POSIX, the `.m3u` entry for `initialDisc`, read as SwanStation reads it, and the Windows file name rule a state's name follows |
@@ -360,6 +361,59 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   - **Below full speed** nothing removes the holes: the core makes less sound
     than the device plays. They become a few gaps of about 80 ms, faded,
     instead of constant crackle.
+- **Game performance** (`status.performance` and `status.gpu`, capability
+  `gamePerformance`). A launcher that picks graphics settings for the
+  player, such as the internal resolution, needs to know whether the PC
+  keeps up, and it cannot tell from its frame messages: the host sends no
+  `frame` for a frame the core repeats without a picture, and the messages
+  reach the launcher with its own delays. The host already paces each
+  frame (`next += frame_time`, catching up at most 250 ms), so it measures
+  there. After each `retro_run` the game's thread adds the frame to a
+  `PerformanceWindow` under the game's lock: when the run began and ended,
+  and whether `Publish` handed a picture over in it (`pictured_`). `status`
+  counts the frames that ended in the 5 seconds before the call: the ones
+  with a picture over 5 × `timing.fps` is the speed, and the median run
+  time over the frame time is the work, both rounded to 4 decimal places.
+  Pictures, not `retro_run` calls, are counted because LRPS2 can return
+  from `retro_run` with the last frame repeated and no emulation progress
+  when its EE thread delivered no vsync within its wait, and when its GS
+  has stopped (`video_cb(NULL, 0, 0, 0)` in `retro_run`, `libretro/main.c`
+  at `LRPS2_COMMIT`), so counting calls would show full
+  speed for a game running slow. The median keeps one long frame, a shader
+  compile or a disc read, from moving the work. The run time includes the
+  read-back of a GPU frame and the pixel conversion, which happen inside
+  the core's video callback, and nothing else the host does between frames.
+  The window starts again (`ResetPerformance`, or `Reset` where the lock is
+  already held) whenever what it measures changes: when the game begins to
+  run, when `pause` resumes it (on the control thread, so a `status` right
+  after the reply already gives `null`), on every pass of the loop in
+  lockstep, after a save or load (under the lock, before the call is told
+  it is done) and a disc change, when the core reads an option whose
+  `activeValue` then changes, and when `ApplyTiming` takes a new frame rate;
+  a frame that began before the reset is not counted. So a window never
+  mixes two settings, and `status` gives `null` until 5 seconds of play
+  have passed since. `status` also gives `null` while paused, in lockstep
+  and once the game has ended. The window keeps only the frames of the last
+  5 seconds, at most 5000 at the host's 1000 frames a second limit, and the
+  median is taken with `std::nth_element` on a copy at each `status`.
+  `status.gpu` takes `GL_RENDERER`, `GL_VENDOR` and `GL_MAX_TEXTURE_SIZE`
+  from the context once `Reserve` has made the core's framebuffer and
+  `hardware` turns true, the same strings the log line `[host] OpenGL:`
+  shows, so the identity is the one that draws, not a guess from the
+  launcher's side. The design behind these figures and the launcher's use
+  of them, a ladder of settings that steps down below full speed, is the
+  Auto Optimizer of AnyPS5 Desktop. Measured with this host, the release
+  test build's cores and the miniaudio null backend on Windows with an
+  NVIDIA RTX 4080 SUPER, offscreen and silent, with a status a second and
+  the frames counted at the launcher's side over the same 5 seconds:
+  Spyro the Dragon at 1x gave a speed of 0.9964 to 1.0031 (work 0.06 to
+  0.10), Jak and Daxter at 1x 0.9943 to 1.0043 (work 0.26 to 0.89, which
+  includes LRPS2's wait for its own threads) and at 8x 0.4671 to 0.7908
+  (work 1.24 to 2.04), from 20 seconds after start. Each speed was within
+  0.0034, one frame, of the launcher's count, so for both cores the frames
+  with a picture are the frames the game really ran. The recorded statuses
+  are [`call-status-performance.json`](../fixtures/v1/messages/call-status-performance.json)
+  and [`call-status-ps2-performance.json`](../fixtures/v1/messages/call-status-ps2-performance.json).
 - **Save states** (protocol.md "saveState and loadState") follow what
   players know from the two emulators most of them use. RetroArch numbers
   slots per game (`<content>.state`, `.state1`, ...) and has an auto state
@@ -448,6 +502,14 @@ A crash gives none of these, so the tests expect the exact code.
   one past it, a missing file and a folder; and `IsWindowsFileName` refuses
   a stream (`:`), the device names in any case, also with a superscript
   digit, the characters Windows forbids and a trailing dot or space.
+- `performance_test` ([`tests/performance_test.cpp`](../tests/performance_test.cpp))
+  feeds `PerformanceWindow` frames with made-up times: nothing before 5
+  seconds of play, speed 1 (give or take a frame) for a game paced to
+  59.94, 0.5 when every other frame has no picture, about 0.586 for a game
+  at 35.12 frames a second (the 8x Jak and Daxter run in the design), the
+  median of an even count, the window starting again at a reset and not
+  counting a frame begun before it, speed 0 and no work when no frame ended,
+  and frames older than 5 seconds dropped.
 - `resolution_test` checks which scales [`src/resolution.cpp`](../src/resolution.cpp)
   offers for a geometry, a frame limit and a largest scale, which value it
   moves to, and which values it reads as scales: SwanStation's digits and
@@ -522,8 +584,9 @@ A crash gives none of these, so the tests expect the exact code.
   and `fake-hold-reset` files make it wait after reading the scale in
   `retro_load_game` and in `context_reset`, so a test can act between them;
   `fake-hold-run` makes it wait inside `retro_run`, so a test can act while a
-  frame is being run, and `fake-dupe` makes its software frames duplicates
-  (no pixels).
+  frame is being run, `fake-dupe` makes its software frames duplicates
+  (no pixels), and `fake-slow` makes each `retro_run` 40 ms longer, more
+  than a frame's time at 60 frames a second.
   Its `context_reset` binds a pixel pack buffer and a renderbuffer of its own
   and sets `GL_PACK_ALIGNMENT` to 2; every frame, and after
   `SET_SYSTEM_AV_INFO`, it checks those and the framebuffer bindings it left
@@ -683,6 +746,21 @@ A crash gives none of these, so the tests expect the exact code.
     `resolutionError` before any frame, and the next game in the same host
     must start. It is skipped without a context, unless `--require-gpu` is
     given;
+  - game performance (`performance`, capability `gamePerformance`):
+    `status.performance` and `status.gpu` `null` when a game drawn in
+    software has just started; then speed above 0.5 and work below 2 at
+    full speed; speed below 0.45 and work above 2 once `fake-slow` makes
+    each frame 40 ms longer; speed 0 with work still below 2 once
+    `fake-dupe` passes no pixels, which shows pictures, not calls, are
+    counted; `null` while paused, at once after resuming, after the core
+    applied an option, after a `saveState`, after a disc change (the game is
+    started from a playlist) and after `fake-refresh-50` changes the frame
+    rate, once ended and after 6 seconds in lockstep; and for
+    an OpenGL game (`fake-gpu`) a `gpu` with a renderer, a vendor and a
+    largest texture of at least 1024, kept once the game has ended. The GPU
+    part is skipped without a context, unless `--require-gpu` is given.
+    The thresholds are loose because CI machines, under ThreadSanitizer
+    above all, may not keep up with the fake core at 60;
   - Linux: an OpenGL game run under `strace -f -e trace=%network`
     (`gpu_network`) with `DISPLAY` set to an X server over TCP
     (`127.0.0.1:9`) must make no call protocol.md "Network" forbids, so a host
@@ -754,7 +832,10 @@ A crash gives none of these, so the tests expect the exact code.
   must list `coreIdentity` and `status.core` must be `SwanStation` with that
   version. It checks `status.timing` on the auto-detected console: region
   `ntsc` or `pal`, a frame rate of about 50 or 60, and no more frames in 10
-  seconds than that rate allows. `--core-identity-out` writes `status.core`, and `real-core.yml`'s
+  seconds than that rate allows. After those 10 seconds `status.performance`
+  must measure the game (seconds 5, a speed above 0 and a work), and
+  `status.gpu` must be given exactly when `hardware` is `true`; the speed is
+  printed, not judged, since CI machines may not keep up. `--core-identity-out` writes `status.core`, and `real-core.yml`'s
   `same-core` job checks that Windows, both Linux runners and macOS wrote the
   same one. The first game is also saved to slot 0 and loaded back: the
   state file must name `status.core` and the disc, and the game must publish

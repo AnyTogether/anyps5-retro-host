@@ -609,6 +609,11 @@ void Game::RunGame() {
   if (gpu_ && end_code.empty()) {
     if (gpu_->Reserve(reserve_width, reserve_height, hw_depth_, hw_stencil_)) {
       hardware_ = true;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        gpu_identity_ = GpuIdentity{ClipUtf8(gpu_->Renderer(), kTextBytes), ClipUtf8(gpu_->Vendor(), kTextBytes),
+                                    gpu_->MaxTexture()};
+      }
       if (hw_context_reset_) hw_context_reset_();
     } else {
       end_error = "The host could not make a framebuffer on the GPU for the game.";
@@ -647,6 +652,7 @@ void Game::RunGame() {
       in_frame_ = true;
     }
     const NextStep step = TakeStep(kStepWaitMs);
+    if (step.lockstep) ResetPerformance();
     if (step.lockstep && !step.input) {
       EndFrame();
       quiet_since_ = NowMs();
@@ -662,13 +668,17 @@ void Game::RunGame() {
       }
     }
     ApplyPendingWork();
+    pictured_ = false;
+    const auto began = std::chrono::steady_clock::now();
     run();
+    const auto ran = std::chrono::steady_clock::now();
     step_input_.reset();
     if (step.input) FinishStep(step.frame);
     EndFrame();
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (disc_.inserted && *disc_.inserted < disc_.paths.size()) disc_.played = disc_.paths[*disc_.inserted];
+      if (!step.lockstep) performance_.Add(began, ran, pictured_);
     }
     if (frame_failure_ == FrameResult::kTooLarge) {
       end_error = "The game's frame is larger than 8192 x 8192.";
@@ -716,8 +726,14 @@ std::chrono::duration<double> Game::ApplyTiming() {
   Timing timing{PacedFps(fps_), RegionName(Get<unsigned (*)()>("retro_get_region")())};
   const auto frame_time = std::chrono::duration<double>(1.0 / timing.fps);
   std::lock_guard<std::mutex> lock(mutex_);
+  if (!timing_ || timing_->fps != timing.fps) performance_.Reset(std::chrono::steady_clock::now());
   timing_ = std::move(timing);
   return frame_time;
+}
+
+void Game::ResetPerformance() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  performance_.Reset(std::chrono::steady_clock::now());
 }
 
 void Game::Finish(const std::string& error, const std::string& code) {
@@ -767,6 +783,7 @@ void Game::ApplyPendingWork() {
     std::lock_guard<std::mutex> lock(mutex_);
     disc_.busy = false;
     disc_.failed = !changed;
+    performance_.Reset(std::chrono::steady_clock::now());
   }
 }
 
@@ -928,7 +945,10 @@ bool Game::Environment(unsigned command, void* data) {
       std::lock_guard<std::mutex> lock(mutex_);
       for (auto& option : options_) {
         if (variable->key && option.key == variable->key) {
-          if (!option.restart) option.active = option.values[option.selected];
+          if (!option.restart && option.active != option.values[option.selected]) {
+            option.active = option.values[option.selected];
+            performance_.Reset(std::chrono::steady_clock::now());
+          }
           option.read = true;
           variable->value = option.active.c_str();
           return true;
@@ -1096,6 +1116,7 @@ void Game::Publish(uint32_t width, uint32_t height) {
     return;
   }
   published_ = true;
+  pictured_ = true;
   quiet_since_ = NowMs();
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1206,6 +1227,25 @@ Json Game::Status() const {
   } else {
     status.emplace_back("timing", nullptr);
   }
+  std::optional<Performance> performance;
+  if (timing_ && !ended_ && !paused_ && !lockstep_) {
+    performance = performance_.Report(std::chrono::steady_clock::now(), timing_->fps);
+  }
+  if (performance) {
+    status.emplace_back("performance",
+                        JsonObject{{"speed", performance->speed},
+                                   {"work", performance->work ? Json(*performance->work) : Json(nullptr)},
+                                   {"seconds", performance->seconds}});
+  } else {
+    status.emplace_back("performance", nullptr);
+  }
+  if (gpu_identity_) {
+    status.emplace_back("gpu", JsonObject{{"renderer", gpu_identity_->renderer},
+                                          {"vendor", gpu_identity_->vendor},
+                                          {"maxTexture", gpu_identity_->max_texture}});
+  } else {
+    status.emplace_back("gpu", nullptr);
+  }
   if (disc_.labels.size() > 1) {
     JsonObject discs;
     discs.emplace_back("labels", JsonArray(disc_.labels.begin(), disc_.labels.end()));
@@ -1238,6 +1278,7 @@ void Game::Pause(bool paused) {
     const int64_t quiet_before = std::max<int64_t>(0, paused_at_ - quiet_since_);
     quiet_since_ = NowMs() - quiet_before;
     paused_at_ = -1;
+    ResetPerformance();
     paused_ = false;
   }
 }
@@ -1776,6 +1817,7 @@ bool Game::RunStateWork() {
     std::lock_guard<std::mutex> lock(mutex_);
     work->result = result;
     work->done = true;
+    performance_.Reset(std::chrono::steady_clock::now());
   }
   state_signal_.notify_all();
   return true;

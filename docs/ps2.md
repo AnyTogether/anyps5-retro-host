@@ -247,6 +247,16 @@ All of it is behind the `ps2` capability ([protocol.md](protocol.md)
   `null` for a game that ended with `bios` before it loaded, which
   `tests/ps2_core.py` checks. In the test with real games above, Jak and
   Daxter reported a frame rate of 59.940.
+- **`status.performance`** (capability `gamePerformance`) counts a PS2
+  game's frames with a picture, not its `retro_run` calls: LRPS2's
+  `retro_run` passes no picture (`video_cb(NULL, 0, 0, 0)`) when its EE
+  thread has not reached the next vsync in time, and the frame comes with a
+  later call. Its `work` includes the time `retro_run` waits for LRPS2's own
+  threads, so it is high even at full speed. Jak and Daxter with this host
+  on an RTX 4080 SUPER, from 20 seconds after start: 1x held a speed of
+  0.9943 to 1.0043 (work 0.26 to 0.89), and 8x ran at 0.4671 to 0.7908
+  (work 1.24 to 2.04), within one frame of the frames the launcher's side
+  counted ([`call-status-ps2-performance.json`](../fixtures/v1/messages/call-status-ps2-performance.json)).
 - **`errorCode`**: `bios` when LRPS2 found no BIOS; `core` when it could not
   start the game for any other reason.
 - **Controllers**: two ports, as for PS1. The host gives LRPS2's DualShock 2
