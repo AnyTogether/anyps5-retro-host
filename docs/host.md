@@ -385,20 +385,25 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   the core's video callback, and nothing else the host does between frames.
   The window starts again (`ResetPerformance`, or `Reset` where the lock is
   already held) whenever what it measures changes: when the game begins to
-  run, when `pause` resumes it (on the control thread, so a `status` right
+  run and again when `Publish` hands its first picture over (`ready_` turns
+  true, under the same lock), when `pause` resumes it (on the control thread, so a `status` right
   after the reply already gives `null`), on every pass of the loop in
   lockstep, after a save or load (under the lock, before the call is told
   it is done) and a disc change, when the core reads an option whose
   `activeValue` then changes, and when `ApplyTiming` takes a new frame rate;
   a frame that began before the reset is not counted. So a window never
   mixes two settings, and `status` gives `null` until 5 seconds of play
-  have passed since. `status` also gives `null` while paused, in lockstep
-  and once the game has ended. The window keeps only the frames of the last
+  have passed since. `status` also gives `null` before the first picture
+  (`ready_` false), while paused, in lockstep and once the game has ended,
+  so a game that takes longer than 5 seconds to show anything never reads
+  as a PC that cannot keep up. The window keeps only the frames of the last
   5 seconds, at most 5000 at the host's 1000 frames a second limit, and the
   median is taken with `std::nth_element` on a copy at each `status`.
   `status.gpu` takes `GL_RENDERER`, `GL_VENDOR` and `GL_MAX_TEXTURE_SIZE`
-  from the context once `Reserve` has made the core's framebuffer and
-  `hardware` turns true, the same strings the log line `[host] OpenGL:`
+  from the context once `Reserve` has made the core's framebuffer, under the
+  game's lock and before `hardware` turns true, so no `status` has
+  `hardware` true without `gpu`; `DropGpu` turns `hardware` false at the end
+  but leaves `gpu`, which stays until the next game, the same strings the log line `[host] OpenGL:`
   shows, so the identity is the one that draws, not a guess from the
   launcher's side. The design behind these figures and the launcher's use
   of them, a ladder of settings that steps down below full speed, is the
@@ -752,8 +757,10 @@ A crash gives none of these, so the tests expect the exact code.
     and `option` refusing stereo while it loads (`fake-hold-load`) and while it
     runs. It is skipped without a context, unless `--require-gpu` is given;
   - game performance (`performance`, capability `gamePerformance`):
-    `status.performance` and `status.gpu` `null` when a game drawn in
-    software has just started; then speed above 0.5 and work below 2 at
+    `status.performance` `null` 6 seconds into a first frame held by
+    `fake-hold-run`, before any picture; `status.performance` and
+    `status.gpu` `null` when a game drawn in software has just shown its
+    first picture; then speed above 0.5 and work below 2 at
     full speed; speed below 0.45 and work above 2 once `fake-slow` makes
     each frame 40 ms longer; speed 0 with work still below 2 once
     `fake-dupe` passes no pixels, which shows pictures, not calls, are

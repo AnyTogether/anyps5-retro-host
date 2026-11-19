@@ -785,8 +785,8 @@ No argument. Returns `null` when no game is loaded, or:
 | `cardUnreadable` | boolean | Memory card 1's file is there but the host could not read it as a card (for example, it is not the core's card size), so it is left as it is and this game's saves are not written anywhere; the launcher can tell the player so. A launcher treats a status without this field as `false` |
 | `core` | object or null | Capability `coreIdentity`: the core the game loaded, or `null` until it is loaded and when it could not be (`errorCode` `core`). It stays once the game has ended. See below |
 | `timing` | object or null | Capability `gameTiming`: the frame rate the host paces the game to and the console's region, or `null` until the core has loaded the game and when it did not (a game that ended with `bios`, `disc` or `core` before its first frame). It stays once the game has ended. See below |
-| `performance` | object or null | Capability `gamePerformance`: how fast the game ran over its last 5 seconds of play, or `null` before that, while it is paused or in lockstep, and once it has ended. See below |
-| `gpu` | object or null | Capability `gamePerformance`: the OpenGL context the core draws in, or `null` while it draws in none. It stays once the game has ended. See below |
+| `performance` | object or null | Capability `gamePerformance`: how fast the game ran over its last 5 seconds of play, or `null` before that (at the earliest 5 seconds after its first picture), while it is paused or in lockstep, and once it has ended. See below |
+| `gpu` | object or null | Capability `gamePerformance`: the OpenGL context the core draws in, given from the time `hardware` first turns `true` and kept for the rest of the game, while it stops and once it has ended, or `null` before that and for a game that draws in none. See below |
 | `discs` | object, optional | Present for multi-disc games |
 
 | `errorCode` | Meaning |
@@ -900,11 +900,13 @@ and [`call-status-ps2-performance.json`](../fixtures/v1/messages/call-status-ps2
 one recorded with the real LRPS2 and a PS2 game at 8x that did not.
 
 `performance` is `null` until the game has played for 5 seconds since the
-last of these: the game began to run after loading, it was resumed, the
-inserted disc changed, a state was saved or loaded, the core applied an
-option (`activeValue` took the value chosen) or `timing.fps` changed. So
-the 5 seconds never mix two settings, and a launcher that changes one waits
-5 seconds for the result. Every `status` call measures again; two calls 5
+last of these: the game showed its first picture (`ready` turned `true`), it
+was resumed, the inserted disc changed, a state was saved or loaded, the
+core applied an option (`activeValue` took the value chosen) or `timing.fps`
+changed. So it is `null` while `ready` is `false`, however long a game takes
+to show its first picture (a PS2 boot or a first shader compile can take
+more than 5 seconds), the 5 seconds never mix two settings, and a launcher
+that changes one waits 5 seconds for the result. Every `status` call measures again; two calls 5
 seconds apart measure frames that do not overlap. `performance` is also
 `null` while the game is paused, while it is in [lockstep](#lockstep) (which
 runs the frames the launcher's steps ask for), once it has ended, and while
@@ -912,7 +914,11 @@ runs the frames the launcher's steps ask for), once it has ended, and while
 (the GPU, the CPU, another program or the core).
 
 `gpu` has `renderer`, `vendor` and `maxTexture`, from the OpenGL context the
-host made for the core, once the core draws in it (`hardware` is `true`):
+host made for the core. It is given from the time `hardware` first turns
+`true`, never before, and kept for the rest of the game: while it stops,
+after `hardware` turns `false` again as the host takes the context away, and
+once it has ended. Once a game's `status` has given `gpu`, it is never
+`null` again for that game:
 
 ```json
 {"renderer":"NVIDIA GeForce RTX 4080 SUPER/PCIe/SSE2","vendor":"NVIDIA Corporation","maxTexture":32768}

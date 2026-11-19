@@ -608,12 +608,12 @@ void Game::RunGame() {
   }
   if (gpu_ && end_code.empty()) {
     if (gpu_->Reserve(reserve_width, reserve_height, hw_depth_, hw_stencil_)) {
-      hardware_ = true;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         gpu_identity_ = GpuIdentity{ClipUtf8(gpu_->Renderer(), kTextBytes), ClipUtf8(gpu_->Vendor(), kTextBytes),
                                     gpu_->MaxTexture()};
       }
+      hardware_ = true;
       if (hw_context_reset_) hw_context_reset_();
     } else {
       end_error = "The host could not make a framebuffer on the GPU for the game.";
@@ -1122,6 +1122,7 @@ void Game::Publish(uint32_t width, uint32_t height) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!ready_) {
       ready_ = true;
+      performance_.Reset(std::chrono::steady_clock::now());
       if (disc_.inserted && *disc_.inserted < disc_.paths.size()) disc_.played = disc_.paths[*disc_.inserted];
     }
   }
@@ -1228,7 +1229,7 @@ Json Game::Status() const {
     status.emplace_back("timing", nullptr);
   }
   std::optional<Performance> performance;
-  if (timing_ && !ended_ && !paused_ && !lockstep_) {
+  if (timing_ && ready_ && !ended_ && !paused_ && !lockstep_) {
     performance = performance_.Report(std::chrono::steady_clock::now(), timing_->fps);
   }
   if (performance) {

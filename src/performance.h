@@ -5,6 +5,7 @@
 #define ANYPS5_RETRO_HOST_PERFORMANCE_H_
 
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <optional>
 
@@ -17,7 +18,7 @@ namespace retro_host {
 struct Performance {
   double speed = 0;
   std::optional<double> work;
-  double seconds = 0;
+  uint64_t seconds = 0;
 };
 
 constexpr int kPerformanceSeconds = 5;

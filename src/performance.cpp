@@ -40,8 +40,8 @@ std::optional<Performance> PerformanceWindow::Report(Clock::time_point now, doub
     runs.push_back(frame.run);
   }
   Performance performance;
-  performance.seconds = static_cast<double>(kPerformanceSeconds);
-  performance.speed = Rounded(static_cast<double>(pictures) / (performance.seconds * fps));
+  performance.seconds = static_cast<uint64_t>(kPerformanceSeconds);
+  performance.speed = Rounded(static_cast<double>(pictures) / (static_cast<double>(performance.seconds) * fps));
   if (!runs.empty()) {
     const auto middle = runs.begin() + static_cast<std::ptrdiff_t>(runs.size() / 2);
     std::nth_element(runs.begin(), middle, runs.end());

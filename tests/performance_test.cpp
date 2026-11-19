@@ -55,7 +55,7 @@ int main() {
   Expect(!full.Report(now, fps), "nothing before 5 seconds of play");
   now = Play(full, now, fps, 6.0, 0.004);
   const auto kept_up = full.Report(now, fps);
-  Expect(kept_up && kept_up->seconds == 5.0, "the window is 5 seconds");
+  Expect(kept_up && kept_up->seconds == 5, "the window is 5 seconds");
   Expect(kept_up && kept_up->speed > 0.996 && kept_up->speed < 1.004,
          "a game paced to its rate runs at speed 1, give or take a frame");
   Expect(kept_up && kept_up->work && Near(*kept_up->work, 0.004 * fps), "work is the run time over the frame time");

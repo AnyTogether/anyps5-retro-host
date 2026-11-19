@@ -216,13 +216,13 @@ def status_result(value, name=None, report=False):
         need(performance.get('seconds') == 5, 'status.performance.seconds is 5')
         need(value.get('timing') is not None and not value['ended'],
              'status.performance needs timing and a game that has not ended')
+        need(value.get('ready') is True, 'status.performance is null until the game has shown its first picture')
     if value.get('gpu') is not None:
         gpu = obj(value['gpu'], 'status.gpu')
         for field in ('renderer', 'vendor'):
             string(gpu.get(field), f'status.gpu.{field}')
             need(len(gpu[field].encode('utf-8')) <= 256, f'status.gpu.{field} is at most 256 bytes')
         integer(gpu.get('maxTexture'), 0, U32[1], 'status.gpu.maxTexture')
-        need(value['hardware'] or value['ended'], 'status.gpu comes with hardware, or stays once the game has ended')
     if 'discs' in value:
         discs = obj(value['discs'], 'status.discs')
         labels = discs.get('labels')
@@ -567,6 +567,7 @@ def order(message, sender, calls, state, step):
         args = state['callArgs'].pop(oldest[1], None)
         if kind == 'reply' and oldest[2] == 'start' and isinstance(result, dict):
             state['epoch'] = result.get('epoch')
+            state['gpu'] = None
             lockstep = args.get('lockstep') if isinstance(args, dict) else None
             state['lockstep'] = {'next': 0, 'check': lockstep['check'], 'synced': None} if lockstep else None
         if kind == 'reply' and oldest[2] == 'lockstep' and isinstance(result, dict):
@@ -590,6 +591,14 @@ def capability_fields(status, state):
                               ('gamePerformance', 'performance'), ('gamePerformance', 'gpu')):
         if capability in state['capabilities']:
             need(field in status, f'a host that lists {capability} sends status.{field}')
+    if 'gpu' in status:
+        if state['gpu'] is None:
+            need(status['gpu'] is None or status.get('hardware') is True,
+                 'status.gpu is first given in a status with hardware true')
+        else:
+            need(status['gpu'] is not None, 'status.gpu, once given, stays for the rest of the game')
+        if status['gpu'] is not None:
+            state['gpu'] = status['gpu']
 
 
 def overdue(state):
@@ -732,7 +741,7 @@ def new_state():
     return {'hello': None, 'answer': None, 'pixelFormat': None, 'waiting': [], 'called': set(), 'pinged': set(),
             'slotBytes': None, 'slots': None, 'latest': NONE, 'shown': None, 'epoch': None, 'stopping': None,
             'shutdown': None, 'clock': 0, 'helloAt': 0, 'os': None, 'wrongArgs': set(), 'capabilities': set(),
-            'callArgs': {}, 'lockstep': None}
+            'callArgs': {}, 'lockstep': None, 'gpu': None}
 
 
 failures = []

@@ -769,7 +769,8 @@ def ps2_limits(program, core, log, require_gpu):
 
 def performance(program, core, log, require_gpu):
     """status.performance (capability gamePerformance) is null until the game has played 5 seconds
-    since it started or resumed or since the core applied an option, and then gives the speed, from
+    since its first picture, since it resumed or since the core applied an option, however long the
+    first picture takes (fake-hold-run holds the first frame for 6 seconds), and then gives the speed, from
     the frames that had a picture, and the work, the median retro_run time over a frame's time. The
     fake core keeps up; with fake-slow each retro_run takes 40 ms, so it runs at most 25 of its 60
     frames a second with work above 2, and with fake-dupe it passes no pixels, so the speed falls
@@ -793,7 +794,20 @@ def performance(program, core, log, require_gpu):
         return performance
 
     try:
+        hold, held = system / 'fake-hold-run', system / 'fake-held-run'
+        hold.write_bytes(b'')
+        held.unlink(missing_ok=True)
         session.start(session.paths['playlist'], states=session.paths['states'])
+        deadline = time.monotonic() + 10
+        while not held.exists():
+            if time.monotonic() > deadline:
+                raise c.Failed('the fake core never held inside its first frame')
+            time.sleep(0.01)
+        time.sleep(6)
+        status = session.call('status')
+        hold.unlink()
+        if status['ready'] or status['ended'] or status['performance'] is not None:
+            raise c.Failed(f'6 seconds into a first frame, before any picture, the host gave {status}')
         status = session.wait(lambda s: s and s['ready'], 10)
         if status.get('performance', 'missing') is not None or status.get('gpu', 'missing') is not None:
             raise c.Failed(f'a game that has just started gave performance {status.get("performance", "missing")!r} '
