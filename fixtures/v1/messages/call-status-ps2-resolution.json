@@ -1,5 +1,5 @@
 {
-  "description": "Status of a running PS2 game started with pcsx2_upscale_multiplier 8x and pcsx2_vr_mode stereoscopic, from a host with ps2ResolutionLimits, recorded with the real LRPS2 at LRPS2_COMMIT and Jak and Daxter on an NVIDIA RTX 4080 SUPER (WGL, OpenGL 3.3 core). In stereo 8x would make frames 10240 wide, more than 8192, so the host started the game at 4x, lists 1x to 4x, and says why in resolutionError; activeValue is the value the game started with. options shows two of the 69 options LRPS2 listed; the rest are as LRPS2 gives them.",
+  "description": "Status of a running PS2 game started with pcsx2_upscale_multiplier 8x, pcsx2_vr_mode stereoscopic and pcsx2_vr_depth 200%, from a host with ps2ResolutionLimits, recorded with the real LRPS2 at LRPS2_COMMIT and Jak and Daxter on an NVIDIA RTX 4080 SUPER (WGL, OpenGL 3.3 core). The host keeps VR off, so the frame is one picture wide and 8x fits: 1x to 8x are listed, 8x is active, and resolutionError is empty. Neither VR option is in options, which shows one of the 67 options LRPS2 listed; the rest are as LRPS2 gives them.",
   "from": "launcher",
   "message": {
     "type": "call",
@@ -16,7 +16,7 @@
       "errorCode": "",
       "aspect": 1.3333333730697632,
       "hardware": true,
-      "resolutionError": "8x would make the game's picture up to 10240 x 4096, more than the 8192 x 8192 the host can pass on with this OpenGL renderer, so the game uses 4x.",
+      "resolutionError": "",
       "graphicsPending": false,
       "progressLabel": null,
       "progressPercent": null,
@@ -26,30 +26,18 @@
           "values": [
             "1x (Native)",
             "2x",
-            "4x"
+            "4x",
+            "8x"
           ],
           "labels": [
             "1x (Native)",
             "2x",
-            "4x"
+            "4x",
+            "8x"
           ],
-          "selected": 2,
-          "activeValue": "4x",
+          "selected": 3,
+          "activeValue": "8x",
           "restart": true
-        },
-        "pcsx2_vr_mode": {
-          "title": "Video > VR",
-          "values": [
-            "disabled",
-            "stereoscopic"
-          ],
-          "labels": [
-            "Off",
-            "Stereoscopic"
-          ],
-          "selected": 1,
-          "activeValue": "stereoscopic",
-          "restart": false
         }
       },
       "cardUnreadable": false,

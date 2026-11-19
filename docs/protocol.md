@@ -63,7 +63,9 @@ another until the launcher exits or the host fails.
 The host has no window, no console and no dialog boxes. It draws only into the
 frame ring. The **launcher's window is the target for screenshots, capture,
 Remote Play and focus** for an emulated game. The host plays the game's audio
-itself, so per-process audio capture uses the host's process id.
+itself, so per-process audio capture uses the host's process id. It keeps
+about 80 ms of sound queued, so a frame's sound plays about 80 ms plus the
+sound device's own buffer after the frame is published (host.md "Sound").
 
 **Process id.** The launcher uses the process id it got when it started the
 host (from `CreateProcessW` or `posix_spawn`) for audio capture, focus and
@@ -714,9 +716,12 @@ it. The host gives LRPS2 fixed values for `pcsx2_shared_memory_cards`
 `pcsx2_multitap` (`disabled`), `pcsx2_usb_camera` (`disabled`, so the core
 opens no webcam or microphone), `pcsx2_dev9_eth` (`disabled`, so it opens no
 network connection; see "Network" above), `pcsx2_dev9_hdd` (`disabled`, so it
-creates no hard disk image) and `pcsx2_dev9_hdd_size` (`40 GiB`, its default,
-which does nothing with no hard disk), whatever `options` says, and leaves
-them out of `status.options` ([ps2.md](ps2.md) "What the protocol gains").
+creates no hard disk image), `pcsx2_dev9_hdd_size` (`40 GiB`, its default,
+which does nothing with no hard disk), `pcsx2_vr_mode` (`disabled`, since the
+host presents no stereo views, and stereo would put two pictures side by side
+in a frame twice as wide) and `pcsx2_vr_depth` (`100%`, its default, which does
+nothing with VR off), whatever `options` says, and leaves them out of
+`status.options` ([ps2.md](ps2.md) "What the protocol gains").
 `pcsx2_bios` has `restart` `true`: LRPS2 reads it only when it loads a game.
 
 The host knows the `library_name` of the cores it is built with: `SwanStation`
@@ -886,11 +891,8 @@ game loads (`restart` is `true`):
 - A game whose core then reports a larger frame than that value allows ends
   before its first frame, with `errorCode` `other` and `resolutionError`
   saying why.
-- From the time that context is made, while the game loads and while it
-  runs, `option` refuses `pcsx2_vr_mode` `"stereoscopic"`, which puts two
-  pictures side by side and doubles the frame's width, when the doubled frame
-  would not fit; a game started in stereo, or set to stereo while it loads, is
-  judged at that width.
+- The frame is judged at one picture's width: the host keeps `pcsx2_vr_mode`,
+  whose stereo would double it, at `disabled` (see `start` above).
 
 `discs` has `labels` (array of at most 128 strings, the discs `changeDisc`
 reaches), `inserted` (index of the inserted disc, or null while the tray is

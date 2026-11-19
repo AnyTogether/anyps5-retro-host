@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 AnyPS5 Desktop contributors
 
 cmake_minimum_required(VERSION 3.20)
-project(anyps5_retro_host VERSION 1.0.0 LANGUAGES C CXX)
+project(anyps5_retro_host VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -80,6 +80,10 @@ if(ANYPS5_RETRO_HOST_TESTS)
   add_executable(resolution_test tests/resolution_test.cpp)
   target_link_libraries(resolution_test PRIVATE retro_host_core)
   add_test(NAME resolution COMMAND resolution_test)
+  add_executable(audio_test tests/audio_test.cpp)
+  target_link_libraries(audio_test PRIVATE retro_host_core)
+  add_test(NAME audio COMMAND audio_test)
+  add_test(NAME audio_threads COMMAND audio_test threads)
   add_executable(gpu_thread_test tests/gpu_thread_test.cpp)
   target_link_libraries(gpu_thread_test PRIVATE retro_host_core)
   add_test(NAME gpu_thread COMMAND gpu_thread_test)
