@@ -131,12 +131,10 @@ constexpr char kStateExtension[] = ".state";
 constexpr char kResolutionOption[] = "swanstation_GPU_ResolutionScale";
 constexpr char kPs2ResolutionOption[] = "pcsx2_upscale_multiplier";
 // LRPS2's largest geometry at scale 1, which grows with the scale: 640 x 512, PAL's height whatever
-// the game's region, and twice as wide while pcsx2_vr_mode is "stereoscopic", the eyes side by side
-// (libretro/main.c, retro_get_system_av_info, at LRPS2_COMMIT).
+// the game's region (libretro/main.c, retro_get_system_av_info, at LRPS2_COMMIT). Stereo VR, which
+// would make it twice as wide, is fixed off (kPs2ForcedOptions).
 constexpr uint32_t kPs2Width = 640;
 constexpr uint32_t kPs2Height = 512;
-constexpr char kPs2VrOption[] = "pcsx2_vr_mode";
-constexpr char kPs2VrStereo[] = "stereoscopic";
 // The side of the GS's largest target at scale 1, which upstream PCSX2 keeps within the GPU's
 // largest texture (GSGetMaxUpscaleMultiplier, "Maximum GS target size is 1280x1280") and LRPS2 does
 // not check.
@@ -172,7 +170,9 @@ constexpr const char* kFixedOptions[] = {"swanstation_MemoryCards_Card1Type", "s
 //   microphone on Linux, and the DEV9 ethernet adapter, which opens TCP and UDP sockets: the host
 //   offers no camera and must open no network connection (protocol.md "Network");
 // - the DEV9 hard disk, whose image LRPS2 creates in the system directory at its size option
-//   (40 GiB by default) on first use, and that size, which then does nothing.
+//   (40 GiB by default) on first use, and that size, which then does nothing;
+// - stereo VR, which sends two eyes side by side for a 3D display or a headset the host does not
+//   present, in a frame twice as wide, and its depth, which does nothing with VR off.
 struct ForcedOption {
   const char* key;
   const char* value;
@@ -180,7 +180,7 @@ struct ForcedOption {
 constexpr ForcedOption kPs2ForcedOptions[] = {
     {"pcsx2_shared_memory_cards", "disabled"}, {"pcsx2_renderer", "Auto"},     {"pcsx2_multitap", "disabled"},
     {"pcsx2_usb_camera", "disabled"},          {"pcsx2_dev9_eth", "disabled"}, {"pcsx2_dev9_hdd", "disabled"},
-    {"pcsx2_dev9_hdd_size", "40 GiB"}};
+    {"pcsx2_dev9_hdd_size", "40 GiB"},         {"pcsx2_vr_mode", "disabled"},  {"pcsx2_vr_depth", "100%"}};
 // LRPS2 options it reads only when the game is loaded, though their titles have no "(Restart)":
 // the BIOS (libretro/main.c, check_variables, under first_run).
 constexpr const char* kPs2StartOnlyOptions[] = {"pcsx2_bios"};
@@ -1308,9 +1308,6 @@ bool Game::SetOption(const std::string& key, const std::string& value) {
     if (option.name != key || !option.visible || option.fixed) continue;
     const auto found = std::find(option.values.begin(), option.values.end(), value);
     if (found == option.values.end()) return false;
-    if (config_.console == Console::kPs2 && option.key == kPs2VrOption && value == kPs2VrStereo && !Ps2StereoFits()) {
-      return false;
-    }
     const auto selected = static_cast<size_t>(found - option.values.begin());
     if (selected != option.selected) {
       option.selected = selected;
@@ -1471,8 +1468,6 @@ void Game::LimitPs2ResolutionBeforeLoad() {
   early_gpu_ = true;
   const FrameLimit frame = LimitsOf(*gpu_, kPs2Target);
   std::lock_guard<std::mutex> lock(mutex_);
-  ps2_limit_ = frame;
-  const bool stereo = Ps2StereoChosen();
   for (auto& option : options_) {
     if (option.key != kPs2ResolutionOption || option.fixed) continue;
     // Judged as if the core had drawn at the first scale listed, from the geometry the core's source
@@ -1483,7 +1478,7 @@ void Game::LimitPs2ResolutionBeforeLoad() {
     const uint32_t scale = *ParseScale(*first);
     const auto limit = retro_host::LimitResolution(
         option.values, option.selected, static_cast<size_t>(first - option.values.begin()),
-        kPs2Width * (stereo ? 2 : 1) * scale, kPs2Height * scale, frame.width, frame.height, frame.MaxScale());
+        kPs2Width * scale, kPs2Height * scale, frame.width, frame.height, frame.MaxScale());
     if (!limit) return;
     ApplyResolutionLimit(option, *limit, frame, false);
     option.active = option.values[option.selected];
@@ -1493,16 +1488,12 @@ void Game::LimitPs2ResolutionBeforeLoad() {
 
 bool Game::Ps2ResolutionFits(uint32_t max_width, uint32_t max_height) {
   const FrameLimit frame = LimitsOf(*gpu_, kPs2Target);
-  ps2_limit_ = frame;
   for (auto& option : options_) {
     if (option.key != kPs2ResolutionOption || option.fixed) continue;
     const auto active = std::find(option.values.begin(), option.values.end(), option.active);
     const auto scale = ParseScale(option.active);
     if (active == option.values.end() || !scale) return true;
     const auto index = static_cast<size_t>(active - option.values.begin());
-    // A stereo VR chosen while the game loaded is applied by LRPS2 at its next GET_VARIABLE_UPDATE,
-    // so the frame is judged at the width it will then have.
-    if (Ps2StereoChosen()) max_width = std::max(max_width, kPs2Width * 2 * *scale);
     const auto limit = retro_host::LimitResolution(option.values, option.selected, index, max_width, max_height,
                                                    frame.width, frame.height, frame.MaxScale());
     if (limit && limit->active_offered) {
@@ -1512,23 +1503,6 @@ bool Game::Ps2ResolutionFits(uint32_t max_width, uint32_t max_height) {
     resolution_refused_ = TooLarge(option.labels[index], *scale, max_width, max_height, frame) +
                           ", so the host ended the game before its first frame.";
     return false;
-  }
-  return true;
-}
-
-bool Game::Ps2StereoChosen() const {
-  for (const auto& option : options_) {
-    if (option.key == kPs2VrOption && !option.fixed) return option.values[option.selected] == kPs2VrStereo;
-  }
-  return false;
-}
-
-bool Game::Ps2StereoFits() const {
-  if (!ps2_limit_) return true;
-  for (const auto& option : options_) {
-    if (option.key != kPs2ResolutionOption || option.fixed) continue;
-    const auto scale = ParseScale(option.active);
-    return !scale || static_cast<uint64_t>(kPs2Width) * 2 * *scale <= ps2_limit_->width;
   }
   return true;
 }
