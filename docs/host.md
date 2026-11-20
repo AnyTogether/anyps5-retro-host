@@ -401,8 +401,8 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   median is taken with `std::nth_element` on a copy at each `status`.
   `status.gpu` takes `GL_RENDERER`, `GL_VENDOR` and `GL_MAX_TEXTURE_SIZE`
   from the context once `Reserve` has made the core's framebuffer, under the
-  game's lock and before `hardware` turns true, so no `status` has
-  `hardware` true without `gpu`; `DropGpu` turns `hardware` false at the end
+  game's lock, and `hardware` turns true under the same lock, so a `status`
+  sees both or neither; `DropGpu` turns `hardware` false at the end
   but leaves `gpu`, which stays until the next game, the same strings the log line `[host] OpenGL:`
   shows, so the identity is the one that draws, not a guess from the
   launcher's side. The design behind these figures and the launcher's use

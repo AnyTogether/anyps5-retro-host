@@ -612,8 +612,8 @@ void Game::RunGame() {
         std::lock_guard<std::mutex> lock(mutex_);
         gpu_identity_ = GpuIdentity{ClipUtf8(gpu_->Renderer(), kTextBytes), ClipUtf8(gpu_->Vendor(), kTextBytes),
                                     gpu_->MaxTexture()};
+        hardware_ = true;
       }
-      hardware_ = true;
       if (hw_context_reset_) hw_context_reset_();
     } else {
       end_error = "The host could not make a framebuffer on the GPU for the game.";
