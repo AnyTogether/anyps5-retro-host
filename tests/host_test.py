@@ -681,7 +681,8 @@ def ps2_limits(program, core, log, require_gpu):
     targets, or starts at 4x saying so, and is the value the core is given; a value not offered is
     refused, and one that is, chosen while the game runs, is used at the next start. A core whose
     largest geometry is wider than LRPS2's ends the game with other before any frame, and the next
-    game in the same host starts."""
+    game in the same host starts. A core that asks for its context in retro_init keeps it, draws
+    with it, and is judged in it before the load, like the first game."""
     session = Session(program, core, log)
     key = 'pcsx2_upscale_multiplier'
     try:
@@ -762,6 +763,21 @@ def ps2_limits(program, core, log, require_gpu):
         if status['ended']:
             raise c.Failed(f'the game ended at 2x: {status["errorCode"]!r} {status["error"]!r}')
         finish()
+
+        (system / 'fake-init-gl').write_bytes(b'')
+        status = start(**{key: '8x'})
+        if status['ended'] or not status['hardware']:
+            raise c.Failed(f'a core that asked for its context in retro_init lost it: {status}')
+        option = status['options'][key]
+        if option['activeValue'] != active:
+            raise c.Failed(f'a context asked for in retro_init was not judged like the first: {option}')
+        if given() != [f'{key}={active}', 'pcsx2_vr_mode=disabled']:
+            raise c.Failed(f'with the context asked for in retro_init, the core was given {given()}')
+        status = session.wait(frame_width(640 * int(active[:-1])), 30)
+        if status['ended']:
+            raise c.Failed(f'the game ended at {active}: {status["errorCode"]!r} {status["error"]!r}')
+        finish()
+        (system / 'fake-init-gl').unlink()
     finally:
         session.close()
 

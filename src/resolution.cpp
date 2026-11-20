@@ -63,7 +63,6 @@ std::optional<ResolutionLimit> LimitResolution(const std::vector<std::string>& v
     const uint32_t scale = *ParseScale(values[selected]);
     limit.refused_width = static_cast<uint32_t>(std::min<uint64_t>(Scaled(max_width, scale, *active_scale), UINT32_MAX));
     limit.refused_height = static_cast<uint32_t>(std::min<uint64_t>(Scaled(max_height, scale, *active_scale), UINT32_MAX));
-    limit.refused_scale = scale > max_scale && limit.refused_width <= width_limit && limit.refused_height <= height_limit;
   }
   if (const auto scale = ParseScale(values[limit.selected])) {
     limit.width = static_cast<uint32_t>(Scaled(max_width, *scale, *active_scale));

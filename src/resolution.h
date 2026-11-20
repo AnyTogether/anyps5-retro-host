@@ -31,8 +31,6 @@ struct ResolutionLimit {
   // The largest geometry the value asked for would have had, when it is not offered.
   uint32_t refused_width = 0;
   uint32_t refused_height = 0;
-  // The value asked for is not offered only because its scale is above max_scale: its geometry fits.
-  bool refused_scale = false;
 };
 
 // std::nullopt when values[active] is not a whole scale, or when no scale fits.

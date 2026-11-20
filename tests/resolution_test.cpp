@@ -86,14 +86,14 @@ int main() {
   const auto ps2_8x = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, Ps2MaxScale(8192));
   Expect(ps2_8x && ps2_8x->offered == std::vector<size_t>({0, 1, 2}) && ps2_8x->selected == 2,
          "PS2 8x needs 10240 targets: an 8192 texture limit offers 1x to 4x");
-  Expect(ps2_8x && ps2_8x->refused_scale && ps2_8x->refused_width == 5120 && ps2_8x->refused_height == 4096,
+  Expect(ps2_8x && ps2_8x->refused_width == 5120 && ps2_8x->refused_height == 4096,
          "8x is refused for its targets, as its 5120 x 4096 frame fits");
   Expect(ps2_8x && ps2_8x->width == 2560 && ps2_8x->height == 2048, "4x of 640 x 512 is 2560 x 2048");
   const auto ps2_large = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, Ps2MaxScale(32768));
-  Expect(ps2_large && ps2_large->offered.size() == 4 && ps2_large->selected == 3 && !ps2_large->refused_scale,
+  Expect(ps2_large && ps2_large->offered.size() == 4 && ps2_large->selected == 3,
          "a 32768 texture limit offers PS2 8x");
   const auto stereo = LimitResolution(ps2, 3, 0, 1280, 512, 8192, 8192, Ps2MaxScale(32768));
-  Expect(stereo && stereo->selected == 2 && !stereo->refused_scale && stereo->refused_width == 10240,
+  Expect(stereo && stereo->selected == 2 && stereo->refused_width == 10240,
          "stereo PS2 8x is refused for its 10240-wide frame");
   const auto small_texture = LimitResolution(ps2, 3, 2, 2560, 2048, 8192, 8192, Ps2MaxScale(4096));
   Expect(small_texture && small_texture->offered == std::vector<size_t>({0, 1}) && !small_texture->active_offered,
@@ -102,7 +102,7 @@ int main() {
          "the texture rule never goes below 1x, as upstream PCSX2's");
   const auto tiny_texture = LimitResolution(ps2, 3, 0, 640, 512, 8192, 8192, Ps2MaxScale(1024));
   Expect(tiny_texture && tiny_texture->offered == std::vector<size_t>({0}) && tiny_texture->selected == 0 &&
-             tiny_texture->refused_scale,
+             tiny_texture->refused_width == 5120 && tiny_texture->refused_height == 4096,
          "a 1024 texture limit still offers PS2 1x, and refuses 8x for its targets");
   Expect(retro_host::FrameLimit{8192, 8192, 1024, 0}.MaxScale() == UINT32_MAX,
          "a core whose targets the host does not judge has no texture rule");

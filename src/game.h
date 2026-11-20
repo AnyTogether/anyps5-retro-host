@@ -268,9 +268,10 @@ class Game {
   std::optional<std::pair<uint32_t, uint32_t>> LimitResolution(uint32_t max_width, uint32_t max_height);
   // A PS2 game's internal resolution, which LRPS2 applies only in retro_load_game, before it asks for
   // its OpenGL context (docs/host.md "Resolution limits"). Before the game loads, the host makes the
-  // context LRPS2 asks for (gpu_, early_gpu_), offers only the scales whose largest geometry, 640 x
-  // 512 times the scale, fits it, and gives the core the largest of them when the value asked for
-  // does not. On the game's thread, before retro_load_game.
+  // context LRPS2 asks for (gpu_, early_gpu_) unless the core already holds one, offers only the
+  // scales whose largest geometry, 640 x 512 times the scale, fits that context, and gives the core
+  // the largest of them when the value asked for does not. On the game's thread, before
+  // retro_load_game.
   void LimitPs2ResolutionBeforeLoad();
   // Once LRPS2 has loaded and reported its largest geometry, judges the value it loaded with against
   // the context it draws in; false, with resolution_refused_ saying why, when it does not fit and the

@@ -169,23 +169,25 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   keeps it, and `SET_HW_RENDER` hands that context over when the core asks
   for the same one, so the limits judged are those of the context that draws
   (a request for another context gets a new one, judged again after the
-  load; a core that asks for none drops it). LRPS2's largest geometry is 640
-  × 512 times the scale, PAL's height for every game
+  load; a core that asks for none drops it; a core that already asked for a
+  context, in `retro_init`, keeps it and is judged in it instead). LRPS2's
+  largest geometry is 640 × 512 times the scale, PAL's height for every game
   (`retro_get_system_av_info`): 5120 × 4096 at 8x. Stereo VR would make it
-  twice as wide; the host keeps `pcsx2_vr_mode` at `disabled` ([ps2.md](ps2.md)
-  "What the protocol gains"), so it is never judged. The host offers the scales whose largest geometry fits as above and
-  whose GS targets, 1280 × 1280 times the scale, fit the context's
+  twice as wide; the host keeps `pcsx2_vr_mode` at `disabled`
+  ([ps2.md](ps2.md) "What the protocol gains"), so it is never judged. The
+  host offers the scales whose largest geometry fits as above and whose GS
+  targets, 1280 × 1280 times the scale, fit the context's
   `GL_MAX_TEXTURE_SIZE`: upstream PCSX2 clamps the scale to that rule
   (`GSGetMaxUpscaleMultiplier`, "Maximum GS target size is 1280x1280") but
   never below 1x, and LRPS2 does not check it. A GPU whose largest texture is
   8192 is offered 1x to 4x, one of 16384 or more all four, and one under 1280
-  still 1x. A start value that does not fit
-  is changed to the largest that does before the core reads it, and
-  `resolutionError` says why. Once loaded, the reported geometry is judged
-  again in the drawing context; a value that does not fit there (a core that
-  reports more than its source above says, or a smaller second context) ends
-  the game with `other` before `context_reset`, with `resolutionError`
-  saying why. The host does not unload and load the game again at a smaller
+  still 1x. A start value that does not fit is changed to the largest that
+  does before the core reads it, and `resolutionError` says why. Once loaded,
+  the reported geometry is judged again in the drawing context; a value that
+  does not fit there (a core that reports more than its source above says, or
+  a smaller second context) ends the game with `other` before `context_reset`,
+  with `resolutionError` saying why. The host does not unload and load the
+  game again at a smaller
   scale. Measured on Windows with an NVIDIA RTX 4080 SUPER
   (largest texture 32768), with the release-tested LRPS2: Jak and Daxter and
   Grand Theft Auto: Vice City ran at full speed at 1x, 2x and 4x and at 26 to
@@ -554,7 +556,8 @@ A crash gives none of these, so the tests expect the exact code.
   `fake-ps2-video.txt`, and draws LRPS2's sizes for an NTSC game (frames 640
   × 448 times the scale, largest geometry 640 × 512 times it, twice as wide
   in stereo); `fake-ps2-wide` makes it report a largest geometry four times
-  as wide.
+  as wide, and `fake-init-gl` makes it ask for its context at the end of
+  `retro_init` instead of in `retro_load_game`.
   `retro_unserialize` takes back a state it saved, frame count, inputs, rumble
   and memory card, and refuses any other bytes. While the system folder holds
   `fake-states`, each state it saves or loads adds `save <frame>` or `load
@@ -681,8 +684,10 @@ A crash gives none of these, so the tests expect the exact code.
     refuse 16x and take 2x for the next start, keeping its value active; a
     core reporting a wider geometry than LRPS2's (`fake-ps2-wide`) must end
     with `other` and `resolutionError` before any frame, and the next game in
-    the same host must start. It is skipped without a context, unless
-    `--require-gpu` is given;
+    the same host must start; a core that asks for its context in
+    `retro_init` (`fake-init-gl`) must keep it, draw with it, and have its
+    saved 8x start at the same value as the first game. It is skipped without
+    a context, unless `--require-gpu` is given;
   - a PS2 game's VR (`ps2_vr_off`): asked for 8x in stereo, which would make
     the fake core's largest geometry 10240 wide, the core must be given VR off
     and the game must run and draw, with neither VR option in `status.options`
