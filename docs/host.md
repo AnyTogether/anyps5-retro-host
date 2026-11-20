@@ -505,8 +505,10 @@ A crash gives none of these, so the tests expect the exact code.
   A read that times out before a message begins raises `Idle`, after which
   reading again is safe; one that times out in the middle raises `Failed`,
   which a caller must not read past; the Windows reader keeps a partial
-  message and applies the same write limit to it. `real_core.py` waits out
-  quiet spells by catching `Idle` only.
+  message and applies the same write limit to it. `real_core.py` and
+  `ps2_core.py` wait out quiet spells by catching `Idle` only, also while they
+  wait for a reply: a game sends no frames while it saves its state, so a
+  second with nothing is not a failure until the call's own 5 seconds pass.
   [`tests/framing_test.py`](../tests/framing_test.py) checks that rule
   without the host, on a socketpair on Linux and macOS and on a pipe on Windows.
 - [`tests/fake_core.c`](../tests/fake_core.c) is the core the sessions run:
