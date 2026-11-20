@@ -116,8 +116,9 @@ bool Gpu::LoadFunctions(const std::string& way) {
       if (load(gl->GetGraphicsResetStatus, name)) break;
     }
   }
-  description_ = way + ", " + Text(gl->GetString(kVendor)) + ", " + Text(gl->GetString(kRenderer)) + ", " +
-                 Text(gl->GetString(kVersion)) +
+  vendor_ = Text(gl->GetString(kVendor));
+  renderer_ = Text(gl->GetString(kRenderer));
+  description_ = way + ", " + vendor_ + ", " + renderer_ + ", " + Text(gl->GetString(kVersion)) +
                  (gl->GetGraphicsResetStatus ? ", a GPU reset ends the game" : ", no GPU reset notification");
   int renderbuffer = 0;
   int viewport[2] = {0, 0};

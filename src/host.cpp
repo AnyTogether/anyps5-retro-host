@@ -206,7 +206,7 @@ Host::Outcome Host::Hello(const Json& message) {
                        {"hostVersion", ANYPS5_RETRO_HOST_VERSION},
                        {"capabilities",
                         JsonArray{"ps1", "coreIdentity", "gameTiming", "ps2", "ps1Lockstep", "saveStates",
-                                  "ps2ResolutionLimits"}},
+                                  "ps2ResolutionLimits", "gamePerformance"}},
                        {"pixelFormat", format_name}}));
   return Outcome::kContinue;
 }

@@ -24,6 +24,7 @@
 #include "audio.h"
 #include "gpu.h"
 #include "json.h"
+#include "performance.h"
 #include "platform.h"
 #include "ring.h"
 
@@ -319,6 +320,21 @@ class Game {
   std::string resolution_refused_;
   // The game runs without an OpenGL context, so the core draws in software.
   bool software_ = false;
+  // How the game kept up lately (protocol.md "status", performance), from the frames the game's
+  // thread runs on its own; and whether the frame being run handed over a picture, which only
+  // the game's thread reads and writes.
+  PerformanceWindow performance_;
+  bool pictured_ = false;
+  // Starts performance_ again, from now. Takes mutex_.
+  void ResetPerformance();
+  // The OpenGL context the core draws in, once it draws in one (protocol.md "status", gpu): its
+  // GL_RENDERER, GL_VENDOR and GL_MAX_TEXTURE_SIZE. It stays once the game has ended.
+  struct GpuIdentity {
+    std::string renderer;
+    std::string vendor;
+    uint32_t max_texture = 0;
+  };
+  std::optional<GpuIdentity> gpu_identity_;
   Disc disc_;
   unsigned connected_ports_ = 1;
   bool ports_changed_ = false;

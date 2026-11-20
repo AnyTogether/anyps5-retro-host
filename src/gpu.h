@@ -34,6 +34,10 @@ class Gpu {
   // Where the context comes from and what draws in it, for the log: the system's way of making it,
   // GL_VENDOR, GL_RENDERER, GL_VERSION, and whether a GPU reset is reported.
   const std::string& Description() const { return description_; }
+  // GL_VENDOR and GL_RENDERER as the context gives them ("?" when it gives none), which name the
+  // driver and the GPU that draw (protocol.md "status", gpu).
+  const std::string& Vendor() const { return vendor_; }
+  const std::string& Renderer() const { return renderer_; }
 
   // Makes the framebuffer at least width x height; false when OpenGL refuses. The core's bindings
   // of the draw and read framebuffers and of the renderbuffer are kept, a binding of the old
@@ -72,6 +76,8 @@ class Gpu {
   bool with_depth_ = false;
   bool with_stencil_ = false;
   std::string description_;
+  std::string vendor_;
+  std::string renderer_;
 };
 
 }  // namespace retro_host

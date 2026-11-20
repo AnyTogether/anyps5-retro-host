@@ -31,7 +31,8 @@
  * first, so a test can act, and look at the host, between those steps. fake-hold-run does the same
  * inside retro_run, so a test can act while a frame is being run. While it holds fake-dupe, a
  * frame drawn in software is a duplicate: the core passes no pixels, as libretro lets a core do
- * when nothing changed.
+ * when nothing changed. While it holds fake-slow, each retro_run takes 40 ms longer, more than a
+ * frame's time, as a core the PC cannot keep up with would (protocol.md "status", performance).
  *
  * Its context_reset also binds a pixel pack buffer and a renderbuffer of its own and sets
  * GL_PACK_ALIGNMENT to 2, and every frame it checks that those, and the draw and read
@@ -807,6 +808,13 @@ RETRO_API void retro_run(void) {
 #endif
   input_poll();
   hold_while_asked("run");
+  if (in_system_directory("fake-slow")) {
+#ifdef _WIN32
+    Sleep(40);
+#else
+    usleep(40000);
+#endif
+  }
   if (environment(RETRO_ENVIRONMENT_GET_VARIABLE, &hang) && hang.value && strcmp(hang.value, "yes") == 0) {
     for (;;) {
 #ifdef _WIN32
