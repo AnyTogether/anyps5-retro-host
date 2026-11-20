@@ -10,7 +10,9 @@ frame rate the host paces the game to and the console's region) on an auto-detec
 PAL console running a program that sets a PAL video mode, and that the game publishes no more frames a
 second than that rate. It saves the first game's state to a slot and loads it back (capability
 saveStates, docs/protocol.md "saveState and loadState"), and checks that the state file names
-SwanStation's build and that the game runs on after the load.
+SwanStation's build and that the game runs on after the load. After 10 seconds of play it checks
+that status.performance measures the game, and that status.gpu is given exactly when the core draws
+on the GPU (capability gamePerformance).
 The renderer is whichever the machine allows: with no OpenGL context the host must say why a scale
 above 1x does not apply."""
 
@@ -70,7 +72,10 @@ def pump(until=None, timeout=5.0):
         if time.monotonic() - state['pinged'] >= 2:
             host.send_message({'type': 'ping', 'id': next(state['pings'])})
             state['pinged'] = time.monotonic()
-        message, descriptors = host.read(max(0.1, min(1.0, deadline - time.monotonic())))
+        try:
+            message, descriptors = host.read(max(0.1, min(1.0, deadline - time.monotonic())))
+        except c.Idle:
+            continue
         if message.get('type') == 'ring':
             state['ring'] = host.ring(message, descriptors)
         elif message.get('type') == 'frame':
@@ -279,6 +284,14 @@ try:
     call('volume', {'level': 0.0, 'muted': True})
     status = start(disc)
     shown = paced(10, 'auto-detected console')
+    played = call('status')
+    performance = played['performance']
+    print(f'status.performance after 10 s: {performance}; status.gpu: {played["gpu"]}')
+    if (not isinstance(performance, dict) or performance['seconds'] != 5 or not performance['speed'] > 0 or
+            performance['work'] is None):
+        raise c.Failed(f'a game that has played 10 s gave performance {performance!r}')
+    if (played['gpu'] is not None) != played['hardware']:
+        raise c.Failed(f'hardware {played["hardware"]} came with gpu {played["gpu"]!r}')
     pictures = []
     deadline = time.monotonic() + 30
     while len(set(p[2] for p in pictures)) < 2 and time.monotonic() < deadline:

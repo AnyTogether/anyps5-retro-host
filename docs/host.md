@@ -5,7 +5,7 @@
 
 The host implements [protocol version 1](protocol.md) with the `ps1`,
 `coreIdentity`, `gameTiming`, `ps2` ([ps2.md](ps2.md) for PS2), `ps1Lockstep`,
-`saveStates` and `ps2ResolutionLimits` capabilities. It is a small C++17
+`saveStates`, `ps2ResolutionLimits` and `gamePerformance` capabilities. It is a small C++17
 program with three threads:
 
 | Thread | Does |
@@ -27,12 +27,14 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`src/game.cpp`](../src/game.cpp) | One loaded game: the libretro callbacks, core options, disc control, the memory card, input, rumble, pixel conversion, lockstep: the queue of steps, the frame fence, pacing and the `sync` hashes, and save states: the state file's header, and the save or load the control thread hands to the game's thread, which runs it between two frames. The picture's hash is taken when a check needs it, from the last picture published, which the conversion buffer holds until the next one, so a check after frames run outside lockstep or after a duplicate frame hashes the picture on screen, and a picture no check needs is not hashed |
 | [`src/hash.h`](../src/hash.h), [`src/hash.cpp`](../src/hash.cpp) | The `sync` hashes: 64-bit FNV-1a, a run of zero bytes hashed as a power of the FNV prime (the same value, without a byte at a time), and the used length of a state buffer, found from its end 8 bytes at a time. A check clears and hashes byte by byte only the part of the core's state buffer the state fills (about a third of SwanStation's 11 MiB) |
 | [`src/resolution.cpp`](../src/resolution.cpp) | Which internal resolutions a GPU game is offered (see "Resolution limits" below) |
+| [`src/performance.cpp`](../src/performance.cpp) | `status.performance`: the frames of the last 5 seconds of play, how many had a picture and the median time of their `retro_run` (see "Game performance" below) |
 | [`src/ring.cpp`](../src/ring.cpp) | The frame ring writer: the header from protocol.md's byte table, slot choice, and capped doubling when a frame needs more room |
 | [`src/json.cpp`](../src/json.cpp) | A strict JSON reader (duplicate keys, found by sorting an object's keys, lone surrogates, invalid UTF-8 and non-finite numbers are errors) and a writer that sends every string as valid UTF-8, with U+FFFD for each sequence that is not |
 | [`src/paths.cpp`](../src/paths.cpp) | The path rules of protocol.md "Paths" for Windows and POSIX, the `.m3u` entry for `initialDisc`, read as SwanStation reads it, and the Windows file name rule a state's name follows |
 | [`src/channel.cpp`](../src/channel.cpp) | Framing for the control stream, and the clock the watch thread reads for the write limit |
 | [`src/platform_posix.cpp`](../src/platform_posix.cpp), [`src/platform_windows.cpp`](../src/platform_windows.cpp) | The control stream, process setup, watching the launcher, shared memory, loading the core and files |
-| [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio, with the volume, mute and pause |
+| [`src/audio.cpp`](../src/audio.cpp) | Sound output through miniaudio: the cushion between the game and the device, its rate control, fades and cuts (see "Sound" below), opening the device at its own rate or 48 kHz, and the ramped volume, mute and pause |
+| [`tests/audio_test.cpp`](../tests/audio_test.cpp) | Drives the cushion with a simulated device clock and simulated frame timing, with no sound device (see "Tests" below) |
 | [`cores/apply-core-patches.sh`](../cores/apply-core-patches.sh), [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh), [`cores/patches`](../cores/patches) | The host's SwanStation and LRPS2 patches and the script that applies them; the SwanStation script runs it for `swanstation` (see "SwanStation patches" and "LRPS2 patches" below) |
 | [`tools/core_identity.py`](../tools/core_identity.py) | Computes the core build identity from the SwanStation or LRPS2 commit and `cores/patches` without a build, and compares what each system's core reported ([netplay.md](netplay.md) "Core build identity") |
 | [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
@@ -168,25 +170,26 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   keeps it, and `SET_HW_RENDER` hands that context over when the core asks
   for the same one, so the limits judged are those of the context that draws
   (a request for another context gets a new one, judged again after the
-  load; a core that asks for none drops it). LRPS2's largest geometry is 640
-  × 512 times the scale, PAL's height for every game, and twice as wide while
-  `pcsx2_vr_mode` is `stereoscopic` (`retro_get_system_av_info`): 5120 × 4096
-  at 8x. The host offers the scales whose largest geometry fits as above and
-  whose GS targets, 1280 × 1280 times the scale, fit the context's
+  load; a core that asks for none drops it; a core that already asked for a
+  context, in `retro_init`, keeps it and is judged in it instead). LRPS2's
+  largest geometry is 640 × 512 times the scale, PAL's height for every game
+  (`retro_get_system_av_info`): 5120 × 4096 at 8x. Stereo VR would make it
+  twice as wide; the host keeps `pcsx2_vr_mode` at `disabled`
+  ([ps2.md](ps2.md) "What the protocol gains"), so it is never judged. The
+  host offers the scales whose largest geometry fits as above and whose GS
+  targets, 1280 × 1280 times the scale, fit the context's
   `GL_MAX_TEXTURE_SIZE`: upstream PCSX2 clamps the scale to that rule
   (`GSGetMaxUpscaleMultiplier`, "Maximum GS target size is 1280x1280") but
   never below 1x, and LRPS2 does not check it. A GPU whose largest texture is
   8192 is offered 1x to 4x, one of 16384 or more all four, and one under 1280
-  still 1x. A start value that does not fit
-  is changed to the largest that does before the core reads it, and
-  `resolutionError` says why. Once loaded, the reported geometry is judged
-  again in the drawing context; a value that does not fit there (a core that
-  reports more than its source above says, or a smaller second context) ends
-  the game with `other` before `context_reset`, with `resolutionError`
-  saying why. The host does not unload and load the game again at a smaller
-  scale. From the time the context is made, `option` refuses stereo VR when
-  the doubled width would not fit, and a stereo VR chosen while the game loads
-  is judged at that width after the load. Measured on Windows with an NVIDIA RTX 4080 SUPER
+  still 1x. A start value that does not fit is changed to the largest that
+  does before the core reads it, and `resolutionError` says why. Once loaded,
+  the reported geometry is judged again in the drawing context; a value that
+  does not fit there (a core that reports more than its source above says, or
+  a smaller second context) ends the game with `other` before `context_reset`,
+  with `resolutionError` saying why. The host does not unload and load the
+  game again at a smaller
+  scale. Measured on Windows with an NVIDIA RTX 4080 SUPER
   (largest texture 32768), with the release-tested LRPS2: Jak and Daxter and
   Grand Theft Auto: Vice City ran at full speed at 1x, 2x and 4x and at 26 to
   40 frames a second at 8x, with the GPU about half busy; the host's GPU
@@ -194,10 +197,11 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
   8x. The limit keeps a game within what the host can pass on and the GPU
   can hold; it does not judge speed. With this host on the same PC, Jak and
   Daxter drew in the context made before the load (the log says `[host]
-  OpenGL: the context made before the game loaded`): a saved 8x in stereo
-  started at 4x (2048 × 1792 frames at 59.9 frames a second, recorded in
-  [`call-status-ps2-resolution.json`](../fixtures/v1/messages/call-status-ps2-resolution.json)),
-  4x and 8x started as asked, and stereo was refused at 8x.
+  OpenGL: the context made before the game loaded`), and 4x and 8x started
+  as asked. Asked for 8x in stereo with VR depth 200%, it started at 8x with
+  VR off (4096 × 3584 frames, about 47 frames a second in the title scene;
+  recorded in
+  [`call-status-ps2-resolution.json`](../fixtures/v1/messages/call-status-ps2-resolution.json)).
 - **Options.** The host reports core options version 2 and takes the
   definitions the core gives (`SET_CORE_OPTIONS_V2` or `_V2_INTL`, English
   text). `start.options` sets the starting values. An `option` call is
@@ -264,6 +268,159 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 - **A stuck core.** A game limit marks the game ended at once. If the core
   never returns from `retro_run`, `release` replies and then the host exits,
   as protocol.md "release" says.
+- **Sound.** The host plays the game's sound itself
+  ([`src/audio.cpp`](../src/audio.cpp)). The core writes each frame's
+  samples in one burst at its own rate; the device reads them at its own rate
+  and on its own clock. `AudioStream` sits between the two: one writer (the
+  game's thread), one reader (the device's thread), and neither waits for the
+  other. The game is paced by `steady_clock` alone. Nothing the sound does is
+  read by the game's thread, so the sound can never change when or how frames
+  run, and lockstep stays deterministic ([netplay.md](netplay.md)).
+  - **A cushion of 80 ms.** The reader keeps about 80 ms queued after each
+    read of the device, and after running dry plays again only once the whole
+    80 ms (and the read in hand) is queued, so the next late frame does not
+    cause another gap at once. A frame's samples arrive in one burst, so the
+    fill swings by about a frame around the target: a frame up to about 60 ms
+    late (the target less one frame at 60 fps) leaves no gap at any phase of
+    the device's reads once the fill has settled (see the rate control
+    below for how a clock difference moves it at first). A launcher run on a busy machine measured frame
+    intervals with a p99 of 62 to 72 ms, frames 45 to 55 ms late. In
+    `audio_test`, with 2% of frames 25 to 65 ms late and the device's clock
+    0.3% fast for 10 minutes, a 64 ms target (RetroArch's default) left 79
+    gaps, 72 ms left 31, and 80 ms left 11. DuckStation's default is 50 ms
+    plus a 20 ms device buffer.
+  - **The device's buffer.** The device is asked for periods of 20 ms, two of
+    them (miniaudio's default, 10 ms, is for low latency, and PulseAudio then
+    holds one period: about 19 ms in all, measured). Backends round this as
+    they need; the host logs what it got, `[host] Sound: <backend> at <rate>
+    Hz, <n> periods of <frames> frames (<ms>), an 80 ms cushion`. The sound
+    plays about 80 ms plus that buffer after the frame that made it: around
+    100 ms with PulseAudio, up to 120 ms where both periods are queued.
+  - **Any device rate.** The device is opened at its own rate, which can be
+    far above 192 kHz: WASAPI in shared mode takes the mix format's rate and
+    CoreAudio the device's nominal rate, so a USB DAC set to 352.8 or 384 kHz
+    runs there. `AudioStream::Make` takes any output rate from 8 kHz up. If
+    the device cannot be opened or started, or no stream can be made for its
+    rate, the host logs why and reopens it at 48 kHz, where miniaudio
+    converts to the device's rate; if that fails too it logs `[host] Sound:
+    none, <why>; the game runs without sound` and the game runs silent.
+  - **Rate changes.** Every `SET_SYSTEM_AV_INFO` reopens the sound for the
+    core's rate. When the rate is the one already open (a new geometry, say)
+    the device and what is queued are kept, with no break. When it changes,
+    or the game ends, `Close` first has the device's thread read as for a
+    pause, so the sound fades out over 2.5 ms, and stops the device once
+    reads that were silent from their start (the read holding the fade is not
+    counted) add up to the device's whole buffer, so the fade itself has
+    played (or after 120 ms, twice the 40 ms asked for and two more periods,
+    if the device has stopped calling). A rate change or the end of a game
+    takes about 60 to 80 ms longer for it (77 ms measured on miniaudio's
+    null backend).
+  - **Volume and mute** move toward the launcher's level by at most the
+    whole range in 2.5 ms (`VolumeRamp`), like the fades, so muting
+    mid-sound does not click.
+  - **One resampler.** The device runs at its own rate, and miniaudio's linear
+    resampler (`ma_resampler`) converts from the core's rate in one step. The
+    host gives it the two rates with `ma_resampler_set_rate` as a pair of
+    integers whose output side is `output rate / ceil(output rate / 65536)`
+    (48000 for 48 kHz, 64000 for 384 and for 768 kHz). Its 16-bit path multiplies the position within an
+    output frame by 4096, and by that output integer when the rate changes, in
+    32-bit integers, so a larger one overflows and clicks on every rate
+    change; rates in thousandths of a hertz were tried first, and
+    `audio_test` found the clicks. A step of the ratio is then at most
+    one over the core's side of the pair, 1/44100 for 44.1 kHz to 48 kHz,
+    about 0.002% (1/7350, about 0.014%, to a 384 kHz device). (`ma_resampler_set_rate_ratio` takes a fraction
+    and cuts it to thousandths, 0.1%, too coarse for this.) Its low-pass
+    filter is off when the two rates are within 2% of each other.
+  - **Dynamic rate control.** As RetroArch does it (Arntzen, "Dynamic Rate
+    Control for Retro Game Emulators", 2012), the ratio moves in proportion to
+    how far the fill, averaged over 0.25 s, is from the target, by at most
+    0.5%, so the pitch moves by at most 0.5% (8.6 cents, under a tenth of a
+    semitone). The proportional term
+    alone leaves the fill off the target by the clocks' difference over 0.5%
+    (60% of the cushion for a 0.3% difference), so this host adds a slow
+    integral term, held within the same 0.5%, that learns that difference.
+    Its gain, 0.5% squared over (2 times 80 ms) per second, gives a damping
+    ratio of 1/sqrt(2). With the device's clock 0.3% fast the fill sags to
+    about 40 ms at first and is back at 80 ms after about 90 s; differences
+    of a real sound card's crystal (around 0.01%) move it by a millisecond or
+    two.
+  - **Fades.** 2.5 ms fades (DuckStation's are 128 frames) end the sound
+    before a gap and start it after one, and end it when the game pauses (a
+    read shorter than the fade plays nothing more, and the last frame played
+    ramps down).
+    When less than 2.5 ms is left to fade, or a read took exactly what was
+    queued and the next finds nothing, the last frame played ramps down to
+    silence over 2.5 ms instead, and the sound starts again only after that
+    ramp. What is queued is kept over a pause and played after it, faded in.
+  - **Too much sound.** A fill above twice the target (a game running fast,
+    or a burst after a stall) is cut back to the target: the oldest queued
+    frames are dropped, and the first frames kept are crossfaded over 2.5 ms
+    with those that would have played next, so the cut has no edge. A full
+    ring (1 s, which only a device that has stopped reading allows) drops the
+    write in hand; when the device reads again, the last frame it played
+    ramps down, what is queued is dropped, and the sound starts again from a
+    full cushion. Nothing ever cuts the sound off in the middle of a write.
+  - **Below full speed** nothing removes the holes: the core makes less sound
+    than the device plays. They become a few gaps of about 80 ms, faded,
+    instead of constant crackle.
+- **Game performance** (`status.performance` and `status.gpu`, capability
+  `gamePerformance`). A launcher that picks graphics settings for the
+  player, such as the internal resolution, needs to know whether the PC
+  keeps up, and it cannot tell from its frame messages: the host sends no
+  `frame` for a frame the core repeats without a picture, and the messages
+  reach the launcher with its own delays. The host already paces each
+  frame (`next += frame_time`, catching up at most 250 ms), so it measures
+  there. After each `retro_run` the game's thread adds the frame to a
+  `PerformanceWindow` under the game's lock: when the run began and ended,
+  and whether `Publish` handed a picture over in it (`pictured_`). `status`
+  counts the frames that ended in the 5 seconds before the call: the ones
+  with a picture over 5 × `timing.fps` is the speed, and the median run
+  time over the frame time is the work, both rounded to 4 decimal places.
+  Pictures, not `retro_run` calls, are counted because LRPS2 can return
+  from `retro_run` with the last frame repeated and no emulation progress
+  when its EE thread delivered no vsync within its wait, and when its GS
+  has stopped (`video_cb(NULL, 0, 0, 0)` in `retro_run`, `libretro/main.c`
+  at `LRPS2_COMMIT`), so counting calls would show full
+  speed for a game running slow. The median keeps one long frame, a shader
+  compile or a disc read, from moving the work. The run time includes the
+  read-back of a GPU frame and the pixel conversion, which happen inside
+  the core's video callback, and nothing else the host does between frames.
+  The window starts again (`ResetPerformance`, or `Reset` where the lock is
+  already held) whenever what it measures changes: when the game begins to
+  run and again when `Publish` hands its first picture over (`ready_` turns
+  true, under the same lock), when `pause` resumes it (on the control thread, so a `status` right
+  after the reply already gives `null`), on every pass of the loop in
+  lockstep, after a save or load (under the lock, before the call is told
+  it is done) and a disc change, when the core reads an option whose
+  `activeValue` then changes, and when `ApplyTiming` takes a new frame rate;
+  a frame that began before the reset is not counted. So a window never
+  mixes two settings, and `status` gives `null` until 5 seconds of play
+  have passed since. `status` also gives `null` before the first picture
+  (`ready_` false), while paused, in lockstep and once the game has ended,
+  so a game that takes longer than 5 seconds to show anything never reads
+  as a PC that cannot keep up. The window keeps only the frames of the last
+  5 seconds, at most 5000 at the host's 1000 frames a second limit, and the
+  median is taken with `std::nth_element` on a copy at each `status`.
+  `status.gpu` takes `GL_RENDERER`, `GL_VENDOR` and `GL_MAX_TEXTURE_SIZE`
+  from the context once `Reserve` has made the core's framebuffer, under the
+  game's lock, and `hardware` turns true under the same lock, so a `status`
+  sees both or neither; `DropGpu` turns `hardware` false at the end
+  but leaves `gpu`, which stays until the next game, the same strings the log line `[host] OpenGL:`
+  shows, so the identity is the one that draws, not a guess from the
+  launcher's side. The design behind these figures and the launcher's use
+  of them, a ladder of settings that steps down below full speed, is the
+  Auto Optimizer of AnyPS5 Desktop. Measured with this host, the release
+  test build's cores and the miniaudio null backend on Windows with an
+  NVIDIA RTX 4080 SUPER, offscreen and silent, with a status a second and
+  the frames counted at the launcher's side over the same 5 seconds:
+  Spyro the Dragon at 1x gave a speed of 0.9964 to 1.0031 (work 0.06 to
+  0.10), Jak and Daxter at 1x 0.9943 to 1.0043 (work 0.26 to 0.89, which
+  includes LRPS2's wait for its own threads) and at 8x 0.4671 to 0.7908
+  (work 1.24 to 2.04), from 20 seconds after start. Each speed was within
+  0.0034, one frame, of the launcher's count, so for both cores the frames
+  with a picture are the frames the game really ran. The recorded statuses
+  are [`call-status-performance.json`](../fixtures/v1/messages/call-status-performance.json)
+  and [`call-status-ps2-performance.json`](../fixtures/v1/messages/call-status-ps2-performance.json).
 - **Save states** (protocol.md "saveState and loadState") follow what
   players know from the two emulators most of them use. RetroArch numbers
   slots per game (`<content>.state`, `.state1`, ...) and has an auto state
@@ -352,10 +509,52 @@ A crash gives none of these, so the tests expect the exact code.
   one past it, a missing file and a folder; and `IsWindowsFileName` refuses
   a stream (`:`), the device names in any case, also with a superscript
   digit, the characters Windows forbids and a trailing dot or space.
+- `performance_test` ([`tests/performance_test.cpp`](../tests/performance_test.cpp))
+  feeds `PerformanceWindow` frames with made-up times: nothing before 5
+  seconds of play, speed 1 (give or take a frame) for a game paced to
+  59.94, 0.5 when every other frame has no picture, about 0.586 for a game
+  at 35.12 frames a second (the 8x Jak and Daxter run in the design), the
+  median of an even count, the window starting again at a reset and not
+  counting a frame begun before it, speed 0 and no work when no frame ended,
+  and frames older than 5 seconds dropped.
 - `resolution_test` checks which scales [`src/resolution.cpp`](../src/resolution.cpp)
   offers for a geometry, a frame limit and a largest scale, which value it
   moves to, and which values it reads as scales: SwanStation's digits and
   LRPS2's `<n>x` forms (`1x (Native)`), and not `2X`, `02x` or `2x(Native)`.
+- `audio_test` ([`tests/audio_test.cpp`](../tests/audio_test.cpp)) drives
+  `AudioStream` with a simulated device clock and simulated frame timing,
+  with no device, so it is silent on every system. Each frame takes 4 ms of
+  work, its samples are written only when that work is done, and the next
+  frame starts at its paced time or at once to catch up, as in `game.cpp`.
+  The device reads 20 ms at a time (or, in two cases, any length from one
+  frame to 40 ms). The core plays a 440 Hz tone on the left and a 330 Hz
+  tone on the right at 44.1 kHz to a 48 kHz device (and once 48 to 48, and
+  once to a 384 kHz device). It
+  counts gaps (exact zeros for 1 ms or more, including at the end), clicks
+  (a step on either channel larger than 1.5 times its tone's largest), sound
+  while paused, the fill after each read, and the left tone's pitch over
+  0.25 s spans against the device's clock, for: exact rate; 2% of frames 25
+  to 65 ms late, with 20 ms and with varied reads, and to a 384 kHz device; 90% and 110% speed; the
+  device's clock 0.3% fast and slow for 10 minutes, and 0.3% fast with late
+  frames; and a pause and resume, with 20 ms and with varied reads. It expects no gap, click or drop at exact
+  rate, at most one gap in a minute of late frames, none as the clocks drift
+  (and gaps from at most 2% of the late frames when both happen for 10
+  minutes), no gap longer than the target with late frames, no clicks
+  anywhere, silence from 2.5 ms into a paused read, and a pitch within
+  0.5% (plus 0.05% for the count) of 440 Hz. Two more checks read the
+  cushion one frame at a time until it runs dry, and stop the device's reads
+  until the ring is full and then resume them; neither may click. It checks
+  that a stream is made for devices at 96, 192, 352.8, 384 and 768 kHz and
+  not below 8 kHz; that a rate change, the old stream read paused until it
+  is silent and then a new one at 32 kHz, does not click; and that
+  `VolumeRamp` reaches each volume and mute within 2.5 ms without a click.
+- `audio_threads` (`audio_test threads`) runs `AudioStream` on two real
+  threads for 3 s: one writes bursts of up to 1000 frames with random
+  sleeps, the other reads random lengths with random sleeps and flips the
+  pause. Everything played must be the tone, faded, or silence. The
+  thread-sanitizer CI job runs it under ThreadSanitizer, which reports a
+  race if the ring's release and acquire pairing is broken (making the
+  writer's store relaxed was tried, and it fails).
 - [`tests/conformance.py`](../tests/conformance.py) is the fake launcher of
   protocol.md "Fixtures". It starts the host as a launcher would (a
   socketpair at descriptor 3, or two pipes passed with a handle list on
@@ -373,8 +572,10 @@ A crash gives none of these, so the tests expect the exact code.
   A read that times out before a message begins raises `Idle`, after which
   reading again is safe; one that times out in the middle raises `Failed`,
   which a caller must not read past; the Windows reader keeps a partial
-  message and applies the same write limit to it. `real_core.py` waits out
-  quiet spells by catching `Idle` only.
+  message and applies the same write limit to it. `real_core.py` and
+  `ps2_core.py` wait out quiet spells by catching `Idle` only, also while they
+  wait for a reply: a game sends no frames while it saves its state, so a
+  second with nothing is not a failure until the call's own 5 seconds pass.
   [`tests/framing_test.py`](../tests/framing_test.py) checks that rule
   without the host, on a socketpair on Linux and macOS and on a pipe on Windows.
 - [`tests/fake_core.c`](../tests/fake_core.c) is the core the sessions run:
@@ -392,8 +593,9 @@ A crash gives none of these, so the tests expect the exact code.
   and `fake-hold-reset` files make it wait after reading the scale in
   `retro_load_game` and in `context_reset`, so a test can act between them;
   `fake-hold-run` makes it wait inside `retro_run`, so a test can act while a
-  frame is being run, and `fake-dupe` makes its software frames duplicates
-  (no pixels).
+  frame is being run, `fake-dupe` makes its software frames duplicates
+  (no pixels), and `fake-slow` makes each `retro_run` 40 ms longer, more
+  than a frame's time at 60 frames a second.
   Its `context_reset` binds a pixel pack buffer and a renderbuffer of its own
   and sets `GL_PACK_ALIGNMENT` to 2; every frame, and after
   `SET_SYSTEM_AV_INFO`, it checks those and the framebuffer bindings it left
@@ -410,20 +612,22 @@ A crash gives none of these, so the tests expect the exact code.
   `FAKE_CORE_NAME`. With a `fake-ps2` file it also offers LRPS2's
   `pcsx2_bios` (one value, `fake-ps2-bios.bin`),
   `pcsx2_shared_memory_cards`, `pcsx2_usb_camera`, `pcsx2_dev9_hdd`,
-  `pcsx2_dev9_hdd_size`, `pcsx2_dev9_eth`, `pcsx2_renderer` and
-  `pcsx2_multitap` with LRPS2's titles and defaults, writes each port's device to
+  `pcsx2_dev9_hdd_size`, `pcsx2_dev9_eth`, `pcsx2_renderer`,
+  `pcsx2_multitap`, `pcsx2_vr_mode` and `pcsx2_vr_depth` with LRPS2's titles
+  and defaults, writes each port's device to
   `fake-ps2-ports.txt`, and loads a `.iso` or `.elf` as LRPS2 loads a PS2
   game: without `pcsx2/bios/fake-ps2-bios.bin` it logs LRPS2's message for a
   missing BIOS and fails, with `fake-ps2-fail` it fails without it, and a
   game that loads writes the option values it read to `fake-ps2-options.txt`.
   With both `fake-ps2` and `fake-gpu` it offers LRPS2's
-  `pcsx2_upscale_multiplier` and `pcsx2_vr_mode` instead of SwanStation's
-  internal resolution; a PS2 game reads them only in `retro_load_game`,
+  `pcsx2_upscale_multiplier` instead of SwanStation's internal resolution; a
+  PS2 game reads it and `pcsx2_vr_mode` only in `retro_load_game`,
   before it asks for an OpenGL 3.3 core context, writes what it read to
   `fake-ps2-video.txt`, and draws LRPS2's sizes for an NTSC game (frames 640
   × 448 times the scale, largest geometry 640 × 512 times it, twice as wide
   in stereo); `fake-ps2-wide` makes it report a largest geometry four times
-  as wide.
+  as wide, and `fake-init-gl` makes it ask for its context at the end of
+  `retro_init` instead of in `retro_load_game`.
   `retro_unserialize` takes back a state it saved, frame count, inputs, rumble
   and memory card, and refuses any other bytes. While the system folder holds
   `fake-states`, each state it saves or loads adds `save <frame>` or `load
@@ -487,8 +691,9 @@ A crash gives none of these, so the tests expect the exact code.
     was found.`, one the core cannot load with `core`, both with `console`
     `ps2`; a running one gets LRPS2's DualShock 2 on each connected port and
     the host's own memory card, renderer, multitap, USB camera, DEV9 hard
-    disk, hard disk size and DEV9 ethernet values whatever `start.options`
-    asks, none of which `status.options` lists, and `pcsx2_bios` is listed
+    disk, hard disk size, DEV9 ethernet, VR and VR depth values whatever
+    `start.options` asks, none of which `status.options` lists or `option`
+    takes, and `pcsx2_bios` is listed
     with `restart` `true`; the `lockstep` method returns `false` for it; and a
     PS1 game after it in the same host is `console` `ps1` with SwanStation's
     analog controller;
@@ -542,17 +747,39 @@ A crash gives none of these, so the tests expect the exact code.
     but before the host saw its geometry, the core must be given 2x by
     `context_reset`, with no 16x offered and nothing refused. Without an
     OpenGL context that test is skipped, unless `--require-gpu` is given;
-  - a PS2 game's internal resolution (`ps2_limits`): a saved 8x in stereo
-    (10240 wide) must start at 4x, offer 1x to 4x, give the core 4x, explain
-    itself in `resolutionError`, draw 2560-wide frames, refuse 8x and take 2x
-    for the next start, keeping 4x active; a saved 8x without stereo must
-    start at 8x when the context's largest texture holds 10240, refusing
-    stereo while it runs and while it loads (`fake-hold-load`), or at 4x
-    saying so; a core reporting a wider
-    geometry than LRPS2's (`fake-ps2-wide`) must end with `other` and
-    `resolutionError` before any frame, and the next game in the same host
-    must start. It is skipped without a context, unless `--require-gpu` is
-    given;
+  - a PS2 game's internal resolution (`ps2_limits`): a saved 8x must start
+    at 8x and offer 1x to 8x when the context's largest texture holds 10240,
+    or start at 4x, offer 1x to 4x and say so in `resolutionError`; the core
+    must be given that value, draw frames of its width, and the game must
+    refuse 16x and take 2x for the next start, keeping its value active; a
+    core reporting a wider geometry than LRPS2's (`fake-ps2-wide`) must end
+    with `other` and `resolutionError` before any frame, and the next game in
+    the same host must start; a core that asks for its context in
+    `retro_init` (`fake-init-gl`) must keep it, draw with it, and have its
+    saved 8x start at the same value as the first game. It is skipped without
+    a context, unless `--require-gpu` is given;
+  - a PS2 game's VR (`ps2_vr_off`): asked for 8x in stereo, which would make
+    the fake core's largest geometry 10240 wide, the core must be given VR off
+    and the game must run and draw, with neither VR option in `status.options`
+    and `option` refusing stereo while it loads (`fake-hold-load`) and while it
+    runs. It is skipped without a context, unless `--require-gpu` is given;
+  - game performance (`performance`, capability `gamePerformance`):
+    `status.performance` `null` 6 seconds into a first frame held by
+    `fake-hold-run`, before any picture; `status.performance` and
+    `status.gpu` `null` when a game drawn in software has just shown its
+    first picture; then speed above 0.5 and work below 2 at
+    full speed; speed below 0.45 and work above 2 once `fake-slow` makes
+    each frame 40 ms longer; speed 0 with work still below 2 once
+    `fake-dupe` passes no pixels, which shows pictures, not calls, are
+    counted; `null` while paused, at once after resuming, after the core
+    applied an option, after a `saveState`, after a disc change (the game is
+    started from a playlist) and after `fake-refresh-50` changes the frame
+    rate, once ended and after 6 seconds in lockstep; and for
+    an OpenGL game (`fake-gpu`) a `gpu` with a renderer, a vendor and a
+    largest texture of at least 1024, kept once the game has ended. The GPU
+    part is skipped without a context, unless `--require-gpu` is given.
+    The thresholds are loose because CI machines, under ThreadSanitizer
+    above all, may not keep up with the fake core at 60;
   - Linux: an OpenGL game run under `strace -f -e trace=%network`
     (`gpu_network`) with `DISPLAY` set to an X server over TCP
     (`127.0.0.1:9`) must make no call protocol.md "Network" forbids, so a host
@@ -624,7 +851,10 @@ A crash gives none of these, so the tests expect the exact code.
   must list `coreIdentity` and `status.core` must be `SwanStation` with that
   version. It checks `status.timing` on the auto-detected console: region
   `ntsc` or `pal`, a frame rate of about 50 or 60, and no more frames in 10
-  seconds than that rate allows. `--core-identity-out` writes `status.core`, and `real-core.yml`'s
+  seconds than that rate allows. After those 10 seconds `status.performance`
+  must measure the game (seconds 5, a speed above 0 and a work), and
+  `status.gpu` must be given exactly when `hardware` is `true`; the speed is
+  printed, not judged, since CI machines may not keep up. `--core-identity-out` writes `status.core`, and `real-core.yml`'s
   `same-core` job checks that Windows, both Linux runners and macOS wrote the
   same one. The first game is also saved to slot 0 and loaded back: the
   state file must name `status.core` and the disc, and the game must publish
@@ -684,7 +914,8 @@ A crash gives none of these, so the tests expect the exact code.
   `python3 tests/fake_host_selftest.py`.
 - CI runs everything on Linux (Ubuntu 22.04, the oldest the launcher
   supports, and 24.04), macOS (arm64) and Windows, and the Linux tests again
-  under ThreadSanitizer (on 24.04). The Windows runner's own `opengl32.dll`
+  under ThreadSanitizer (on 24.04), with `audio_threads` (the single-threaded
+  `audio` harness has nothing for it to find and runs in every other job). The Windows runner's own `opengl32.dll`
   makes no OpenGL 3.3 context, so the Windows job puts Mesa's (llvmpipe, with
   `GALLIUM_DRIVER=llvmpipe`) next to the host and the tests, which load it
   from their own folder: `mesa3d-26.2.4-release-msvc.7z` from

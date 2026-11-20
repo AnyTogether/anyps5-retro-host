@@ -31,7 +31,8 @@
  * first, so a test can act, and look at the host, between those steps. fake-hold-run does the same
  * inside retro_run, so a test can act while a frame is being run. While it holds fake-dupe, a
  * frame drawn in software is a duplicate: the core passes no pixels, as libretro lets a core do
- * when nothing changed.
+ * when nothing changed. While it holds fake-slow, each retro_run takes 40 ms longer, more than a
+ * frame's time, as a core the PC cannot keep up with would (protocol.md "status", performance).
  *
  * Its context_reset also binds a pixel pack buffer and a renderbuffer of its own and sets
  * GL_PACK_ALIGNMENT to 2, and every frame it checks that those, and the draw and read
@@ -46,10 +47,11 @@
  * name of a core for the other console (protocol.md "start").
  *
  * While the system directory holds fake-ps2, it also offers LRPS2's BIOS (with the one value
- * fake-ps2-bios.bin), memory card, USB camera, DEV9 hard disk and ethernet, renderer and multitap
- * options (pcsx2_bios, pcsx2_shared_memory_cards, pcsx2_usb_camera, pcsx2_dev9_hdd,
- * pcsx2_dev9_hdd_size, pcsx2_dev9_eth, pcsx2_renderer and pcsx2_multitap, with LRPS2's titles and
- * defaults) and writes each controller port's device to fake-ps2-ports.txt there, a line a call.
+ * fake-ps2-bios.bin), memory card, USB camera, DEV9 hard disk and ethernet, renderer, multitap and
+ * VR options (pcsx2_bios, pcsx2_shared_memory_cards, pcsx2_usb_camera, pcsx2_dev9_hdd,
+ * pcsx2_dev9_hdd_size, pcsx2_dev9_eth, pcsx2_renderer, pcsx2_multitap, pcsx2_vr_mode and
+ * pcsx2_vr_depth, with LRPS2's titles and defaults) and writes each controller port's device to
+ * fake-ps2-ports.txt there, a line a call.
  * A game whose disc is a .iso or .elf is then loaded as LRPS2 loads a PS2 game (docs/ps2.md "The
  * BIOS"): with no file fake-ps2-bios.bin in pcsx2/bios of the system directory it logs LRPS2's
  * message for a missing BIOS and the load fails; while the system directory holds fake-ps2-fail,
@@ -57,14 +59,17 @@
  * to fake-ps2-options.txt there, so a test can see what the host gave it.
  *
  * While the system directory holds both fake-ps2 and fake-gpu, it offers LRPS2's internal
- * resolution and VR options (pcsx2_upscale_multiplier and pcsx2_vr_mode, with LRPS2's titles,
- * values and defaults) instead of SwanStation's internal resolution, and a PS2 game reads them only
- * in retro_load_game, where LRPS2 applies them, before it asks for an OpenGL 3.3 core context; it
- * writes what it read to fake-ps2-video.txt there. It then draws as LRPS2 draws an NTSC game: frames of 640 x 448
- * times the scale, and a largest geometry of 640 x 512 times the scale, twice as wide with VR
- * "stereoscopic" (libretro/main.c, retro_get_system_av_info). While the system directory holds
- * fake-ps2-wide, it reports a largest geometry four times as wide as that, as a core whose geometry
- * the host did not foresee would.
+ * resolution (pcsx2_upscale_multiplier, with LRPS2's title, values and default) instead of
+ * SwanStation's, and a PS2 game reads it and pcsx2_vr_mode only in retro_load_game, where LRPS2
+ * applies them, before it asks for an OpenGL 3.3 core context; it writes what it read to
+ * fake-ps2-video.txt there. It then draws as LRPS2 draws an NTSC game: frames of 640 x 448 times the
+ * scale, and a largest geometry of 640 x 512 times the scale, twice as wide with VR "stereoscopic"
+ * (libretro/main.c, retro_get_system_av_info). While the system directory holds fake-ps2-wide, it
+ * reports a largest geometry four times as wide as that, as a core whose geometry the host did not
+ * foresee would.
+ *
+ * While the system directory holds fake-gpu and fake-init-gl, it asks for its OpenGL 3.3 core
+ * context at the end of retro_init, after it has set its options, and not again in retro_load_game.
  *
  * A game started with fake_region "pal" is a PAL game: 50 frames a second and RETRO_REGION_PAL, as
  * SwanStation gives for a PAL console; otherwise it runs at 60 and is NTSC. While the system
@@ -338,6 +343,23 @@ static struct retro_core_option_v2_definition ps2_definitions[] = {
      NULL,
      {{"disabled", NULL}, {"port 1", "Port 1"}, {NULL, NULL}},
      "disabled"},
+    {"pcsx2_vr_mode",
+     "Video > VR",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"disabled", "Off"}, {"stereoscopic", "Stereoscopic"}, {NULL, NULL}},
+     "disabled"},
+    {"pcsx2_vr_depth",
+     "Video > VR Depth",
+     NULL,
+     NULL,
+     NULL,
+     NULL,
+     {{"25%", NULL}, {"50%", NULL}, {"75%", NULL}, {"100%", NULL}, {"125%", NULL}, {"150%", NULL}, {"200%", NULL},
+      {NULL, NULL}},
+     "100%"},
 };
 #define PS2_OPTIONS (sizeof ps2_definitions / sizeof ps2_definitions[0])
 static struct retro_core_option_v2_definition ps2_video_definitions[] = {
@@ -349,14 +371,6 @@ static struct retro_core_option_v2_definition ps2_video_definitions[] = {
      NULL,
      {{"1x (Native)", NULL}, {"2x", NULL}, {"4x", NULL}, {"8x", NULL}, {NULL, NULL}},
      "1x (Native)"},
-    {"pcsx2_vr_mode",
-     "Video > VR",
-     NULL,
-     NULL,
-     NULL,
-     NULL,
-     {{"disabled", "Off"}, {"stereoscopic", "Stereoscopic"}, {NULL, NULL}},
-     "disabled"},
 };
 #define PS2_VIDEO_OPTIONS (sizeof ps2_video_definitions / sizeof ps2_video_definitions[0])
 static struct retro_core_option_v2_definition
@@ -407,6 +421,19 @@ static void hold_while_asked(const char* step) {
   }
 }
 
+static void context_reset(void);
+static void context_destroy(void);
+
+static void ask_for_gl(void) {
+  hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
+  hw.version_major = 3;
+  hw.version_minor = 3;
+  hw.context_reset = context_reset;
+  hw.context_destroy = context_destroy;
+  hw.bottom_left_origin = true;
+  if (!environment(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw)) memset(&hw, 0, sizeof hw);
+}
+
 RETRO_API void retro_init(void) {
   struct retro_log_callback log;
   unsigned version = 0;
@@ -450,6 +477,7 @@ RETRO_API void retro_init(void) {
   initial_disc = 0;
   tray_open = false;
   memset(card, 0, sizeof card);
+  if (gpu_wanted && in_system_directory("fake-init-gl")) ask_for_gl();
 }
 
 RETRO_API void retro_deinit(void) {
@@ -721,13 +749,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game) {
   if (gpu_wanted) {
     if (!ps2_game) read_scale();
     hold_while_asked("load");
-    hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
-    hw.version_major = 3;
-    hw.version_minor = 3;
-    hw.context_reset = context_reset;
-    hw.context_destroy = context_destroy;
-    hw.bottom_left_origin = true;
-    if (!environment(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw)) memset(&hw, 0, sizeof hw);
+    if (!hw.context_type) ask_for_gl();
   }
   /* SwanStation's lines, as its libretro log callback writes them: "[<channel or function>]
    * <message>". The disc's path comes first, so a path that holds the host's words must not count. */
@@ -786,6 +808,13 @@ RETRO_API void retro_run(void) {
 #endif
   input_poll();
   hold_while_asked("run");
+  if (in_system_directory("fake-slow")) {
+#ifdef _WIN32
+    Sleep(40);
+#else
+    usleep(40000);
+#endif
+  }
   if (environment(RETRO_ENVIRONMENT_GET_VARIABLE, &hang) && hang.value && strcmp(hang.value, "yes") == 0) {
     for (;;) {
 #ifdef _WIN32

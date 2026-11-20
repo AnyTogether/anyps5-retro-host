@@ -35,7 +35,8 @@
           "ps2",
           "ps1Lockstep",
           "saveStates",
-          "ps2ResolutionLimits"
+          "ps2ResolutionLimits",
+          "gamePerformance"
         ],
         "pixelFormat": "rgba8"
       },

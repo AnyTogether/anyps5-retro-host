@@ -19,7 +19,9 @@ may use it, for example to pace an online match ([netplay.md](netplay.md)
 way as a PS1 game, on LRPS2 with the player's own BIOS ([ps2.md](ps2.md)).
 `ps1Lockstep` adds a PS1 game that runs one frame per input the launcher
 hands it, so two hosts given the same inputs run the same frames (see
-[Lockstep](#lockstep)). PS3 is a later capability (see
+[Lockstep](#lockstep)). `gamePerformance` adds how fast the game really
+runs and which GPU draws it, so a launcher can choose settings the PC keeps
+up with. PS3 is a later capability (see
 [Capabilities](#capabilities)). How a match would use lockstep, joining a
 running game from a state, rollback and how a match reaches the other player
 are part of [netplay.md](netplay.md)'s proposal, which the maintainers have
@@ -66,7 +68,9 @@ another until the launcher exits or the host fails.
 The host has no window, no console and no dialog boxes. It draws only into the
 frame ring. The **launcher's window is the target for screenshots, capture,
 Remote Play and focus** for an emulated game. The host plays the game's audio
-itself, so per-process audio capture uses the host's process id.
+itself, so per-process audio capture uses the host's process id. It keeps
+about 80 ms of sound queued, so a frame's sound plays about 80 ms plus the
+sound device's own buffer after the frame is published (host.md "Sound").
 
 **Process id.** The launcher uses the process id it got when it started the
 host (from `CreateProcessW` or `posix_spawn`) for audio capture, focus and
@@ -548,6 +552,7 @@ the game on its own while the launcher thinks it is in lockstep.
 | `ps1Lockstep` | [Lockstep](#lockstep) for PS1 games: `start.lockstep`, the method `lockstep`, and the messages `step` and `sync` |
 | `saveStates` | [Save states](#savestate-and-loadstate) for PS1 and PS2 games, for one player: `start.states` and the methods `saveState` and `loadState` |
 | `ps2ResolutionLimits` | A PS2 game's internal resolution (`pcsx2_upscale_multiplier`) is limited to what the host can pass on, as PS1's is ([`status`](#status)). A launcher offers a PS2 internal resolution only to a host that lists it: a `ps2` host without it gives LRPS2 the value as given, and a frame larger than 8192 × 8192 ends the game with `frameTooLarge` |
+| `gamePerformance` | `performance` and `gpu` in [`status`](#status): how fast the game ran over the last 5 seconds of play, and the OpenGL context that draws it |
 
 Later versions add capabilities such as PS3;
 [netplay.md](netplay.md) proposes more for PS1 online play.
@@ -744,9 +749,12 @@ it. The host gives LRPS2 fixed values for `pcsx2_shared_memory_cards`
 `pcsx2_multitap` (`disabled`), `pcsx2_usb_camera` (`disabled`, so the core
 opens no webcam or microphone), `pcsx2_dev9_eth` (`disabled`, so it opens no
 network connection; see "Network" above), `pcsx2_dev9_hdd` (`disabled`, so it
-creates no hard disk image) and `pcsx2_dev9_hdd_size` (`40 GiB`, its default,
-which does nothing with no hard disk), whatever `options` says, and leaves
-them out of `status.options` ([ps2.md](ps2.md) "What the protocol gains").
+creates no hard disk image), `pcsx2_dev9_hdd_size` (`40 GiB`, its default,
+which does nothing with no hard disk), `pcsx2_vr_mode` (`disabled`, since the
+host presents no stereo views, and stereo would put two pictures side by side
+in a frame twice as wide) and `pcsx2_vr_depth` (`100%`, its default, which does
+nothing with VR off), whatever `options` says, and leaves them out of
+`status.options` ([ps2.md](ps2.md) "What the protocol gains").
 `pcsx2_bios` has `restart` `true`: LRPS2 reads it only when it loads a game.
 
 The host knows the `library_name` of the cores it is built with: `SwanStation`
@@ -807,6 +815,8 @@ No argument. Returns `null` when no game is loaded, or:
 | `cardUnreadable` | boolean | Memory card 1's file is there but the host could not read it as a card (for example, it is not the core's card size), so it is left as it is and this game's saves are not written anywhere; the launcher can tell the player so. A launcher treats a status without this field as `false` |
 | `core` | object or null | Capability `coreIdentity`: the core the game loaded, or `null` until it is loaded and when it could not be (`errorCode` `core`). It stays once the game has ended. See below |
 | `timing` | object or null | Capability `gameTiming`: the frame rate the host paces the game to and the console's region, or `null` until the core has loaded the game and when it did not (a game that ended with `bios`, `disc` or `core` before its first frame). It stays once the game has ended. See below |
+| `performance` | object or null | Capability `gamePerformance`: how fast the game ran over its last 5 seconds of play, or `null` before that (at the earliest 5 seconds after its first picture), while it is paused or in lockstep, and once it has ended. See below |
+| `gpu` | object or null | Capability `gamePerformance`: the OpenGL context the core draws in, given from the time `hardware` first turns `true` and kept for the rest of the game, while it stops and once it has ended, or `null` before that and for a game that draws in none. See below |
 | `discs` | object, optional | Present for multi-disc games |
 
 | `errorCode` | Meaning |
@@ -824,7 +834,8 @@ No argument. Returns `null` when no game is loaded, or:
 
 The host always sends every field above (`discs` only for a multi-disc
 game, `core` only with the `coreIdentity` capability, `timing` only with
-`gameTiming`, `console` only with `ps2`), including for a game
+`gameTiming`, `console` only with `ps2`, `performance` and `gpu` only with
+`gamePerformance`), including for a game
 that ended before its first frame. The shorter
 form in [Host failure](#host-failure) is never sent by a host; only the
 launcher's client reports it. A launcher that gets `hostExited` or
@@ -879,6 +890,77 @@ disc on the same core build report the same values at the same frame. A
 launcher reads them from each `status`; a new `fps` reaches it with the next
 one.
 
+`performance` has `speed`, `work` and `seconds`, measured by the host over
+the 5 seconds before the `status` call, from the frames the game ran in that
+time:
+
+```json
+{"speed":0.6273,"work":1.5752,"seconds":5}
+```
+
+- `speed` is the frames in which the core handed over a picture (pixels, or
+  `RETRO_HW_FRAME_BUFFER_VALID` for a game drawn on the GPU), divided by 5 ×
+  `timing.fps`, rounded to 4 decimal places. A game the host keeps up with
+  is at 1, give or take a frame or two (about 0.0033 each at 60 frames a
+  second) from where the 5 seconds fall and the host's own timing, so a
+  launcher judges a few windows, not one. Below that the game itself runs
+  slow, sound included: 0.5 is half speed. A frame the core repeats without
+  a picture (`NULL`) is not counted, since it is no progress: LRPS2 repeats
+  one when its emulation has not reached the frame in time ([ps2.md](ps2.md)
+  "What the protocol gains"). A core that repeats unchanged pictures as `NULL`
+  while keeping time would show below 1; the host's SwanStation and LRPS2
+  hand over a picture every frame while they keep up.
+- `work` is the median time one `retro_run` took, divided by a frame's time
+  (1 / `timing.fps`), rounded to 4 decimal places. It includes the host's
+  work inside the core's video callback: reading a GPU frame back and
+  converting the picture. Above 1 the PC cannot keep up with the game at
+  these settings. Below 1 the host waits between frames, but how much of
+  the rest is headroom depends on the core: SwanStation emulates the frame
+  inside `retro_run` (Spyro the Dragon at 1x took 0.06 to 0.10), while
+  LRPS2 emulates on threads of its own and its `retro_run` waits for them,
+  so its `work` includes that wait (Jak and Daxter at 1x, at full speed,
+  took 0.26 to 0.89). `speed`, not `work`, says whether a game keeps up.
+  `work` is `null` when no frame ended in those 5 seconds, for example
+  while the core is stuck in one.
+- `seconds` is 5, the time measured.
+
+[`call-status-performance.json`](../fixtures/v1/messages/call-status-performance.json)
+is a status recorded with the real SwanStation and a PS1 game that kept up,
+and [`call-status-ps2-performance.json`](../fixtures/v1/messages/call-status-ps2-performance.json)
+one recorded with the real LRPS2 and a PS2 game at 8x that did not.
+
+`performance` is `null` until the game has played for 5 seconds since the
+last of these: the game showed its first picture (`ready` turned `true`), it
+was resumed, the inserted disc changed, a state was saved or loaded, the
+core applied an option (`activeValue` took the value chosen) or `timing.fps`
+changed. So it is `null` while `ready` is `false`, however long a game takes
+to show its first picture (a PS2 boot or a first shader compile can take
+more than 5 seconds), the 5 seconds never mix two settings, and a launcher
+that changes one waits 5 seconds for the result. Every `status` call measures again; two calls 5
+seconds apart measure frames that do not overlap. `performance` is also
+`null` while the game is paused, while it is in [lockstep](#lockstep) (which
+runs the frames the launcher's steps ask for), once it has ended, and while
+`timing` is `null`. It says how the game ran on this PC; it does not say why
+(the GPU, the CPU, another program or the core).
+
+`gpu` has `renderer`, `vendor` and `maxTexture`, from the OpenGL context the
+host made for the core. It is given from the time `hardware` first turns
+`true`, never before, and kept for the rest of the game: while it stops,
+after `hardware` turns `false` again as the host takes the context away, and
+once it has ended. Once a game's `status` has given `gpu`, it is never
+`null` again for that game:
+
+```json
+{"renderer":"NVIDIA GeForce RTX 4080 SUPER/PCIe/SSE2","vendor":"NVIDIA Corporation","maxTexture":32768}
+```
+
+`renderer` and `vendor` are `GL_RENDERER` and `GL_VENDOR` as the driver gives
+them, as valid UTF-8 of at most 256 bytes, or `"?"` when it gives none, and
+`maxTexture` is `GL_MAX_TEXTURE_SIZE`. They name the GPU and driver that
+really draw the game, which can differ from the one a launcher sees on a
+PC with two. Two GPUs of the same model give the same strings, and a new
+driver may change them.
+
 Each option has `title` (string), `values` (array of strings), `labels`
 (array of strings, the same length as `values`), `selected` (index into
 `values` of the value chosen, which may still be pending), `activeValue` (the
@@ -916,10 +998,8 @@ game loads (`restart` is `true`):
 - A game whose core then reports a larger frame than that value allows ends
   before its first frame, with `errorCode` `other` and `resolutionError`
   saying why.
-- While the game runs, `option` refuses `pcsx2_vr_mode` `"stereoscopic"`,
-  which puts two pictures side by side and doubles the frame's width, when
-  the doubled frame would not fit; a game started in stereo, or set to stereo
-  while it loads, is judged at that width.
+- The frame is judged at one picture's width: the host keeps `pcsx2_vr_mode`,
+  whose stereo would double it, at `disabled` (see `start` above).
 
 `discs` has `labels` (array of at most 128 strings, the discs `changeDisc`
 reaches), `inserted` (index of the inserted disc, or null while the tray is
@@ -1528,7 +1608,8 @@ or a different one.
 in the fixtures against the fields, types, ranges and order in this document.
 In a session, every `status` the host sends has the fields of the
 capabilities its `welcome` listed: `core` with `coreIdentity`, `timing`
-with `gameTiming` and `console` with `ps2`. A launcher sends `start.states`,
+with `gameTiming`, `console` with `ps2`, and `performance` and `gpu` with
+`gamePerformance`. A launcher sends `start.states`,
 `saveState` and `loadState` only to a host that listed `saveStates`, and
 `start.lockstep`, `lockstep` and `step` only to one that listed `ps1Lockstep`; each `step`
 is for the next lockstep frame, counting from 0 after `start.lockstep` or
