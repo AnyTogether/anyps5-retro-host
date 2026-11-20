@@ -38,7 +38,7 @@ through kqueue. On Windows a thread waits on the launcher's process handle.
 | [`cores/apply-core-patches.sh`](../cores/apply-core-patches.sh), [`cores/apply-swanstation-patches.sh`](../cores/apply-swanstation-patches.sh), [`cores/patches`](../cores/patches) | The host's SwanStation and LRPS2 patches and the script that applies them; the SwanStation script runs it for `swanstation` (see "SwanStation patches" and "LRPS2 patches" below) |
 | [`tools/core_identity.py`](../tools/core_identity.py) | Computes the core build identity from the SwanStation or LRPS2 commit and `cores/patches` without a build, and compares what each system's core reported ([netplay.md](netplay.md) "Core build identity") |
 | [`tools/package_release.py`](../tools/package_release.py) | Packs, lists and checks a release (see "Releases" below) |
-| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions and a `SOURCE.txt` naming another source ("Result"), and how `--mit-notice` gathers MIT notices ("What a zip holds") |
+| [`tests/package_release_test.py`](../tests/package_release_test.py) | Checks which repository and commit the packer names in `SOURCE.txt` ("Releases", "Which source"), and that `--check` refuses unsafe zip entries, any file that differs from `SHA256SUMS` or its `.files`, mixed versions, a `SOURCE.txt` naming another source, a `.files` without SwanStation, LRPS2 in the host package, an LRPS2 package without a host package, in only some systems, missing with `--lrps2-commit` or holding a name the host package holds, and a core without its build identity ("Result"), and how `--mit-notice` and `--bsd-notice` gather MIT and BSD notices ("Licences in a zip") |
 
 ## Choices made for version 1
 
@@ -1178,35 +1178,99 @@ release can be packed and checked by hand the same way.
 
 - **Systems.** `windows-x64` (Windows Server 2022, MSVC, with the static C and
   C++ runtime so no Visual C++ redistributable is needed; the workflow fails
-  if the host or SwanStation imports it, checked with `pefile` installed by
+  if the host, SwanStation or LRPS2 imports it, checked with `pefile` installed by
   its wheel's sha256 under `--require-hashes`), `linux-x64` (Ubuntu 22.04, the oldest
   Linux the launcher supports, so it needs glibc 2.35 or later) and
   `macos-arm64` (built on the fixed `macos-15` arm64 image, not
   `macos-latest`, which GitHub moves, for macOS 11 or later).
-- **What a zip holds.** The host (`anyps5-retro-host.exe` on Windows,
-  `anyps5-retro-host` elsewhere), SwanStation
-  (`swanstation_libretro.dll`, `.so` or `.dylib`) built from
-  `SWANSTATION_COMMIT` with the host's patches ("SwanStation patches"), `licenses/` with the host's and SwanStation's licences
-  and every licence, copying, copyright or notice file under SwanStation's
-  `dep/` (the libraries it builds in, such as libchdr, xxHash and VIXL, as
-  `licenses/swanstation-dep/<path>`), the Apache-2.0 text for SwanStation's
-  Vulkan headers (`licenses/swanstation-vulkan-headers-Apache-2.0.txt`: the
-  headers name the licence only by URL, so the workflow fetches SPDX's copy at
-  a fixed tag and checks its sha256), the MIT notices of the code built in
-  whose notice is only in its source files (`--mit-notice`: each distinct MIT
-  grant the files state, after the distinct copyright lines of the files that
-  state it) as `licenses/anyps5-retro-host-libretro-h-MIT.txt` (`libretro.h`,
-  the one libretro-common file the host uses) and
-  `licenses/swanstation-libretro-common-MIT.txt`, `-glad-MIT.txt` (Khronos'
-  `khrplatform.h`) and `-stb-MIT.txt` (stb's MIT choice), and `SOURCE.txt` naming the repository
-  and commit the host is built from, the SwanStation commit, its `swanstation-*` patches and
-  the date they last modified SwanStation ("SwanStation patches"), and the source
-  archive. Everything sits at the
-  top of the zip except the licences. The zip is the same bytes for the same
-  inputs (entries sorted by name, one fixed time, fixed permissions), so a
-  rebuild can be compared with a release.
-- **Which source.** `SOURCE.txt` names the source that was really built, so a
-  fork's package names the fork, not this repository. The packer reads it
+- **What the packages hold.** Each system has two packages, each a zip with
+  its `.files`, packed by one run of the packer each:
+  - The **host package**, `anyps5-retro-host-<version>-<system>.zip`, holds
+    what v1.0.0's zip held: the host (`anyps5-retro-host.exe` on Windows,
+    `anyps5-retro-host` elsewhere), SwanStation, the PS1 core
+    (`swanstation_libretro.dll`, `.so` or `.dylib`), built from
+    `SWANSTATION_COMMIT` with the host's patches ("SwanStation patches"),
+    `licenses/` with the host's and SwanStation's licences below, and
+    `SOURCE.txt`. `SOURCE.txt` names the repository and commit the host is built
+    from, SwanStation's commit, its patches, the date they last modified it,
+    and the source archive. A launcher that knows only this package keeps
+    working unchanged.
+  - The **LRPS2 package**, `anyps5-retro-host-<version>-<system>-lrps2.zip`,
+    holds LRPS2, the PS2 core (`pcsx2_libretro.dll`, `.so` or `.dylib`), built
+    from `LRPS2_COMMIT` with the host's patches ("LRPS2 patches") and no BIOS,
+    LRPS2's licences below, and `SOURCE-lrps2.txt`. That file names LRPS2's
+    commit, the host repository and commit its patches come from, the date
+    they last modified it, and the source archive.
+    Every other name in it starts with `licenses/lrps2-`; the packer refuses
+    any other licence name. So it unpacks into the host's folder without
+    writing over a file of the host package. A player who plays only PS1
+    games never downloads it (protocol.md "Finding and checking the host").
+
+  Everything sits at the top of a zip except the licences. A zip is the same
+  bytes for the same inputs (entries sorted by name, one fixed time, fixed
+  permissions), so a rebuild can be compared with a release. Splitting the
+  packages keeps the host package at v1.0.0's size: the reviewer measured the
+  zips with LRPS2 inside at 9.2 MB (Linux), 4.1 MB (macOS) and 6.5 MB
+  (Windows), against v1.0.0's 1.9, 1.7 and 3.5 MB.
+- **Licences in a zip.** Licence files are copied as they are; code whose
+  notice is only in its source files gets a notice the packer gathers:
+  `--mit-notice` writes each distinct MIT grant the files state, after the
+  distinct copyright lines of the files that state it (`SPDX-FileCopyrightText`
+  lines too, written as `Copyright <text>`; a file that names MIT only by its
+  SPDX identifier gets the MIT text of the host's `LICENSES/MIT.txt`), and `--bsd-notice`
+  writes each distinct BSD licence the files state, from the copyright lines
+  just above it to the end of its disclaimer, with the files' own line breaks.
+  `--core-notices` and `--ps2-core-notices` copy every licence, copying,
+  copyright or notice file under a folder, and every file in a folder of such a
+  name there, as `licenses/swanstation-dep/<path>` and
+  `licenses/lrps2-3rdparty/<path>`. A licence text that a core's files name only
+  by URL is fetched from SPDX's list at a fixed tag and checked by its sha256.
+
+  The rows for the host and SwanStation are in the host package, and the
+  LRPS2 rows in the LRPS2 package.
+
+  | Part | Licence | How the package carries it |
+  | --- | --- | --- |
+  | The host | GPL-2.0-or-later | `licenses/anyps5-retro-host-GPL-2.0-or-later.txt` |
+  | `libretro.h`, in the host | MIT | `licenses/anyps5-retro-host-libretro-h-MIT.txt` (`--mit-notice`) |
+  | miniaudio, in the host | public domain or MIT No Attribution | none needed |
+  | SwanStation | GPL-3.0 | `licenses/swanstation-GPL-3.0.txt` (its `LICENSE`) |
+  | SwanStation's `dep/` (libchdr, LZMA SDK, OpenBIOS, VIXL, xbyak, xxHash) | their own | `licenses/swanstation-dep/` (`--core-notices`) |
+  | SwanStation's Vulkan headers | Apache-2.0 | `licenses/swanstation-vulkan-headers-Apache-2.0.txt` (fetched) |
+  | SwanStation's libretro-common, glad (Khronos' `khrplatform.h`) and stb | MIT | `licenses/swanstation-libretro-common-MIT.txt`, `-glad-MIT.txt`, `-stb-MIT.txt` (`--mit-notice`) |
+  | LRPS2's own code (`libretro/`, FireWire, the Python 2 and Perfect Pool USB devices, EyeToy, and the GPL-2.0-or-later USB files `bus.c`, `desc.c`, `usb-ohci.c`) | GPL-3.0 (some files GPL-3.0-or-later or GPL-2.0-or-later, taken as GPL-3.0) | `licenses/lrps2-GPL-3.0.txt` (its `COPYING.GPLv3`) |
+  | LRPS2's PCSX2 files and paraLLEl-GS | LGPL-3.0-or-later | `licenses/lrps2-LGPL-3.0-or-later.txt` (fetched; SPDX's copy holds the GPL-3.0 text too) |
+  | Granite, in paraLLEl-GS | MIT | `licenses/lrps2-granite-MIT.txt` (`--mit-notice`) |
+  | libretro-common, in LRPS2 | MIT | `licenses/lrps2-libretro-common-MIT.txt` (`--mit-notice`) |
+  | QEMU's USB core and HID code and `qusb.h` (`core.c`, `hid.c`, `qusb.h` in `pcsx2/USB/libretro-usb`; QEMU's and the PCSX2 Dev Team's copyright) | MIT | `licenses/lrps2-usb-qemu-MIT.txt` (`--mit-notice` over the folder, which takes only its MIT files) |
+  | QEMU's copy of BSD `queue.h` | BSD-3-Clause | `licenses/lrps2-usb-queue-BSD-3-Clause.txt` (`--bsd-notice`) |
+  | xxHash (`3rdparty/include/xxhash.h`) | BSD-2-Clause | `licenses/lrps2-xxhash-BSD-2-Clause.txt` (`--bsd-notice`) |
+  | Khronos' `khrplatform.h` (`3rdparty/GL`, and the same file in `3rdparty/glad`) | MIT | `licenses/lrps2-khrplatform-MIT.txt` (`--mit-notice`) |
+  | xbyak (x86 code generators) | BSD-3-Clause | `licenses/lrps2-3rdparty/xbyak-xbyak-COPYRIGHT` |
+  | VIXL (arm64 code generators, in the macOS build) | BSD-3-Clause | `licenses/lrps2-3rdparty/vixl-LICENCE` |
+  | Vulkan headers | Apache-2.0, some files Apache-2.0 OR MIT | `licenses/lrps2-3rdparty/vulkan-headers-LICENSE.md` and `-LICENSES-Apache-2.0.txt`, `-LICENSES-MIT.txt` |
+  | glad's generated loader (glad 0.1.25) | public domain, WTFPL or CC0, as glad says of its output | none needed |
+  | `zlib_indexed.h` (Mark Adler's zran) | zlib | none needed in a binary; the source archive keeps it |
+  | jo_mpeg (EyeToy), mymc's ECC (memory cards), dr_flac as rflac | public domain (rflac: or MIT No Attribution) | none needed |
+  | libretro-common's `compat_ifaddrs` (BSD) | BSD | not built: only Android's DEV9 uses it |
+  | `cmake/TargetArch.cmake` (BSD) | BSD | build script only, not in the binary; the source archive keeps it |
+
+  This list comes from reading every source file's licence statement in
+  LRPS2's tree at `LRPS2_COMMIT` (c0d39a58e) outside `tests/` and `.github/`;
+  LRPS2 has no submodules. Moving `LRPS2_COMMIT` means reading the new
+  commit's `3rdparty/`, `libretro/libretro-common`, `pcsx2/GS/parallel-gs` and
+  `pcsx2/USB` again. It means repeating the network audit too, since
+  protocol.md "Network" rests on the same commit: at c0d39a58e everything in
+  LRPS2 that opens a socket or reads the network adapters is DEV9
+  (`pcsx2/DEV9/`, run only with `EthEnable`), apart from Android's
+  `compat_ifaddrs`, `tests/` and VIXL's assembler `bind()`; and `EthEnable` is
+  set only by the `pcsx2_dev9_eth` option, which the host fixes off, and by
+  the Python 2 path in `libretro/main.c`, which runs only for a `.py2` file,
+  an extension the host refuses for PS2. A new commit that breaks either needs
+  a change in the host before it ships. Nothing here is a BIOS: LRPS2 boots
+  only with one the player dumped (ps2.md "The BIOS").
+- **Which source.** `SOURCE.txt` and `SOURCE-lrps2.txt` name the source that
+  was really built, so a fork's package names the fork, not this repository. The packer reads it
   from the checkout it runs in, as release tools such as GoReleaser do: the
   commit is `HEAD`, and the repository is the remote the checked-out branch
   tracks (or `origin`), written as a public `https://` URL with any user
@@ -1219,53 +1283,79 @@ release can be packed and checked by hand the same way.
   at `GITHUB_SHA`, and
   elsewhere needs `--host-repository` and `--host-commit`.
   `--host-repository` also names a repository when the remote is a mirror.
-  The workflow checks that each unpacked `SOURCE.txt` names
-  `$GITHUB_REPOSITORY` at `$GITHUB_SHA`, and
+  The workflow checks that each unpacked `SOURCE.txt` and `SOURCE-lrps2.txt`
+  names `$GITHUB_REPOSITORY` at `$GITHUB_SHA`, and
   [`tests/package_release_test.py`](../tests/package_release_test.py) checks
   the rules in throwaway git repositories (CI runs it on every system).
-- **Tested with.** `SWANSTATION_COMMIT` in `release.yml` must be the one
-  `real-core.yml` tests, and the workflow fails otherwise. Each system's zip
-  is unpacked again on its own runner and boots OpenBIOS and the `hello`
-  program through [`tests/real_core.py`](../tests/real_core.py), so the
-  files that are released are the files that were tested. On Linux and macOS
-  it must also get an OpenGL context (`--expect-opengl`), as in
-  `real-core.yml`; the Windows runner has no OpenGL 3.3 driver, so Windows
-  boots in software there. Its core must also report the core build identity
-  [`tools/core_identity.py`](../tools/core_identity.py) computes
-  (`--expect-core-version`).
+- **Tested with.** `SWANSTATION_COMMIT` and `LRPS2_COMMIT` in `release.yml`
+  must be the ones `real-core.yml` tests, and the workflow fails otherwise.
+  Each system's two zips are unpacked again on its own runner into one
+  folder, as a launcher installs them, and boot OpenBIOS and the `hello`
+  program on SwanStation through
+  [`tests/real_core.py`](../tests/real_core.py), so the files that are
+  released are the files that were tested. On Linux and macOS it must also get
+  an OpenGL context (`--expect-opengl`), as in `real-core.yml`; the Windows
+  runner has no OpenGL 3.3 driver, so Windows boots in software there. The
+  LRPS2 package's LRPS2 then goes through [`tests/ps2_core.py`](../tests/ps2_core.py),
+  which, with no BIOS, can only show that it loads, reports `ps2`, refuses the
+  missing BIOS and loads again. Each core must also report the core build
+  identity [`tools/core_identity.py`](../tools/core_identity.py) computes
+  (`--expect-core-version`). LRPS2 is built with the host's runtime and macOS
+  target (`CONFIGURE`) and the four options its identity names.
 - **Version.** `<version>` is `project(... VERSION)` in `CMakeLists.txt`,
   which is also `hostVersion` in `welcome`. A tag `v<version>` runs the
   workflow for a release and must match it. Pushes and pull requests that
   change the workflow or the packer run it too, and `workflow_dispatch` runs it
   by hand.
-- **Source.** The `source` job packs the host and SwanStation at the released
-  commits, with all their submodules, SwanStation with the host's patches
-  applied and the `anyps5-core-source.txt` the patch script writes, and
-  without `.git`, into
+- **Source.** The `source` job packs the host, SwanStation and LRPS2 at the
+  released commits, with all their submodules, each core with the host's
+  patches applied and the `anyps5-core-source.txt` manifest the patch script
+  writes (the core's commit, the date the patches last modified it and each
+  patch's sha256), and without `.git`, into
   `anyps5-retro-host-<version>-source.tar.gz` (sorted, with fixed times and
-  owners). It is the complete corresponding source the GPL asks for, and is
-  published with the binaries, and carries the same Apache-2.0 text at its
-  top. The MIT notices of libretro-common, glad and stb are in the zips
-  themselves (above), so a zip is complete without the archive; miniaudio,
-  which the host builds in, is public domain or MIT No Attribution, which
-  asks for no notice.
+  owners). It is the complete corresponding source the GPL and LGPL ask for,
+  and is published with the binaries, and carries the same Apache-2.0 and
+  LGPL-3.0 texts at its top. The notices are in the zips themselves (above),
+  so a zip is complete without the archive.
 - **Result.** A run for a tag `v<version>` uploads the artifact
   `anyps5-retro-host-<version>-unsigned`; every other run (a branch push, a
   pull request, `workflow_dispatch` on a branch) uploads
   `anyps5-retro-host-<version>-not-a-release-<first 12 digits of the commit>`
   instead, so only a tag's files can be taken for the release. Either holds the
-  three zips, the three `.files`, the source archive and `SHA256SUMS`, written as `shasum -a 256`
+  six zips (a host package and an LRPS2 package per system), the six
+  `.files`, the source archive and `SHA256SUMS`, written as `shasum -a 256`
   writes it and sorted by name as AnyPS5-ARM's `tools/release/sign.sh` sorts
-  it. `python3 tools/package_release.py --check <folder>` checks a folder of
-  them as a launcher checks a download, without the signature, and the `sums`
-  job runs it on every run. Every file `SHA256SUMS` lists must be in the
+  it, so one signature covers every package.
+  `python3 tools/package_release.py --check <folder>` checks a folder of them
+  as a launcher checks a download, without the signature, and the `sums` job
+  runs it on every run. Every file `SHA256SUMS` lists must be in the
   folder with that digest, and every zip must hold exactly what its `.files`
-  lists (no entry changed, missing or added); all names must carry one
-  version, and with `--version` that one; with `--host-repository` and
-  `--host-commit`, every zip's `SOURCE.txt` must name that repository at that
-  commit, read from the same bytes that were hashed, so the entry is read only
-  once (the `sums` job passes this run's). It refuses a
-  `SHA256SUMS` name that is not a release file before reading it, an entry
+  lists (no entry changed, missing or added).
+  - Each host package's `.files` must list the host and SwanStation under its
+    system's names and must not list LRPS2, which ships only in its own
+    package.
+  - Each LRPS2 package's `.files` must list LRPS2, and its system must have a
+    host package. Either every system has an LRPS2 package or none does.
+  - With `--lrps2-commit`, every system must have one. So a release from
+    before LRPS2 shipped can still be checked: v1.0.0's published files pass
+    `--check` with `--version 1.0.0` and its source, though not with
+    `--swanstation-commit`, since its SwanStation was built unmodified,
+    before the host's patches and the core build identity.
+  - The packages of one system unpack into one folder, so no name may be in
+    two of them, in any case, and no name of one may be a folder another's
+    entries are in.
+  - All names must carry one version, and with `--version` that one.
+  - With `--swanstation-commit`, each host package's SwanStation must hold the
+    core build identity `tools/core_identity.py` computes for that commit,
+    and with `--lrps2-commit` each LRPS2 package's LRPS2 must, found in the
+    same bytes that were hashed.
+  - With `--host-repository` and `--host-commit`, every host package's
+    `SOURCE.txt` and every LRPS2 package's `SOURCE-lrps2.txt` must name that
+    repository at that commit, read from the same bytes that were hashed, so
+    the entry is read only once. The `sums` job passes this run's source and
+    core commits.
+
+  It refuses a `SHA256SUMS` name that is not a release file before reading it, an entry
   that states more than 256 MiB before reading it, and a zip
   entry that is not a plain file with the packer's permissions, or whose
   name could unpack outside its folder or over another entry on some system:
@@ -1304,26 +1394,30 @@ unsigned and nothing is published. A maintainer with the release key:
 
    ```sh
    python3 tools/package_release.py --check <folder> --version <version> \
-     --host-repository https://github.com/AnyTogether/anyps5-retro-host --host-commit "$commit"
+     --host-repository https://github.com/AnyTogether/anyps5-retro-host --host-commit "$commit" \
+     --swanstation-commit <SWANSTATION_COMMIT> --lrps2-commit <LRPS2_COMMIT>
    ```
 
    It stops unless every file matches `SHA256SUMS`, every zip matches its
-   `.files`, every name carries `<version>` and every `SOURCE.txt` names the
-   tag's commit in AnyTogether/anyps5-retro-host.
+   `.files`, every name carries `<version>`, every system has its host
+   package and its LRPS2 package, every `SOURCE.txt` and `SOURCE-lrps2.txt`
+   names the tag's commit in AnyTogether/anyps5-retro-host and each core
+   carries the identity of the commit `release.yml` names.
 3. Runs `tools/release/sign.sh -o <folder> <folder>/*.zip <folder>/*.files <folder>/*.tar.gz`
    from AnyPS5-ARM. It writes the same `SHA256SUMS` again (same lines, same
    order) and `SHA256SUMS.sig`, `ed25519 <key id> <base64 signature>` a line,
    with the keys listed in its `tools/release/release-signing.pub`, which are
    the keys built into the launchers (`lib/core/release_keys.dart` in the
    Flutter launcher).
-4. Publishes a GitHub release `v<version>` with the zips, the `.files`, the
-   source archive, `SHA256SUMS` and `SHA256SUMS.sig`. The source archive must
+4. Publishes a GitHub release `v<version>` with every zip and `.files` (both
+   packages of every system), the source archive, `SHA256SUMS` and
+   `SHA256SUMS.sig`. The source archive must
    be published with every release that carries the binaries.
 
-On macOS the host and SwanStation must also carry a Developer ID signature with
+On macOS the host, SwanStation and LRPS2 must also carry a Developer ID signature with
 the hardened runtime, and the host must be notarized (protocol.md "macOS
 signing"). That signing changes the files, so it goes into the `package` job
-after the build and before `Pack`, where the workflow marks it; it needs the
+after the build and before the packing step, where the workflow marks it; it needs the
 team's certificate as a secret, which this repository does not hold. Until it
 is added, the macOS zip carries only the linker's ad-hoc signature: it is not
 yet the release protocol.md describes, and Gatekeeper refuses a downloaded copy.

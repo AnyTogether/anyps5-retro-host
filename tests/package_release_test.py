@@ -12,9 +12,16 @@ SHA256SUMS name that is no release file; that it compares each zip with its .fil
 an extra entry, a missing entry) and each file with SHA256SUMS; that a missing file, a damaged zip,
 damaged deflated data, an encrypted entry, a name that is not UTF-8, an unknown zip version and an
 entry over the size cap end in a refusal, not a traceback; that SOURCE.txt is checked from the bytes
-that were hashed; and that it holds a release to one
-version and its SOURCE.txt to the source asked. Last, that --mit-notice writes each copyright
-line of the files that grant MIT once, with the grant, and refuses a folder that grants none. Each
+that were hashed; that it holds a release to one
+version and its SOURCE.txt to the source asked; that it takes LRPS2 only in a package of its own,
+beside a host package of its system, in every system or none, refuses a name two packages of one
+system both hold, and with --lrps2-commit refuses a release without LRPS2; and that with a core's
+commit it finds that core's build identity in its bytes, even across two blocks, and refuses a
+core built from another commit. SOURCE.txt must name the SwanStation commit, and SOURCE-lrps2.txt
+the LRPS2 commit, the host's source and the date the patches last modified LRPS2. Last, that --mit-notice writes each copyright line of the
+files that grant MIT once, with the grant, and refuses a folder that grants none, and that
+--bsd-notice keeps each distinct BSD licence once with the copyright lines above it, and refuses
+a licence with no copyright line and a folder with no licence. Each
 case runs in a new git repository in a temporary folder, with the user's and the system's git
 configuration left out."""
 
@@ -114,6 +121,15 @@ with tempfile.TemporaryDirectory() as folder:
           'SwanStation was modified by AnyPS5 Desktop contributors, last on 2026-11-17;' in text.splitlines(), True)
     check('SOURCE.txt names them', f'{FORK} at commit {head}.' in text.splitlines(), True)
     check('SOURCE.txt names no other host repository', 'AnyTogether' in text, False)
+    check('SOURCE.txt names no LRPS2', 'LRPS2' in text, False)
+    text = p.lrps2_source_text('1.1.0', 'linux-x64', *p.host_source(root, environment={}), 'e' * 40, '2026-11-18')
+    check('SOURCE-lrps2.txt names the LRPS2 commit',
+          f'core, built from https://github.com/libretro/parallel-ps2 at commit {"e" * 40},' in text.splitlines(), True)
+    check('SOURCE-lrps2.txt names the host source its patches come from',
+          f'{FORK} at commit {head}.' in text.splitlines(), True)
+    check('SOURCE-lrps2.txt says when LRPS2 was last modified',
+          'LRPS2 was modified by AnyPS5 Desktop contributors, last on 2026-11-18;' in text.splitlines(), True)
+    check('SOURCE-lrps2.txt says no BIOS is in it', 'No PS2 BIOS is in this package;' in text, True)
 
     root, head = repository(folder / 'origin', [('mirror', 'https://mirror.example.org/anyps5-retro-host'),
                                                 ('origin', 'https://github.com/example-fork/anyps5-retro-host')])
@@ -129,7 +145,10 @@ with tempfile.TemporaryDirectory() as folder:
     root, head = repository(folder / 'token', [('origin', 'https://user:secret@github.com/example-fork/anyps5-retro-host')])
     found = outcome(root, environment={})
     check('a token in the remote is left out', found, (FORK, head))
-    check('no secret in SOURCE.txt', 'secret' in p.source_text('1.0.0', 'linux-x64', *found, 'f' * 40, '2026-11-17'), False)
+    check('no secret in SOURCE.txt', 'secret' in p.source_text('1.0.0', 'linux-x64', *found, 'f' * 40, '2026-11-17'),
+          False)
+    check('no secret in SOURCE-lrps2.txt',
+          'secret' in p.lrps2_source_text('1.1.0', 'linux-x64', *found, 'e' * 40, '2026-11-18'), False)
 
     root, head = repository(folder / 'local', [('origin', str(folder / 'tracked'))])
     found = outcome(root, environment=CI)
@@ -183,9 +202,9 @@ def checked(folder, *arguments):
         return f'refused: {refusal}'
 
 
-def release(folder, entries, files_text=None, extra_sums=()):
-    folder.mkdir(parents=True)
-    stem = 'anyps5-retro-host-1.0.0-linux-x64'
+def release(folder, entries, files_text=None, extra_sums=(), system='linux-x64', package=None):
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = f'anyps5-retro-host-1.0.0-{system}{f"-{package}" if package else ""}'
     with zipfile.ZipFile(folder / f'{stem}.zip', 'w') as archive:
         for name, data, mode in entries:
             info = zipfile.ZipInfo(name, date_time=p.TIME)
@@ -215,6 +234,7 @@ with tempfile.TemporaryDirectory() as folder:
     folder = Path(folder)
     good = [('anyps5-retro-host', b'host', p.EXECUTABLE), ('swanstation_libretro.so', b'core', p.PLAIN),
             ('licenses/LICENSE', b'licence', p.PLAIN)]
+    lrps2 = [('pcsx2_libretro.so', b'lrps2', p.PLAIN), ('licenses/lrps2-GPL-3.0.txt', b'gpl', p.PLAIN)]
     check('a release the packer would write', checked(release(folder / 'good', good)), 'accepted')
     for label, name in [('a .. part', '../outside'), ('an absolute name', '/outside'), ('a drive', 'C:outside'),
                         ('a backslash', 'licenses\\..\\outside'), ('an empty part', 'licenses//LICENSE'),
@@ -248,7 +268,8 @@ with tempfile.TemporaryDirectory() as folder:
           refused(checked(release(folder / 'extra', good + [('licenses/EXTRA', b'x', p.PLAIN)], listed)),
                   "not listed ['licenses/EXTRA']"), True)
     check('an entry the .files lists but the zip lacks is refused',
-          refused(checked(release(folder / 'lacks', good[:2], listed)), "missing ['licenses/LICENSE']"), True)
+          refused(checked(release(folder / 'lacks', [entry for entry in good if entry[0] != 'licenses/LICENSE'],
+                                          listed)), "missing ['licenses/LICENSE']"), True)
     moved = release(folder / 'moved-zip', good)
     flip(moved / f'{stem}.zip', 0)
     check('a zip that no longer matches SHA256SUMS is refused',
@@ -383,6 +404,76 @@ with tempfile.TemporaryDirectory() as folder:
           refused(checked(folder / 'good', None, FORK, commit), 'no SOURCE.txt'), True)
     check('a commit without a repository is refused',
           refused(checked(sourced_folder, None, None, commit), 'together'), True)
+    split = release(release(folder / 'split', good), lrps2, package='lrps2')
+    check('a host package with the LRPS2 package beside it', checked(split), 'accepted')
+    check('a release without the LRPS2 package is accepted without --lrps2-commit', checked(folder / 'good'), 'accepted')
+    check('a release without the LRPS2 package is refused with --lrps2-commit',
+          refused(checked(folder / 'good', None, None, None, None, 'c' * 40), 'no lrps2 package'), True)
+    check('a host package that holds LRPS2 is refused',
+          refused(checked(release(folder / 'together', good + lrps2[:1])), 'pcsx2_libretro.so', 'of its own'), True)
+    check('a .files that does not list SwanStation is refused',
+          refused(checked(release(folder / 'no-ps1', [good[0]] + good[2:])), 'does not list'), True)
+    alone = release(folder / 'alone', lrps2, package='lrps2')
+    check('an LRPS2 package with no host package of its system is refused',
+          refused(checked(alone), 'no host package'), True)
+    check('an LRPS2 package that does not list LRPS2 is refused',
+          refused(checked(release(release(folder / 'no-core', good), lrps2[1:], package='lrps2')),
+                  'does not list pcsx2_libretro.so'), True)
+    check('an LRPS2 package that holds a file of the host package is refused',
+          refused(checked(release(release(folder / 'over', good), lrps2 + [('licenses/license', b'x', p.PLAIN)],
+                                  package='lrps2')), 'more than one package', 'linux-x64'), True)
+    check('an LRPS2 package whose file is a folder of the host package is refused',
+          refused(checked(release(release(folder / 'folder', good), lrps2[:1] + [('LICENSES', b'x', p.PLAIN)],
+                                  package='lrps2')), 'more than one package'), True)
+    check('a package of an unknown core is refused before it is read',
+          refused(checked(release(release(folder / 'unknown', good), lrps2, package='rpcs3')), 'not a host release file'),
+          True)
+    windows = [('anyps5-retro-host.exe', b'host', p.PLAIN), ('swanstation_libretro.dll', b'core', p.PLAIN),
+               ('licenses/LICENSE', b'licence', p.PLAIN)]
+    release(release(folder / 'some-ps2', good), lrps2, package='lrps2')
+    check('a release where only some systems have the LRPS2 package is refused',
+          refused(checked(release(folder / 'some-ps2', windows, system='windows-x64')), 'others do not'), True)
+    lacking = release(release(folder / 'half', good), lrps2, package='lrps2')
+    (lacking / 'anyps5-retro-host-1.0.0-linux-x64-lrps2.zip').unlink()
+    resum(lacking)
+    check('an LRPS2 package without its zip is refused', refused(checked(lacking), 'needs both'), True)
+    commit = 'c' * 40
+    source_lrps2 = ('SOURCE-lrps2.txt', f'lrps2{NL}{FORK} at commit {commit}.{NL}'.encode(), p.PLAIN)
+    sourced_split = release(release(folder / 'sourced-split', sourced), lrps2 + [source_lrps2], package='lrps2')
+    check('a SOURCE-lrps2.txt that names the source asked', checked(sourced_split, None, FORK, commit), 'accepted')
+    check('an LRPS2 package without SOURCE-lrps2.txt is refused when a source is asked',
+          refused(checked(release(release(folder / 'unsourced-split', sourced), lrps2, package='lrps2'),
+                          None, FORK, commit), 'no SOURCE-lrps2.txt'), True)
+    other_lrps2 = ('SOURCE-lrps2.txt', f'lrps2{NL}{FORK} at commit {"d" * 40}.{NL}'.encode(), p.PLAIN)
+    check('a SOURCE-lrps2.txt that names another commit is refused',
+          refused(checked(release(release(folder / 'other-split', sourced), lrps2 + [other_lrps2], package='lrps2'),
+                          None, FORK, commit), 'SOURCE-lrps2.txt', 'does not name'), True)
+    swanstation_commit = '631f0fb31b809e0f889d7c551fe695788e39c1d3'
+    lrps2_commit = 'c0d39a58e0417189abdd2d77ba1b73126083b41f'
+    ps1_identity = p.core_identity.identity(swanstation_commit, 'swanstation').encode()
+    ps2_identity = p.core_identity.identity(lrps2_commit, 'lrps2').encode()
+    def identified(name, ps1, ps2):
+        host = [(entry, ps1 if entry == 'swanstation_libretro.so' else data, mode) for entry, data, mode in good]
+        core = [(entry, ps2 if entry == 'pcsx2_libretro.so' else data, mode) for entry, data, mode in lrps2]
+        return release(release(folder / name, host), core, package='lrps2')
+    both = identified('identified', b'\0lib ' + ps1_identity + b'\0', b'\0' * 9 + ps2_identity + b' end')
+    check('cores that hold the identities computed for their commits',
+          checked(both, None, None, None, swanstation_commit, lrps2_commit), 'accepted')
+    block = p.CHUNK
+    p.CHUNK = 7
+    check('an identity split across two blocks is found', checked(both, None, None, None, None, lrps2_commit),
+          'accepted')
+    p.CHUNK = block
+    check('an LRPS2 built from another commit is refused',
+          refused(checked(both, None, None, None, None, 'd' * 40), 'pcsx2_libretro.so', 'core build identity'), True)
+    swapped = identified('swapped', ps2_identity, ps1_identity)
+    check('each core is checked for its own identity',
+          refused(checked(swapped, None, None, None, swanstation_commit, None), 'swanstation_libretro.so'), True)
+    check('the LRPS2 identity is looked for in the LRPS2 package',
+          refused(checked(swapped, None, None, None, None, lrps2_commit), 'pcsx2_libretro.so', 'core build identity'),
+          True)
+    check('a short commit for a core is refused',
+          refused(checked(both, None, None, None, None, 'c0d39a58'), '--lrps2-commit'), True)
     grant = ('Permission is hereby granted, free of charge, to any person obtaining a copy of this software, '
              'subject to the following conditions: The above copyright notice and this permission notice shall be '
              'included. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE, ARISING FROM THE USE OR OTHER '
@@ -402,6 +493,19 @@ with tempfile.TemporaryDirectory() as folder:
     check('an MIT notice carries the grant the files state', ' '.join(notice.split()).endswith(grant), True)
     check('an MIT notice of one file', [line for line in p.mit_notice('a', mit / 'a.c').decode().splitlines()
                                         if line.startswith('Copyright')], ['Copyright (C) 2010-2020 The A team'])
+    spdx = folder / 'mit-spdx'
+    spdx.mkdir()
+    # REUSE-IgnoreStart
+    (spdx / 'core.c').write_text(f'/* SPDX-FileCopyrightText: 2002-2026 The C team */\n/* SPDX-License-Identifier: MIT */\n'
+                                 f'/*\n * Copyright (c) 2005 D\n *\n{wrapped}\n */\n')
+    (spdx / 'only.h').write_text('/* SPDX-FileCopyrightText: 2020 The E team */\n/* SPDX-License-Identifier: MIT */\n')
+    (spdx / 'other.h').write_text('/* SPDX-FileCopyrightText: 2020 The F team */\n'
+                                  '/* SPDX-License-Identifier: MIT-0 */\n')
+    # REUSE-IgnoreEnd
+    notice = p.mit_notice('spdx-MIT.txt', spdx).decode('utf-8')
+    check('an MIT notice keeps SPDX copyright lines, and gives an SPDX-only MIT file the MIT grant',
+          [line for line in notice.splitlines() if line.startswith('Copyright')],
+          ['Copyright 2020 The E team', 'Copyright (c) 2005 D', 'Copyright 2002-2026 The C team'])
     (folder / 'no-mit').mkdir()
     (folder / 'no-mit' / 'c.c').write_text('/* Copyright (c) 2019 Other */\n')
     try:
@@ -409,6 +513,66 @@ with tempfile.TemporaryDirectory() as folder:
         check('a folder that grants no MIT is refused', 'written', 'refused')
     except SystemExit:
         check('a folder that grants no MIT is refused', 'refused', 'refused')
+    bsd = folder / 'bsd'
+    (bsd / 'sub').mkdir(parents=True)
+    conditions = ('Redistribution and use in source and binary forms, with or without modification, are '
+                  'permitted provided that the following conditions are met: Redistributions in binary form must '
+                  'reproduce the above copyright notice. THIS SOFTWARE IS PROVIDED "AS IS", EVEN IF ADVISED OF THE '
+                  'POSSIBILITY OF SUCH DAMAGE.')
+    framed = '\n'.join(' * ' + line for line in textwrap.wrap(conditions, 60))
+    (bsd / 'a.h').write_text(f'/*\n * A hash\n * Copyright (C) 2012-2021 A Author\n *\n * BSD 2-Clause License\n *\n'
+                             f'{framed}\n *\n * Contact the author.\n */\n')
+    (bsd / 'sub' / 'b.h').write_text(f'/*\n * Copyright (c) 1991, 1993\n *      The B Regents.  All rights reserved.\n'
+                                     f' *\n{framed}\n *\n *      @(#)b.h 8.5\n */\n')
+    (bsd / 'sub' / 'c.h').write_text(f'/*\n * Copyright (C) 2012-2021 A Author\n *\n * BSD 2-Clause License\n *\n'
+                                     f'{framed}\n */\n')
+    notice = p.bsd_notice('example-BSD.txt', bsd).decode('utf-8')
+    check('a BSD notice keeps each distinct licence once, with the copyright lines above it',
+          [line.strip() for line in notice.splitlines() if 'Copyright' in line or 'Regents' in line],
+          ['Copyright (C) 2012-2021 A Author', 'Copyright (c) 1991, 1993', 'The B Regents.  All rights reserved.'])
+    check('a BSD notice carries the conditions and the disclaimer',
+          ' '.join(notice.split()).count(conditions) == 2 and 'Contact the author' not in notice
+          and '@(#)' not in notice, True)
+    (folder / 'bsd-anonymous').mkdir()
+    (folder / 'bsd-anonymous' / 'd.h').write_text(f'/*\n{framed}\n */\n')
+    for label, path in [('a BSD licence with no copyright line is refused', folder / 'bsd-anonymous'),
+                        ('a folder that states no BSD licence is refused', folder / 'no-mit')]:
+        try:
+            p.bsd_notice('none', path)
+            check(label, 'written', 'refused')
+        except SystemExit:
+            check(label, 'refused', 'refused')
+    def packed(*arguments):
+        result = subprocess.run([sys.executable, str(Path(p.__file__)), '--version', '1.1.0', '--system', 'linux-x64',
+                                 *arguments, '--out', str(folder / 'packed')], capture_output=True, text=True)
+        return result.returncode, result.stderr
+    (folder / 'lib.so').write_bytes(b'core')
+    (folder / 'COPYING').write_bytes(b'gpl')
+    code, message = packed('--ps2-core', str(folder / 'lib.so'), '--ps2-core-licence', str(folder / 'COPYING'),
+                           '--lrps2-commit', 'e' * 40, '--host', str(folder / 'lib.so'))
+    check('packing the LRPS2 package with the host is refused', code != 0 and '--host' in message, True)
+    code, message = packed('--host', str(folder / 'lib.so'), '--core', str(folder / 'lib.so'), '--core-licence',
+                           str(folder / 'COPYING'), '--swanstation-commit', 'f' * 40, '--lrps2-commit', 'e' * 40)
+    check('packing the host package with an LRPS2 commit is refused', code != 0 and '--lrps2-commit' in message, True)
+    class LRPS2Arguments:
+        system = 'linux-x64'
+        version = '1.1.0'
+        ps2_core = folder / 'lib.so'
+        ps2_core_licence = folder / 'COPYING'
+        ps2_core_notices = None
+        lrps2_commit = 'e' * 40
+        notice = [f'swanstation-x.txt={folder / "COPYING"}']
+        mit_notice = None
+        bsd_notice = None
+    try:
+        p.lrps2_files(LRPS2Arguments, FORK, 'c' * 40)
+        check('the LRPS2 package refuses a licence not named lrps2-', 'written', 'refused')
+    except SystemExit as refusal:
+        check('the LRPS2 package refuses a licence not named lrps2-', 'licenses/swanstation-x.txt' in str(refusal), True)
+    LRPS2Arguments.notice = [f'lrps2-x.txt={folder / "COPYING"}']
+    check('the LRPS2 package holds its core, SOURCE-lrps2.txt and its licences',
+          [name for name, _, _ in p.lrps2_files(LRPS2Arguments, FORK, 'c' * 40)],
+          ['pcsx2_libretro.so', 'SOURCE-lrps2.txt', 'licenses/lrps2-GPL-3.0.txt', 'licenses/lrps2-x.txt'])
     try:
         p.write_zip(folder / 'bad.zip', [('../outside', b'x', p.PLAIN)])
         check('the packer refuses an unsafe name', 'written', 'refused')
