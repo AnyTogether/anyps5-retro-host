@@ -10,7 +10,9 @@ program has been booted in CI, since no PS2 BIOS may be used there. A player
 can save and load states of both (protocol.md "saveState and loadState"),
 and the host reports how fast a game really runs and which GPU draws it
 (protocol.md "status", `performance` and `gpu`), so a launcher can choose
-settings the PC keeps up with.
+settings the PC keeps up with. Each release has a host package with
+SwanStation and a separate LRPS2 package, both under one signature, and no
+BIOS.
 
 - [docs/protocol.md](docs/protocol.md): the protocol, the contract both sides
   are written from.
